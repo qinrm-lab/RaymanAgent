@@ -1,0 +1,29 @@
+﻿
+# =========================
+# 深度性能优化排查 (Auto-Added by Rayman)
+# =========================
+node_modules/
+.artifacts/
+obj/
+bin/
+gtp_logs/
+.ci/
+.rag/
+.playwright-mcp/
+App_Data/
+.vs/
+.Rayman/state/
+.Rayman/runtime/
+.Rayman/.Rayman/
+Rayman_full_bundle/.Rayman/.Rayman/
+Rayman_full_bundle/
+.Rayman_full_for_copy/
+.tmp_sandbox_verify_*/
+test-results/
+deps_check.txt
+-WorkspaceRoot/
+-IncludeVectorDb/
+*.log
+*.zip
+tmp_restore.log
+restore_server_diag.log
