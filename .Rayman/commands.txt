@@ -1,0 +1,148 @@
+=======================================================
+🤖 Rayman AI 助手 - 快捷指令列表
+=======================================================
+
+[环境初始化]
+▶ 初始化 / 运行 setup
+  - 作用：自动检测项目名，并生成/更新 `.SolutionName`, `.github/copilot-instructions.md` 和 `.vscode/tasks.json`。
+  - 默认：初始化结束后会自动执行 `Release Gate`（project 模式）；可通过 `-SkipReleaseGate` 跳过。
+  - 向量库：默认使用根目录 `.rag/<命名空间>/chroma_db`；若检测到已有库则复用并跳过重建，仅在 `-ForceReindex` 时重建。
+  - 迁移策略：默认会自动迁移旧路径 `.Rayman/state/chroma_db` 到新路径；如需关闭可用 `-NoAutoMigrateLegacyRag`。
+  - 场景：当你将 `.Rayman` 文件夹拷贝到一个新项目时，首次运行以激活所有功能。
+
+▶ WSL 安装依赖 / 安装 WSL 依赖
+  - 作用：在 Ubuntu(WSL2) 中自动安装 `pwsh`、`notify-send`、语音工具等（需要 sudo）。
+  - 场景：你在 WSL 下打开 `/mnt/*` 工作区，但任务提示找不到 `pwsh` / 通知/语音不可用。
+  - 相关任务：`Rayman: Ensure WSL Deps`
+
+▶ Windows 依赖检查
+  - 作用：检查 Windows 侧常用工具（git/wsl/winget 等）是否存在，并给出提示。
+  - 手动运行：`.Rayman/rayman.ps1 ensure-win-deps`
+
+[任务状态管理]
+▶ 保存状态 / 暂停
+  - 作用：保存任务状态到 `.Rayman/state/pending_task.md`，并自动 `git stash`（硬状态保存代码变更）。
+  - 场景：当你需要离开，或者想中断当前长任务时使用（请先点击停止生成按钮）。
+
+▶ 继续
+  - 作用：读取 `.Rayman/state/pending_task.md` 并恢复任务；同时自动 `git stash pop` 恢复代码变更。
+  - 场景：当你重新打开 VS Code，看到有未完成任务的提醒时使用。
+
+▶ 清除保存的状态
+  - 作用：彻底删除之前保存的任务状态，取消启动时的未完成任务提醒。
+  - 场景：当你决定放弃之前中断的任务时使用。
+
+[后台服务管理]
+▶ 停止监听 / 停止后台服务
+  - 作用：停止所有在后台运行的 Rayman 监听脚本（如 prompt-watch, attention-watch）。
+  - 场景：当你需要释放系统资源，或者想手动重启监听服务时使用。
+
+[项目运维]
+▶ 自愈 / 测试并修复
+  - 作用：自动检测项目类型并运行构建/测试；失败时生成 `.Rayman/state/last_error.log` 和 `.Rayman/state/last_error_summary.md` 供 AI 读取后尝试修复。
+  - 默认策略：自动补全缺失依赖（dotnet/node/python/playwright）；仍缺失时阻断并给出日志入口。
+  - 可选关闭：手动设置 `RAYMAN_AUTO_INSTALL_TEST_DEPS=0`（或对应变量）后可临时关闭自动补全。
+  - .NET（WSL on Windows）：默认优先在 Windows Host 执行；失败时按 `RAYMAN_DOTNET_WINDOWS_STRICT` 决定是否回退 WSL。
+  - 排障入口：`.Rayman/runtime/dotnet.exec.last.json` 与 `.Rayman/logs/dotnet.exec.<timestamp>.log`。
+  - 场景：当你怀疑依赖/构建/测试失败，想让 AI 进入“测试-修复-再测”的闭环时使用。
+
+▶ Agent 路由 / dispatch
+  - 作用：按任务类型路由到 `copilot|codex|local`，并自动处理云端白名单与回退。
+  - 产物：`.Rayman/runtime/agent_runs/<run_id>.json` 与 `last.json`。
+  - 手动运行：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix`
+  - 紧急绕过（审计）：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix -PolicyBypass -BypassReason "紧急发布修复"`（会写入 `.Rayman/runtime/decision.log`）
+
+▶ 评审闭环 / review-loop
+  - 作用：执行“dispatch → test-fix → 再测”迭代，最多 `RAYMAN_REVIEW_LOOP_MAX_ROUNDS` 轮。
+  - 产物：`.Rayman/runtime/review_loop.last.json`、`.Rayman/runtime/review_loop.last.diff.md`、`.Rayman/runtime/telemetry/first_pass_runs.tsv`。
+  - 手动运行：`.Rayman/rayman.ps1 review-loop --TaskKind bugfix`
+
+▶ 一次通过率报告 / first-pass-report
+  - 作用：输出一次通过率 KPI（窗口默认 `RAYMAN_FIRST_PASS_WINDOW=20`）。
+  - 产物：`.Rayman/runtime/telemetry/first_pass_report.md`、`.json`（含 round1 改动规模相关性分析）。
+  - 手动运行：`.Rayman/rayman.ps1 first-pass-report`
+
+▶ Prompt 模板 / prompts
+  - 作用：列出、查看或应用 `.github/prompts/*.prompt.md` 任务模板。
+  - 手动运行：
+    - `.Rayman/rayman.ps1 prompts -Action list`
+    - `.Rayman/rayman.ps1 prompts -Action apply -Name bugfix.prompt.md -Task "..." -AcceptanceCriteria "..."`
+
+▶ 更新上下文
+  - 作用：生成/更新 `.Rayman/CONTEXT.md`（项目结构快照），供 AI 在复杂任务前快速对齐项目现状。
+  - 场景：项目结构变化较大、AI 需要更准确上下文时使用。
+
+▶ 清理缓存 / 一键清理缓存
+  - 作用：清理项目中的临时文件和缓存（如 bin, obj, node_modules, .vs 等）。
+  - 场景：当项目编译报错、缓存冲突或需要释放磁盘空间时使用。
+
+▶ 一键部署 [项目名]
+  - 作用：执行项目的构建、打包和部署流程。
+  - 场景：当代码开发完成，需要发布到测试或生产环境时使用。
+  - 示例：输入“一键部署”会部署所有项目；输入“一键部署 WebApp”只部署 WebApp 项目。
+
+▶ 发布闸门 / Release Gate
+  - 作用：执行发布前强校验，生成 `.Rayman/state/release_gate_report.md`（PASS/WARN/FAIL）。
+  - 模式：支持 `-Mode project`（推荐用于业务项目）和 `-Mode standard`（仓库治理模式）。
+  - 场景：准备将 `.Rayman` 拷贝到真实环境前，先做一键发布就绪验收。
+  - 手动运行：`.Rayman/rayman.ps1 release-gate`
+
+▶ 代理健康检查 / proxy-health
+  - 作用：同时展示用户设置、工作区设置、系统代理、WinHTTP 与当前进程环境里的代理候选值，并显示最终生效 snapshot。
+  - 场景：代理类型/端口经常变化时，快速定位“写在哪里”和“最终读到了什么”。
+  - 手动运行：`.Rayman/rayman.ps1 proxy-health --refresh`
+
+▶ 拷贝初始化烟测 / doctor --copy-smoke
+  - 作用：复制 `.Rayman` 到临时目录并执行一次 setup，快速验证“拷贝后是否可初始化”。
+  - 默认：会净化 `.Rayman/runtime` 与 `.Rayman/logs` 历史产物后再执行（减少旧环境噪声）。
+  - 可选：`--strict` 使用严格路径（不跳过 release gate / 不放宽环境）。
+  - 可选：`--scope wsl|host|all|sandbox` 指定 Playwright 检查范围（默认 `wsl`，WSL 不可用时可显式用 `host`）。
+  - 手动运行：`.Rayman/rayman.ps1 doctor --copy-smoke`
+
+▶ 拷贝后初始化自检 / copy-self-check
+  - 作用：`doctor --copy-smoke` 的快捷别名，一条命令完成“拷贝后初始化可用性”验收。
+  - 可选参数：`--strict`、`--scope wsl|host|all|sandbox`、`--timeout-seconds <秒>`、`--keep-temp`。
+  - 手动运行：`.Rayman/rayman.ps1 copy-self-check`
+
+▶ 严格出厂验收 / copy-self-check --strict
+  - 作用：严格模式自检（包含 Release Gate），用于发给同事前的一键出厂验收。
+  - 默认任务：`Rayman: Factory Check (Strict)`（默认附带 `--scope wsl`，减少无 Sandbox 机器误阻断）。
+  - 手动运行：`.Rayman/rayman.ps1 copy-self-check --strict --scope wsl`
+
+▶ 严格出厂验收（保留现场）
+  - 作用：严格模式下保留临时验收目录；失败时自动打开目录，便于同事立刻排障。
+  - 失败增强：会自动把关键路径（临时目录/setup 日志/Playwright 摘要/Release Gate 报告）复制到剪贴板。
+  - 默认任务：`Rayman: Factory Check (Strict, Keep Temp)`。
+  - 手动运行：`.Rayman/rayman.ps1 copy-self-check --strict --scope wsl --keep-temp --open-on-fail`
+
+▶ Requirements 时间戳回填 / req-ts-backfill
+  - 作用：为 `.<SolutionName>/` 下全部 `*.requirements.md` 回填缺失时间戳（块元数据 + 可视内容行），并更新同步元数据。
+  - 场景：从旧版规则升级到新版“按时间同步”策略时，一键补齐历史文件。
+  - 手动运行：`.Rayman/rayman.ps1 req-ts-backfill`
+
+▶ 迁移旧向量库 / migrate-rag
+  - 作用：把旧路径 `.Rayman/state/chroma_db`（及 `rag.db`）迁移到 `.rag/<命名空间>/`。
+  - 场景：从旧版 Rayman 升级到新路径结构时，一键迁移历史向量库。
+  - 手动运行：`.Rayman/rayman.ps1 migrate-rag`
+
+▶ 生成可分发包 / Package Dist
+  - 作用：生成精简版 `.Rayman` 分发 zip，默认保留核心能力并剔除向量库/运行时/日志等临时数据。
+  - 净化：即便指定 `-IncludeRuntimeFiles/-IncludeLogs`，默认仍净化历史 runtime/logs 产物；如需保留历史可加 `-KeepRuntimeHistory/-KeepLogHistory`。
+  - 场景：准备拷贝到新项目或发给团队成员时，避免携带大体积临时文件。
+  - 手动运行：`.Rayman/rayman.ps1 package-dist`
+
+▶ 每日健康检查（自动）
+  - 作用：每天第一次打开 VS Code 时自动运行：检查挂起任务、（可选）Git 状态、扫描 TODO/FIXME，并自动更新 `.Rayman/CONTEXT.md`。
+  - 默认：会自动执行 requirements 时间戳回填（`req-ts-backfill` 逻辑）。
+  - 开关：设置环境变量 `RAYMAN_DAILY_REQ_TS_BACKFILL_ENABLED=0` 可关闭。
+  - 可选守护：设置 `RAYMAN_DAILY_WINAPP_GUARD_SMOKE_ENABLED=1` 可在健康检查中附加执行 WinApp Guard 串行烟测（正例应通过、负例应失败）。
+  - 手动运行：`.Rayman/rayman.ps1 health-check`
+
+[帮助]
+▶ ? 或 ？
+  - 作用：显示此快捷指令列表。
+
+▶ 运行 `.Rayman/rayman.ps1`（无参数）
+  - 作用：进入交互式编号菜单，直接选命令执行，减少参数输入错误；会记住上次选择并在下次回车默认执行。
+  - 场景：不想记参数时，推荐用这个入口。
+=======================================================

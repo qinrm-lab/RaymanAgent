@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+run_ps1_cross() {
+  local script="$1"
+  shift || true
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "${script}" "$@"
+    return $?
+  fi
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local script_win="${script}"
+    if command -v wslpath >/dev/null 2>&1; then
+      script_win="$(wslpath -w "${script}")"
+    fi
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${script_win}" "$@"
+    return $?
+  fi
+  echo "[rayman] neither pwsh nor powershell.exe found for ${script}" >&2
+  return 2
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  help|-h|--help)
+    cat <<'TXT'
+Rayman CLI (v159)
+
+Usage:
+  ./.Rayman/rayman <command>
+
+Commands:
+  init        Run full init (environment setup)
+  watch       Start watcher (prompt sync + fast-init for new projects)
+  fast-init   Generate missing/new requirements only (no installs)
+  migrate     Migrate legacy requirements into new structure
+  doctor      Read-only health check (rules profile: doctor)
+  check       Run check suite
+  ensure-test-deps  Detect and auto-install SDK/toolchain needed for project tests
+  ensure-playwright Ensure Playwright browser toolchain readiness for web auto-acceptance
+  clean       Governance cleanup (tmp/runtime/test bundles; optional aggressive mode)
+  snapshot    Create rollback snapshot under .Rayman/runtime/snapshots
+  metrics     Show rules/check telemetry summary (supports --json/assert flags)
+  trend       Generate daily telemetry trend report
+  baseline-guard  Compare recent telemetry vs historical baseline
+  telemetry-export Generate telemetry artifact bundle for CI/archive
+  telemetry-index Rebuild telemetry artifact index
+  telemetry-prune Prune telemetry artifact history and refresh index
+  dispatch    Route task backend: copilot|codex|local (policy + fallback)
+  review-loop Run dispatch + test-fix iterative review loop
+  first-pass-report Generate first-pass KPI report
+  prompts     List/show/apply prompt templates from .github/prompts
+  release     Run release gate (rules profile: release)
+  dev         Run dev profile once (fast-init + prompt sync)
+
+Doctor extras:
+  --copy-smoke         Copy .Rayman to temp folder and run setup smoke
+  --strict             Use strict setup path (no SkipReleaseGate/no env relaxation)
+  --keep-temp          Keep temp copy workspace even when smoke passes
+  --scope <value>      Playwright scope for copy smoke: wsl|host|all|sandbox (default: wsl)
+
+Clean extras:
+  --copy-smoke-artifacts 0|1  Also clean /tmp/rayman_copy_smoke_* artifacts
+
+Env flags:
+  RAYMAN_DEBUG=1   Enable debug traces
+TXT
+    ;;
+
+  init)
+    bash ./.Rayman/init.sh "$@"
+    ;;
+
+  watch)
+    bash ./.Rayman/run/watch.sh "$@"
+    ;;
+
+  fast-init)
+    bash ./.Rayman/scripts/fast-init/fast-init.sh "$@"
+    ;;
+
+  migrate)
+    bash ./.Rayman/scripts/requirements/migrate_legacy_requirements.sh "$@"
+    ;;
+
+  doctor)
+    copy_smoke=0
+    smoke_strict=0
+    smoke_keep_temp=0
+    smoke_timeout="120"
+    smoke_scope="wsl"
+    forward=()
+    while (($#)); do
+      case "$1" in
+        --copy-smoke) copy_smoke=1 ;;
+        --strict) smoke_strict=1 ;;
+        --keep-temp) smoke_keep_temp=1 ;;
+        --scope)
+          shift || { echo "missing value for --scope" >&2; exit 2; }
+          smoke_scope="${1:-wsl}"
+          ;;
+        --timeout-seconds)
+          shift || { echo "missing value for --timeout-seconds" >&2; exit 2; }
+          smoke_timeout="${1:-120}"
+          ;;
+        *) forward+=("$1") ;;
+      esac
+      shift || true
+    done
+
+    if [[ "${copy_smoke}" == "1" ]]; then
+      root="$(pwd)"
+      script_ps1="${root}/.Rayman/scripts/release/copy_smoke.ps1"
+      [[ -f "${script_ps1}" ]] || { echo "[copy-smoke] missing script: ${script_ps1}" >&2; exit 2; }
+
+      if command -v pwsh >/dev/null 2>&1; then
+        args=(-NoProfile -ExecutionPolicy Bypass -File "${script_ps1}" -WorkspaceRoot "${root}" -TimeoutSeconds "${smoke_timeout}" -Scope "${smoke_scope}")
+        [[ "${smoke_strict}" == "1" ]] && args+=(-Strict)
+        [[ "${smoke_keep_temp}" == "1" ]] && args+=(-KeepTemp)
+        pwsh "${args[@]}"
+      elif command -v powershell.exe >/dev/null 2>&1; then
+        if command -v wslpath >/dev/null 2>&1; then
+          script_ps1="$(wslpath -w "${script_ps1}")"
+          root="$(wslpath -w "${root}")"
+        fi
+        args=(-NoProfile -ExecutionPolicy Bypass -File "${script_ps1}" -WorkspaceRoot "${root}" -TimeoutSeconds "${smoke_timeout}" -Scope "${smoke_scope}")
+        [[ "${smoke_strict}" == "1" ]] && args+=(-Strict)
+        [[ "${smoke_keep_temp}" == "1" ]] && args+=(-KeepTemp)
+        powershell.exe "${args[@]}"
+      else
+        echo "[copy-smoke] neither pwsh nor powershell.exe found" >&2
+        exit 2
+      fi
+    else
+      bash ./.Rayman/run/rules.sh doctor "${forward[@]}"
+    fi
+    ;;
+
+  check)
+    bash ./.Rayman/run/check.sh
+    ;;
+
+  ensure-test-deps)
+    bash ./.Rayman/scripts/utils/ensure_project_test_deps.sh "$@"
+    ;;
+
+  ensure-playwright)
+    bash ./.Rayman/scripts/pwa/ensure_playwright_wsl.sh "$@"
+    ;;
+
+  clean)
+    bash ./.Rayman/scripts/utils/clean_workspace.sh "$@"
+    ;;
+
+  snapshot)
+    bash ./.Rayman/scripts/backup/snapshot_workspace.sh "$@"
+    ;;
+
+  metrics)
+    bash ./.Rayman/scripts/telemetry/rules_metrics.sh "$@"
+    ;;
+
+  trend)
+    bash ./.Rayman/scripts/telemetry/daily_trend.sh "$@"
+    ;;
+
+  baseline-guard)
+    bash ./.Rayman/scripts/telemetry/baseline_guard.sh "$@"
+    ;;
+
+  telemetry-export)
+    bash ./.Rayman/scripts/telemetry/export_artifacts.sh "$@"
+    ;;
+
+  telemetry-index)
+    bash ./.Rayman/scripts/telemetry/index_artifacts.sh "$@"
+    ;;
+
+  telemetry-prune)
+    bash ./.Rayman/scripts/telemetry/prune_artifacts.sh "$@"
+    ;;
+
+  dispatch)
+    run_ps1_cross "./.Rayman/scripts/agents/dispatch.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  review-loop)
+    run_ps1_cross "./.Rayman/scripts/agents/review_loop.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  first-pass-report)
+    run_ps1_cross "./.Rayman/scripts/agents/first_pass_report.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  prompts)
+    run_ps1_cross "./.Rayman/scripts/agents/prompts_catalog.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  release)
+    bash ./.Rayman/run/rules.sh release
+    ;;
+
+  dev)
+    bash ./.Rayman/run/rules.sh dev
+    ;;
+
+  *)
+    echo "Unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac
