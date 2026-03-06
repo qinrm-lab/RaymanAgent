@@ -1086,7 +1086,7 @@ $raymanTasks = @(
         type = "shell"
         command = "powershell"
         linux = @{ command = "pwsh" }
-        args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/review_loop.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-TaskKind", "bugfix")
+        args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/review_loop.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-TaskKind", "review")
         presentation = @{ reveal = "always"; panel = "shared"; clear = $false }
         problemMatcher = @()
     },
