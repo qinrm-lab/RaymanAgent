@@ -4,7 +4,36 @@ if [[ "${RAYMAN_DEBUG:-0}" == "1" ]]; then set -x; fi
 
 ROOT="$(pwd)"
 
-SOL="$(bash ./.Rayman/scripts/requirements/detect_solution.sh)"
+resolve_requirements_helper() {
+  local helper_name="$1"
+  local primary="./.Rayman/scripts/requirements/${helper_name}"
+  local dist="./.Rayman/.dist/scripts/requirements/${helper_name}"
+
+  if [[ -f "${primary}" ]]; then
+    echo "${primary}"
+    return 0
+  fi
+  if [[ -f "${dist}" ]]; then
+    mkdir -p "$(dirname "${primary}")"
+    # Backfill helper into workspace scripts so nested helper calls remain stable.
+    cp -f "${dist}" "${primary}" 2>/dev/null || true
+    if [[ -f "${primary}" ]]; then
+      echo "${primary}"
+      return 0
+    fi
+    echo "${dist}"
+    return 0
+  fi
+  return 1
+}
+
+DETECT_SOLUTION_SCRIPT="$(resolve_requirements_helper "detect_solution.sh" || true)"
+if [[ -z "${DETECT_SOLUTION_SCRIPT}" ]]; then
+  echo "[req] missing helper script: detect_solution.sh (.Rayman/scripts or .Rayman/.dist/scripts)" >&2
+  exit 127
+fi
+
+SOL="$(bash "${DETECT_SOLUTION_SCRIPT}")"
 SOL_DIR=".${SOL}"
 # all requirements stay under .<SolutionName>/
 SOL_REQ="${SOL_DIR}/.${SOL}.requirements.md"
@@ -12,7 +41,13 @@ PROJ_LIST_HEADER="## Project requirements 列表（必须逐一遵守）"
 
 mkdir -p "${SOL_DIR}"
 
-mapfile -t PROJS < <(bash ./.Rayman/scripts/requirements/detect_projects.sh || true)
+DETECT_PROJECTS_SCRIPT="$(resolve_requirements_helper "detect_projects.sh" || true)"
+if [[ -n "${DETECT_PROJECTS_SCRIPT}" ]]; then
+  mapfile -t PROJS < <(bash "${DETECT_PROJECTS_SCRIPT}" || true)
+else
+  echo "[req] helper missing, skip project detection: detect_projects.sh" >&2
+  PROJS=()
+fi
 TEMPLATE_PRIMARY="${ROOT}/.Rayman/templates/requirements.project.template.md"
 TEMPLATE_DIST="${ROOT}/.Rayman/.dist/templates/requirements.project.template.md"
 TEMPLATE=""
@@ -83,7 +118,12 @@ for p in "${PROJS[@]}"; do
 done
 
 # Migrate legacy requirements (root layout) into new structure (idempotent)
-bash ./.Rayman/scripts/requirements/migrate_legacy_requirements.sh || true
+MIGRATE_REQUIREMENTS_SCRIPT="$(resolve_requirements_helper "migrate_legacy_requirements.sh" || true)"
+if [[ -n "${MIGRATE_REQUIREMENTS_SCRIPT}" ]]; then
+  bash "${MIGRATE_REQUIREMENTS_SCRIPT}" || true
+else
+  echo "[req] helper missing, skip migration: migrate_legacy_requirements.sh" >&2
+fi
 
 build_project_list_file() {
   local out_file="$1"
