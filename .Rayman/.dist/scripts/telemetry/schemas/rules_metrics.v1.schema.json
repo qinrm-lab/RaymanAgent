@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schema/telemetry/rules_metrics.v1.schema.json",
+  "title": "Rayman Rules Metrics v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source",
+    "filter",
+    "has_data",
+    "summary",
+    "profile_summary",
+    "top_failing_commands",
+    "recent_failures",
+    "assertions"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.telemetry.metrics.v1" },
+    "generated_at": { "type": "string" },
+    "source": { "type": "string" },
+    "filter": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "enum": ["latest", "run_id"] },
+        "value": { "type": "string" }
+      }
+    },
+    "has_data": { "type": "boolean" },
+    "message": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": ["total", "ok", "fail", "success_rate", "fail_rate", "avg_ms"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "ok": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "success_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "fail_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "avg_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "profile_summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["profile", "total", "ok", "fail", "ok_rate", "avg_ms"],
+        "properties": {
+          "profile": { "type": "string" },
+          "total": { "type": "integer", "minimum": 0 },
+          "ok": { "type": "integer", "minimum": 0 },
+          "fail": { "type": "integer", "minimum": 0 },
+          "ok_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+          "avg_ms": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "top_failing_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["count", "command"],
+        "properties": {
+          "count": { "type": "integer", "minimum": 1 },
+          "command": { "type": "string" }
+        }
+      }
+    },
+    "recent_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts_iso", "profile", "status", "exit_code", "duration_ms", "command"],
+        "properties": {
+          "ts_iso": { "type": "string" },
+          "profile": { "type": "string" },
+          "status": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "duration_ms": { "type": "number", "minimum": 0 },
+          "command": { "type": "string" }
+        }
+      }
+    },
+    "assertions": {
+      "type": "object",
+      "required": ["max_fail_rate", "max_avg_ms", "failed"],
+      "properties": {
+        "max_fail_rate": { "type": ["number", "null"] },
+        "max_avg_ms": { "type": ["number", "null"] },
+        "failed": { "type": "boolean" }
+      }
+    }
+  }
+}

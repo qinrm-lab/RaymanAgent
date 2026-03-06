@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rayman Telemetry Artifact Index v1",
+  "type": "object",
+  "required": ["schema", "generated_at", "out_root", "total_bundles", "bundles", "summary"],
+  "properties": {
+    "schema": { "const": "rayman.telemetry.artifact_index.v1" },
+    "generated_at": { "type": "string" },
+    "out_root": { "type": "string", "minLength": 1 },
+    "total_bundles": { "type": "integer", "minimum": 0 },
+    "bundles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bundle_id",
+          "generated_at",
+          "bundle_dir",
+          "manifest_path",
+          "baseline_status",
+          "baseline_rc",
+          "metrics",
+          "trend"
+        ],
+        "properties": {
+          "bundle_id": { "type": "string", "minLength": 1 },
+          "generated_at": { "type": "string" },
+          "bundle_dir": { "type": "string", "minLength": 1 },
+          "manifest_path": { "type": "string", "minLength": 1 },
+          "baseline_status": { "type": "string" },
+          "baseline_rc": { "type": "integer", "minimum": 0 },
+          "metrics": {
+            "type": "object",
+            "required": ["has_data", "total", "fail_rate", "avg_ms"],
+            "properties": {
+              "has_data": { "type": "boolean" },
+              "total": { "type": "integer", "minimum": 0 },
+              "fail_rate": { "type": "number" },
+              "avg_ms": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+          },
+          "trend": {
+            "type": "object",
+            "required": ["has_data", "window_days", "fail_rate", "avg_ms"],
+            "properties": {
+              "has_data": { "type": "boolean" },
+              "window_days": { "type": "integer", "minimum": 0 },
+              "fail_rate": { "type": "number" },
+              "avg_ms": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "risk_level",
+        "anomaly_flags",
+        "thresholds",
+        "baseline_status_counts",
+        "latest_bundle"
+      ],
+      "properties": {
+        "risk_level": {
+          "type": "string",
+          "enum": ["GREEN", "YELLOW", "RED", "UNKNOWN"]
+        },
+        "anomaly_flags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "thresholds": {
+          "type": "object",
+          "required": [
+            "warn_fail_rate",
+            "warn_avg_ms",
+            "block_fail_rate",
+            "block_avg_ms",
+            "stale_hours"
+          ],
+          "properties": {
+            "warn_fail_rate": { "type": "number", "minimum": 0 },
+            "warn_avg_ms": { "type": "number", "minimum": 0 },
+            "block_fail_rate": { "type": "number", "minimum": 0 },
+            "block_avg_ms": { "type": "number", "minimum": 0 },
+            "stale_hours": { "type": "number", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "baseline_status_counts": {
+          "type": "object",
+          "required": ["pass", "warn", "block", "insufficient_baseline", "unknown"],
+          "properties": {
+            "pass": { "type": "integer", "minimum": 0 },
+            "warn": { "type": "integer", "minimum": 0 },
+            "block": { "type": "integer", "minimum": 0 },
+            "insufficient_baseline": { "type": "integer", "minimum": 0 },
+            "unknown": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "latest_bundle": {
+          "type": "object",
+          "required": [
+            "exists",
+            "bundle_id",
+            "generated_at",
+            "age_hours",
+            "baseline_status",
+            "metrics_has_data",
+            "metrics_fail_rate",
+            "metrics_avg_ms",
+            "trend_has_data",
+            "trend_fail_rate",
+            "trend_avg_ms"
+          ],
+          "properties": {
+            "exists": { "type": "boolean" },
+            "bundle_id": { "type": "string" },
+            "generated_at": { "type": "string" },
+            "age_hours": { "type": "number", "minimum": -1 },
+            "baseline_status": { "type": "string" },
+            "metrics_has_data": { "type": "boolean" },
+            "metrics_fail_rate": { "type": "number", "minimum": 0 },
+            "metrics_avg_ms": { "type": "number", "minimum": 0 },
+            "trend_has_data": { "type": "boolean" },
+            "trend_fail_rate": { "type": "number", "minimum": 0 },
+            "trend_avg_ms": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

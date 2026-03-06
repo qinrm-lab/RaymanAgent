@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rayman Telemetry Baseline Guard v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source",
+    "status",
+    "report_only",
+    "config",
+    "baseline_days_used",
+    "recent",
+    "baseline",
+    "delta"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.telemetry.baseline_guard.v1" },
+    "generated_at": { "type": "string" },
+    "source": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "WARN", "BLOCK", "INSUFFICIENT_BASELINE"]
+    },
+    "reason": { "type": "string" },
+    "report_only": { "type": "boolean" },
+    "config": {
+      "type": "object",
+      "required": [
+        "recent_days",
+        "baseline_days",
+        "min_baseline_days",
+        "warn_fail_rate_delta",
+        "warn_avg_ms_delta",
+        "block_fail_rate_delta",
+        "block_avg_ms_delta"
+      ],
+      "properties": {
+        "recent_days": { "type": "integer", "minimum": 1 },
+        "baseline_days": { "type": "integer", "minimum": 1 },
+        "min_baseline_days": { "type": "integer", "minimum": 1 },
+        "warn_fail_rate_delta": { "type": "number" },
+        "warn_avg_ms_delta": { "type": "number" },
+        "block_fail_rate_delta": { "type": "number" },
+        "block_avg_ms_delta": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "baseline_days_used": { "type": "integer", "minimum": 0 },
+    "recent": {
+      "type": "object",
+      "required": ["total", "ok", "fail", "fail_rate", "avg_ms"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "ok": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "fail_rate": { "type": "number" },
+        "avg_ms": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "baseline": {
+      "type": "object",
+      "required": ["total", "ok", "fail", "fail_rate", "avg_ms"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "ok": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "fail_rate": { "type": "number" },
+        "avg_ms": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "delta": {
+      "type": "object",
+      "required": ["fail_rate", "avg_ms"],
+      "properties": {
+        "fail_rate": { "type": "number" },
+        "avg_ms": { "type": "number" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

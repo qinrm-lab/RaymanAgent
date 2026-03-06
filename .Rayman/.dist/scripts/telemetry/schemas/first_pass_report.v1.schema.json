@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Rayman First Pass Report v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source",
+    "report",
+    "has_data",
+    "window",
+    "summary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.telemetry.first_pass.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "report": {
+      "type": "string"
+    },
+    "has_data": {
+      "type": "boolean"
+    },
+    "window": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "BLOCK"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "pass",
+        "fail",
+        "first_pass_rate",
+        "avg_duration_ms",
+        "current_pass_streak"
+      ],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "first_pass_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "avg_duration_ms": { "type": "number", "minimum": 0 },
+        "current_pass_streak": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "properties": {
+        "recent_days": { "type": "integer", "minimum": 1 },
+        "baseline_days": { "type": "integer", "minimum": 1 },
+        "recent_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "baseline_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "delta_rate": { "type": "number" }
+      }
+    },
+    "change_scale_correlation": {
+      "type": "object",
+      "properties": {
+        "sample_with_scale": { "type": "integer", "minimum": 0 },
+        "sample_total": { "type": "integer", "minimum": 0 },
+        "round1_touched_files": {
+          "type": "object",
+          "properties": {
+            "pass_avg": { "type": ["number", "null"] },
+            "fail_avg": { "type": ["number", "null"] },
+            "delta_pass_minus_fail": { "type": ["number", "null"] },
+            "corr_status": { "type": ["number", "null"], "minimum": -1, "maximum": 1 }
+          }
+        },
+        "round1_abs_net_size_delta_bytes": {
+          "type": "object",
+          "properties": {
+            "pass_avg": { "type": ["number", "null"] },
+            "fail_avg": { "type": ["number", "null"] },
+            "delta_pass_minus_fail": { "type": ["number", "null"] },
+            "corr_status": { "type": ["number", "null"], "minimum": -1, "maximum": 1 }
+          }
+        }
+      }
+    },
+    "backend_distribution": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "backend",
+          "count"
+        ],
+        "properties": {
+          "backend": { "type": "string" },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

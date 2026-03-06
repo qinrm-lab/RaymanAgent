@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schema/telemetry/daily_trend.v1.schema.json",
+  "title": "Rayman Daily Trend v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source",
+    "report",
+    "window_days",
+    "has_data",
+    "summary",
+    "daily",
+    "top_failing_commands"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.telemetry.trend.v1" },
+    "generated_at": { "type": "string" },
+    "source": { "type": "string" },
+    "report": { "type": "string" },
+    "window_days": { "type": "integer", "minimum": 1 },
+    "has_data": { "type": "boolean" },
+    "reason": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": ["total", "ok", "fail", "fail_rate", "avg_ms"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "ok": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "fail_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "avg_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "daily": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "total", "ok", "fail", "fail_rate", "avg_ms"],
+        "properties": {
+          "date": { "type": "string" },
+          "total": { "type": "integer", "minimum": 0 },
+          "ok": { "type": "integer", "minimum": 0 },
+          "fail": { "type": "integer", "minimum": 0 },
+          "fail_rate": { "type": "number", "minimum": 0, "maximum": 100 },
+          "avg_ms": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "top_failing_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["count", "command"],
+        "properties": {
+          "count": { "type": "integer", "minimum": 1 },
+          "command": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rayman Telemetry Artifact Bundle Manifest v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "bundle_id",
+    "bundle_dir",
+    "metrics_limit",
+    "trend_days",
+    "baseline",
+    "files"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.telemetry.artifact_bundle.v1" },
+    "generated_at": { "type": "string" },
+    "bundle_id": { "type": "string", "minLength": 1 },
+    "bundle_dir": { "type": "string", "minLength": 1 },
+    "metrics_limit": { "type": "integer", "minimum": 1 },
+    "trend_days": { "type": "integer", "minimum": 1 },
+    "baseline": {
+      "type": "object",
+      "required": ["enabled", "report_only", "status", "rc"],
+      "properties": {
+        "enabled": { "type": "integer", "enum": [0, 1] },
+        "report_only": { "type": "integer", "enum": [0, 1] },
+        "status": { "type": "string" },
+        "rc": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "path"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
