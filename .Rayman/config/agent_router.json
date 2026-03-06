@@ -1,0 +1,91 @@
+{
+  "schema": "rayman.agent_router.v1",
+  "default_backend": "local",
+  "fallback_order": [
+    "codex",
+    "local"
+  ],
+  "cloud_enabled": false,
+  "cloud_whitelist": [],
+  "task_backend_preferences": {
+    "bugfix": [
+      "codex",
+      "copilot",
+      "local"
+    ],
+    "refactor": [
+      "codex",
+      "local"
+    ],
+    "tests": [
+      "local",
+      "codex"
+    ],
+    "review": [
+      "gemini",
+      "claude",
+      "gpt",
+      "copilot",
+      "codex",
+      "local"
+    ],
+    "release": [
+      "local",
+      "codex"
+    ]
+  },
+  "backend_requirements": {
+    "copilot": {
+      "commands_any": [
+        "gh"
+      ],
+      "env_any": [
+        "GITHUB_TOKEN",
+        "GH_TOKEN"
+      ],
+      "allow_cloud": true
+    },
+    "codex": {
+      "commands_any": [
+        "codex"
+      ],
+      "env_any": [
+        "OPENAI_API_KEY"
+      ],
+      "allow_cloud": true
+    },
+    "gemini": {
+      "commands_any": [
+        "gemini"
+      ],
+      "env_any": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY"
+      ],
+      "allow_cloud": true
+    },
+    "claude": {
+      "commands_any": [
+        "claude"
+      ],
+      "env_any": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "allow_cloud": true
+    },
+    "gpt": {
+      "commands_any": [
+        "codex"
+      ],
+      "env_any": [
+        "OPENAI_API_KEY"
+      ],
+      "allow_cloud": true
+    },
+    "local": {
+      "commands_any": [],
+      "env_any": [],
+      "allow_cloud": false
+    }
+  }
+}

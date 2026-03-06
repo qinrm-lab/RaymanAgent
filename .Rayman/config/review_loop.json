@@ -1,0 +1,28 @@
+{
+  "schema": "rayman.review_loop.config.v1",
+  "max_rounds": 2,
+  "task_kind_default": "review",
+  "dispatch_each_round": true,
+  "record_first_pass_telemetry": true,
+  "test_fix_command": "rayman test-fix",
+  "review_notes_file": ".Rayman/context/review.notes.md",
+  "diff_summary": {
+    "enabled": true,
+    "max_files": 40,
+    "ignore_dirs": [
+      ".git",
+      ".Rayman/runtime",
+      ".Rayman/logs",
+      ".Rayman/state",
+      ".Rayman/.dist",
+      "node_modules",
+      ".venv",
+      "bin",
+      "obj",
+      ".Rayman_full_for_copy",
+      "Rayman_full_bundle",
+      ".tmp_sandbox_*",
+      ".rayman.stage.*"
+    ]
+  }
+}
