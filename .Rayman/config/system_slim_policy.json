@@ -1,0 +1,20 @@
+{
+  "schema": "rayman.system_slim.policy.v1",
+  "enabled": true,
+  "notify_on_upgrade": true,
+  "minimum_versions": {
+    "vscode": "1.110.0",
+    "codex": "0.5.80"
+  },
+  "features": {
+    "dispatch": {
+      "enabled": true,
+      "mode": "delegate",
+      "delegate_target": "codex.exec"
+    },
+    "review_loop": {
+      "enabled": false,
+      "mode": "keep"
+    }
+  }
+}

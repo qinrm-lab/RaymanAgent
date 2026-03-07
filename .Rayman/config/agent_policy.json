@@ -1,0 +1,39 @@
+{
+  "schema": "rayman.agent_policy.v1",
+  "allow_bypass_with_reason": true,
+  "audit": {
+    "decision_log": ".Rayman/runtime/decision.log",
+    "require_reason_env": "RAYMAN_BYPASS_REASON"
+  },
+  "sensitive_paths": [
+    ".Rayman/release/private_key.pem",
+    ".env",
+    ".env.local",
+    ".github/workflows"
+  ],
+  "hooks": {
+    "pre_dispatch": {
+      "enabled": true,
+      "blocked_commands": [
+        "git\\s+reset\\s+--hard",
+        "git\\s+checkout\\s+--\\s+",
+        "rm\\s+-rf\\s+/"
+      ],
+      "blocked_path_tokens": [
+        ".Rayman/release/private_key.pem"
+      ]
+    },
+    "post_tool": {
+      "enabled": true,
+      "required_logs_on_failure": [
+        ".Rayman/state/last_error.log"
+      ]
+    },
+    "pre_commit": {
+      "enabled": false,
+      "required_commands": [
+        "rayman test-fix"
+      ]
+    }
+  }
+}
