@@ -8,6 +8,9 @@
   - 默认：初始化结束后会自动执行 `Release Gate`（project 模式）；可通过 `-SkipReleaseGate` 跳过。
   - 向量库：默认使用根目录 `.rag/<命名空间>/chroma_db`；若检测到已有库则复用并跳过重建，仅在 `-ForceReindex` 时重建。
   - 迁移策略：默认会自动迁移旧路径 `.Rayman/state/chroma_db` 到新路径；如需关闭可用 `-NoAutoMigrateLegacyRag`。
+  - SCM 噪声治理：setup 末尾会自动注入忽略规则（默认 `.git/info/exclude`），并输出 `modified/added/untracked/total` 统计与软阈值告警（默认 100）。
+  - 相关变量：`RAYMAN_SCM_IGNORE_MODE=info-exclude|gitignore|off`、`RAYMAN_SCM_CHANGE_SOFT_LIMIT=100`。
+  - 注意：已被 Git 跟踪的文件不受 ignore 规则影响，需要先手动取消跟踪（例如 `git rm --cached <path>`）。
   - 场景：当你将 `.Rayman` 文件夹拷贝到一个新项目时，首次运行以激活所有功能。
 
 ▶ WSL 安装依赖 / 安装 WSL 依赖
@@ -48,14 +51,16 @@
 
 ▶ Agent 路由 / dispatch
   - 作用：按任务类型路由到 `copilot|codex|local`，并自动处理云端白名单与回退。
+  - 系统精简：当前仅精简 `dispatch`。满足版本门槛时会自动委派 `codex exec`（保留原任务入口与标签）。
+  - 审计报告：`.Rayman/runtime/system_slim.report.md`（含“已精简功能/未精简原因/版本变化提醒”）。
   - 产物：`.Rayman/runtime/agent_runs/<run_id>.json` 与 `last.json`。
   - 手动运行：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix`
   - 紧急绕过（审计）：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix -PolicyBypass -BypassReason "紧急发布修复"`（会写入 `.Rayman/runtime/decision.log`）
 
 ▶ 评审闭环 / review-loop
-  - 作用：执行“dispatch → test-fix → 再测”迭代，最多 `RAYMAN_REVIEW_LOOP_MAX_ROUNDS` 轮。
+  - 作用：执行“dispatch → test-fix → 再测”迭代，最多 `RAYMAN_REVIEW_LOOP_MAX_ROUNDS` 轮（保持 Rayman 闭环，不替换为 codex review）。
   - 产物：`.Rayman/runtime/review_loop.last.json`、`.Rayman/runtime/review_loop.last.diff.md`、`.Rayman/runtime/telemetry/first_pass_runs.tsv`。
-  - 手动运行：`.Rayman/rayman.ps1 review-loop --TaskKind bugfix`
+  - 手动运行：`.Rayman/rayman.ps1 review-loop --TaskKind review`
 
 ▶ 一次通过率报告 / first-pass-report
   - 作用：输出一次通过率 KPI（窗口默认 `RAYMAN_FIRST_PASS_WINDOW=20`）。
