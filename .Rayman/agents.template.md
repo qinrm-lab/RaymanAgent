@@ -2,7 +2,7 @@
 
 本仓库使用 Rayman 规则体系约束 Codex/Copilot 的行为。
 
-<!-- RAYMAN:MANDATORY_REQUIREMENTS_V158 -->
+<!-- RAYMAN:MANDATORY_REQUIREMENTS_V159 -->
 ## 强制 Requirements 规则（必须遵守）
 
 1. 你 **必须** 先阅读并严格遵守 `.<SolutionName>/.<SolutionName>.requirements.md`。
@@ -11,4 +11,4 @@
 4. 若 requirements 存在冲突或不清晰之处，你必须停止并报告冲突点，等待指示后再继续。
 
 专有名词保留英文：Agent / Codex / Copilot / Solution / Project。
-<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V158 -->
+<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V159 -->

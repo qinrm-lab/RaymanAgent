@@ -63,6 +63,27 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_FIRST_PASS_WINDOW)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS)) {
     $env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS = '2'
 }
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_HEARTBEAT_SECONDS)) {
+    $env:RAYMAN_HEARTBEAT_SECONDS = '60'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_HEARTBEAT_VERBOSE)) {
+    $env:RAYMAN_HEARTBEAT_VERBOSE = '0'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_HEARTBEAT_SMART_SILENCE_ENABLED)) {
+    $env:RAYMAN_HEARTBEAT_SMART_SILENCE_ENABLED = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS)) {
+    $env:RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS = '600'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_RAG_HEARTBEAT_SECONDS)) {
+    $env:RAYMAN_RAG_HEARTBEAT_SECONDS = '90'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SANDBOX_HEARTBEAT_SECONDS)) {
+    $env:RAYMAN_SANDBOX_HEARTBEAT_SECONDS = '90'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_MCP_HEARTBEAT_SECONDS)) {
+    $env:RAYMAN_MCP_HEARTBEAT_SECONDS = '90'
+}
 
 
 # Rayman dependency auto-heal defaults (managed by setup)
