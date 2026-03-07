@@ -1,0 +1,48 @@
+{
+  "schema": "rayman.model_routing.v1",
+  "defaults": {
+    "route": "ui_selected",
+    "fallback_behavior": "preserve_current_flow"
+  },
+  "task_aliases": {
+    "bugfix": "fix",
+    "general": "code",
+    "refactor": "code",
+    "tests": "code"
+  },
+  "providers": {
+    "ui_selected": {
+      "provider": "ui_selected",
+      "selector": "ui_selected"
+    },
+    "gemini_latest_pro": {
+      "provider": "gemini",
+      "selector": "latest_pro"
+    },
+    "claude_latest_opus": {
+      "provider": "claude",
+      "selector": "latest_opus"
+    }
+  },
+  "tasks": {
+    "code": {
+      "model": "ui_selected"
+    },
+    "fix": {
+      "model": "ui_selected"
+    },
+    "review": {
+      "mode": "prompt_rotation",
+      "prompt_keys": [
+        "review.initial",
+        "review.counter",
+        "review.final"
+      ]
+    }
+  },
+  "prompt_routes": {
+    "review.initial": "gemini_latest_pro",
+    "review.counter": "claude_latest_opus",
+    "review.final": "gemini_latest_pro"
+  }
+}
