@@ -2,7 +2,23 @@ param(
   [Alias('a')][string]$ApprovalMode = $(if ($env:RAYMAN_APPROVAL_MODE) { $env:RAYMAN_APPROVAL_MODE } else { 'full-auto' })
 )
 
-. "$PSScriptRoot\common.ps1"
+$commonScriptPath = Join-Path $PSScriptRoot 'common.ps1'
+if (-not (Test-Path -LiteralPath $commonScriptPath -PathType Leaf)) {
+  $workspaceRootForFallback = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+  $setupScriptPath = Join-Path $PSScriptRoot 'setup.ps1'
+  Write-Host ("⚠️ [init] 缺少 common.ps1，自动降级到 setup.ps1: {0}" -f $commonScriptPath) -ForegroundColor Yellow
+
+  if (-not (Test-Path -LiteralPath $setupScriptPath -PathType Leaf)) {
+    Write-Error ("[init] setup.ps1 也不存在，无法继续: {0}" -f $setupScriptPath)
+    exit 2
+  }
+
+  & $setupScriptPath -WorkspaceRoot $workspaceRootForFallback
+  $fallbackExitCode = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($?) { 0 } else { 1 }
+  exit $fallbackExitCode
+}
+
+. $commonScriptPath
 
 # --- self-repair --------------------------------------------------------
 & "$PSScriptRoot\scripts\repair\ensure_complete_rayman.ps1" -Root (Resolve-Path "$PSScriptRoot\..").Path | Out-Host
@@ -358,6 +374,87 @@ function Install-RaymanVscodeAutoStart([string]$WorkspaceRoot) {
   }
 }
 
+function Resolve-RaymanSystemSlimAuditScript([string]$WorkspaceRoot) {
+  $candidates = @(
+    (Join-Path $WorkspaceRoot '.Rayman\scripts\agents\system_slim_policy.ps1'),
+    (Join-Path $WorkspaceRoot '.Rayman\.dist\scripts\agents\system_slim_policy.ps1')
+  ) | Select-Object -Unique
+
+  foreach ($candidate in $candidates) {
+    if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+  return ''
+}
+
+function Invoke-RaymanSystemSlimAuditSafe([string]$WorkspaceRoot, [string]$Source = 'init') {
+  $auditScript = Resolve-RaymanSystemSlimAuditScript -WorkspaceRoot $WorkspaceRoot
+  if ([string]::IsNullOrWhiteSpace($auditScript)) {
+    Write-Warn '[Slim] system_slim_policy.ps1 not found; skip system slim audit.'
+    return $null
+  }
+
+  try {
+    . $auditScript
+  } catch {
+    Write-Warn ("[Slim] load audit script failed: {0}" -f $_.Exception.Message)
+    return $null
+  }
+
+  $auditCmd = Get-Command Invoke-RaymanSystemSlimAudit -ErrorAction SilentlyContinue
+  if ($null -eq $auditCmd) {
+    Write-Warn ("[Slim] Invoke-RaymanSystemSlimAudit missing in: {0}" -f $auditScript)
+    return $null
+  }
+
+  try {
+    return (Invoke-RaymanSystemSlimAudit -WorkspaceRoot $WorkspaceRoot -Source $Source)
+  } catch {
+    Write-Warn ("[Slim] audit failed: {0}" -f $_.Exception.Message)
+    return $null
+  }
+}
+
+function Write-RaymanSystemSlimAuditSummary([object]$AuditResult) {
+  if ($null -eq $AuditResult) { return }
+
+  $activeFeatures = @()
+  if ($AuditResult.PSObject.Properties['active_features']) {
+    $activeFeatures = @($AuditResult.active_features | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  }
+
+  if ($activeFeatures.Count -gt 0) {
+    Write-Host ("🧩 [Slim] 当前生效精简: {0}" -f ($activeFeatures -join ', ')) -ForegroundColor Cyan
+  } else {
+    Write-Host "🧩 [Slim] 当前生效精简: (none)" -ForegroundColor DarkCyan
+  }
+
+  if ($AuditResult.PSObject.Properties['report_path'] -and -not [string]::IsNullOrWhiteSpace([string]$AuditResult.report_path)) {
+    Write-Host ("🧾 [Slim] 报告: {0}" -f [string]$AuditResult.report_path) -ForegroundColor DarkCyan
+  }
+
+  $notifyOnUpgrade = $true
+  if ($AuditResult.PSObject.Properties['notify_on_upgrade']) {
+    $notifyOnUpgrade = [bool]$AuditResult.notify_on_upgrade
+  }
+
+  $upgradeDetected = $false
+  if ($AuditResult.PSObject.Properties['upgrade_detected']) {
+    $upgradeDetected = [bool]$AuditResult.upgrade_detected
+  }
+
+  if ($upgradeDetected -and $notifyOnUpgrade) {
+    $upgradedTools = @()
+    if ($AuditResult.PSObject.Properties['upgraded_tools']) {
+      $upgradedTools = @($AuditResult.upgraded_tools | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $detail = if ($upgradedTools.Count -gt 0) { $upgradedTools -join ', ' } else { 'unknown tools' }
+    Write-Host ("⚠️ [Slim] 检测到工具升级({0})，请确认是否继续扩大系统能力精简范围。" -f $detail) -ForegroundColor Yellow
+  }
+}
+
 $script:RaymanSandboxProxyBridge = $null
 $script:RaymanKeepSandboxProxyBridge = $false
 
@@ -648,6 +745,8 @@ function Stop-RaymanSandboxProxyBridge([object]$BridgeInfo, [bool]$KeepRunning =
 Write-Info ("Windows Init ({0})" -f $RaymanVersion)
 Start-RaymanAttentionWatch -WorkspaceRoot $WorkspaceRoot
 Install-RaymanVscodeAutoStart -WorkspaceRoot $WorkspaceRoot
+$systemSlimAuditResult = Invoke-RaymanSystemSlimAuditSafe -WorkspaceRoot $WorkspaceRoot -Source 'init'
+Write-RaymanSystemSlimAuditSummary -AuditResult $systemSlimAuditResult
 
 
 
