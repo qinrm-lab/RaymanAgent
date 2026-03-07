@@ -1,0 +1,62 @@
+{
+  "schema": "rayman.skills.rules.v1",
+  "defaults": [],
+  "skills": {
+    "docs": {
+      "match_ext": [
+        ".md",
+        ".markdown",
+        ".txt",
+        ".rst",
+        ".docx"
+      ],
+      "match_keywords": [
+        "requirements",
+        "design doc",
+        "architecture",
+        "spec",
+        "documentation"
+      ],
+      "hint": "优先使用文档阅读、总结与结构化提炼能力来处理说明、需求和设计文档。"
+    },
+    "pdfs": {
+      "match_ext": [
+        ".pdf"
+      ],
+      "match_keywords": [
+        "pdf",
+        "acrobat"
+      ],
+      "hint": "优先使用 PDF 阅读与提取能力，先获取文本再进行分析、对比或总结。"
+    },
+    "spreadsheets": {
+      "match_ext": [
+        ".csv",
+        ".tsv",
+        ".xlsx",
+        ".xls"
+      ],
+      "match_keywords": [
+        "spreadsheet",
+        "excel",
+        "csv",
+        "table"
+      ],
+      "hint": "优先使用表格/数据处理能力分析 CSV/Excel 内容，关注列结构、聚合与异常值。"
+    },
+    "slides": {
+      "match_ext": [
+        ".ppt",
+        ".pptx",
+        ".key"
+      ],
+      "match_keywords": [
+        "slides",
+        "slide deck",
+        "presentation",
+        "powerpoint"
+      ],
+      "hint": "优先使用演示文稿处理能力提取页面结构、讲述脉络与行动项。"
+    }
+  }
+}
