@@ -81,13 +81,13 @@ EOF_GOOD_TARGET
 pushd "${SANDBOX}" >/dev/null
 
 set +e
-bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.no_target.md" >/dev/null 2>&1
+bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.no_target.md" </dev/null >/dev/null 2>&1
 rc_no_target=$?
-bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.bad_target.md" >/dev/null 2>&1
+bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.bad_target.md" </dev/null >/dev/null 2>&1
 rc_bad_target=$?
-bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.workspace_field_mismatch.md" >/dev/null 2>&1
+bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.workspace_field_mismatch.md" </dev/null >/dev/null 2>&1
 rc_ws_field_mismatch=$?
-bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.workspace_prefix_mismatch.md" >/dev/null 2>&1
+bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.workspace_prefix_mismatch.md" </dev/null >/dev/null 2>&1
 rc_ws_prefix_mismatch=$?
 set -e
 
@@ -102,7 +102,7 @@ issues_file=".Rayman/runtime/issues.open.md"
 [[ ! -f "${req_file}" ]] || fail "workspace mismatch should not create requirements file: ${req_file}"
 [[ ! -f "${issues_file}" ]] || fail "workspace mismatch should not create issues file: ${issues_file}"
 
-bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.good_target.md" >/dev/null
+bash ./.Rayman/scripts/requirements/update_from_prompt.sh "./prompt.good_target.md" </dev/null >/dev/null
 
 [[ -f "${req_file}" ]] || fail "requirements file not generated: ${req_file}"
 [[ -f "${issues_file}" ]] || fail "issues state file not generated: ${issues_file}"

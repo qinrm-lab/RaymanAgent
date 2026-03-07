@@ -1,0 +1,19 @@
+{
+  "backup": {
+    "enabled": true,
+    "root": "F:\\backup",
+    "mode": "timestamp",
+    "onFailure": "stop",
+    "includeGit": true,
+    "excludeDirNames": [
+      "bin",
+      "obj",
+      "Debug",
+      "Release",
+      "out",
+      "target",
+      "TestResults",
+      "artifacts"
+    ]
+  }
+}

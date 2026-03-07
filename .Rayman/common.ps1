@@ -259,12 +259,48 @@ function Repair-RaymanNestedDir {
     $resolvedRoot = Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
     $nestedPath = Join-Path $resolvedRoot '.Rayman\.Rayman'
 
-    return [pscustomobject]@{
+    $result = [ordered]@{
         WorkspaceRoot = $resolvedRoot
         NestedPath = $nestedPath
         NestedExists = (Test-Path -LiteralPath $nestedPath -PathType Container)
         Repaired = $false
+        Backup = ''
+        Error = ''
     }
+
+    if (-not $result.NestedExists) {
+        return [pscustomobject]$result
+    }
+
+    try {
+        $runtimeMigrationRoot = Join-Path $resolvedRoot '.Rayman\runtime\migration'
+        $stateDir = Join-Path $resolvedRoot '.Rayman\state'
+        $logsDir = Join-Path $resolvedRoot '.Rayman\logs'
+        foreach ($dir in @($runtimeMigrationRoot, $stateDir, $logsDir)) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            }
+        }
+
+        $stamp = (Get-Date).ToString('yyyyMMdd_HHmmssfff')
+        $backupPath = Join-Path $runtimeMigrationRoot ("nested_rayman_{0}" -f $stamp)
+        Move-Item -LiteralPath $nestedPath -Destination $backupPath -Force
+
+        $stateLog = Join-Path $stateDir 'nested_rayman_repair.log'
+        $diagLog = Join-Path $logsDir 'diag.log'
+        $line = "[{0}] nested-rayman-repair backup={1}" -f (Get-Date).ToString('s'), $backupPath
+
+        Add-Content -LiteralPath $stateLog -Value ($line + ' OK') -Encoding UTF8
+        Add-Content -LiteralPath $diagLog -Value $line -Encoding UTF8
+
+        $result.Repaired = $true
+        $result.Backup = $backupPath
+        $result.NestedExists = $false
+    } catch {
+        $result.Error = $_.Exception.Message
+    }
+
+    return [pscustomobject]$result
 }
 
 function ConvertTo-RaymanSafeNamespace([string]$Value) {
@@ -311,6 +347,71 @@ function Get-RaymanRagPaths {
         ChromaDbPath = $chromaDbPath
         IndexRoot = $indexRoot
     }
+}
+
+function Invoke-RaymanGitSafe {
+    param(
+        [string]$WorkspaceRoot,
+        [string[]]$GitArgs = @()
+    )
+
+    $result = [ordered]@{
+        available = $false
+        ok = $false
+        reason = 'unknown'
+        exitCode = -1
+        stdout = @()
+        stderr = @()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot) -or -not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
+        $result.reason = 'workspace_not_found'
+        return [pscustomobject]$result
+    }
+
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $gitCmd -or [string]::IsNullOrWhiteSpace([string]$gitCmd.Source)) {
+        $result.reason = 'git_not_found'
+        return [pscustomobject]$result
+    }
+
+    $result.available = $true
+
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_git_safe_' + [Guid]::NewGuid().ToString('N'))
+    $stdoutPath = $tempBase + '.stdout.txt'
+    $stderrPath = $tempBase + '.stderr.txt'
+
+    try {
+        $argumentString = (@($GitArgs) | ForEach-Object {
+            $arg = [string]$_
+            if ($arg -match '[\s"]') {
+                '"' + ($arg -replace '"', '\"') + '"'
+            } else {
+                $arg
+            }
+        }) -join ' '
+
+        $proc = Start-Process -FilePath ([string]$gitCmd.Source) -ArgumentList $argumentString -WorkingDirectory $WorkspaceRoot -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+            $result.stdout = @([string[]](Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue))
+        }
+        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            $result.stderr = @([string[]](Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue))
+        }
+
+        $result.exitCode = [int]$proc.ExitCode
+        $result.ok = ($result.exitCode -eq 0)
+        $result.reason = if ($result.ok) { 'ok' } else { 'git_failed' }
+    } catch {
+        $result.reason = 'start_failed'
+        $result.stderr = @($_.Exception.Message)
+    } finally {
+        try { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } catch {}
+    }
+
+    return [pscustomobject]$result
 }
 
 function Invoke-RaymanAttentionAlert {
