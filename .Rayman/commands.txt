@@ -6,11 +6,16 @@
 ▶ 初始化 / 运行 setup
   - 作用：自动检测项目名，并生成/更新 `.SolutionName`, `.github/copilot-instructions.md` 和 `.vscode/tasks.json`。
   - 默认：初始化结束后会自动执行 `Release Gate`（project 模式）；可通过 `-SkipReleaseGate` 跳过。
+  - Git bootstrap：若当前工作区没有 `.git`，setup 默认会自动初始化本地 Git 仓库，并尽量把初始分支固定为 `main`。
+  - GitHub 登录：交互式 setup 默认会尝试执行 `gh auth login --web` 与 `auth setup-git`；失败默认只告警，不阻断本地 Git，除非显式开启严格模式。
+  - 不会自动创建 remote，也不会自动设置 `origin`。
+  - 产物：Git / GitHub 引导报告会写入 `.Rayman/runtime/git.bootstrap.last.json`。
   - 向量库：默认使用根目录 `.rag/<命名空间>/chroma_db`；若检测到已有库则复用并跳过重建，仅在 `-ForceReindex` 时重建。
   - 迁移策略：默认会自动迁移旧路径 `.Rayman/state/chroma_db` 到新路径；如需关闭可用 `-NoAutoMigrateLegacyRag`。
-  - SCM 噪声治理：setup 末尾会自动注入忽略规则（默认 `.git/info/exclude`），并输出 `modified/added/untracked/total` 统计与软阈值告警（默认 100）。
-  - 相关变量：`RAYMAN_SCM_IGNORE_MODE=info-exclude|gitignore|off`、`RAYMAN_SCM_CHANGE_SOFT_LIMIT=100`。
-  - 注意：已被 Git 跟踪的文件不受 ignore 规则影响，需要先手动取消跟踪（例如 `git rm --cached <path>`）。
+  - SCM 噪声治理：setup 末尾会自动注入忽略规则（external 默认 `.gitignore`，source 默认 `.git/info/exclude`），并输出 `modified/added/untracked/total` 统计与软阈值告警（默认 100）。
+  - 相关变量：`RAYMAN_SETUP_GIT_INIT=0|1`、`RAYMAN_SETUP_GITHUB_LOGIN=0|1`、`RAYMAN_SETUP_GITHUB_LOGIN_STRICT=0|1`、`RAYMAN_GITHUB_HOST=<host>`、`RAYMAN_GITHUB_GIT_PROTOCOL=https`、`RAYMAN_SCM_IGNORE_MODE=info-exclude|gitignore|off`、`RAYMAN_SCM_CHANGE_SOFT_LIMIT=100`、`RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=0|1`。
+  - 注意：若 `.Rayman/**`、`.SolutionName`、`.cursorrules`、`.clinerules`、`.rayman.env.ps1`、`.github/copilot-instructions.md` 已被 Git 跟踪，external workspace 会严格阻断；source workspace 允许 authored `.Rayman/` 与 `.SolutionName`，但仍会阻断本地/生成资产。
+  - 说明：`.dotnet10/`、`dist/`、`publish/`、`.tmp/`、`.temp/` 等常见产物目录若被 Git 跟踪，仅告警不阻断。
   - 场景：当你将 `.Rayman` 文件夹拷贝到一个新项目时，首次运行以激活所有功能。
 
 ▶ WSL 安装依赖 / 安装 WSL 依赖
@@ -37,25 +42,42 @@
 
 [后台服务管理]
 ▶ 停止监听 / 停止后台服务
-  - 作用：停止所有在后台运行的 Rayman 监听脚本（如 prompt-watch, attention-watch）。
+  - 作用：停止所有在后台运行的 Rayman 监听脚本（如 prompt-watch, attention-watch），并回收当前 workspace/当前 VS Code owner 下由 Rayman 登记的 `.NET` 业务残留进程。
   - 场景：当你需要释放系统资源，或者想手动重启监听服务时使用。
 
 [项目运维]
 ▶ 自愈 / 测试并修复
   - 作用：自动检测项目类型并运行构建/测试；失败时生成 `.Rayman/state/last_error.log` 和 `.Rayman/state/last_error_summary.md` 供 AI 读取后尝试修复。
-  - 默认策略：自动补全缺失依赖（dotnet/node/python/playwright）；仍缺失时阻断并给出日志入口。
+  - 默认策略：自动补全缺失依赖（dotnet/node/python/playwright）；MAUI 项目会额外执行 `dotnet workload restore`，仍缺失时阻断并给出日志入口。
   - 可选关闭：手动设置 `RAYMAN_AUTO_INSTALL_TEST_DEPS=0`（或对应变量）后可临时关闭自动补全。
   - .NET（WSL on Windows）：默认优先在 Windows Host 执行；失败时按 `RAYMAN_DOTNET_WINDOWS_STRICT` 决定是否回退 WSL。
-  - 排障入口：`.Rayman/runtime/dotnet.exec.last.json` 与 `.Rayman/logs/dotnet.exec.<timestamp>.log`。
+  - MAUI：默认按宿主选择单一 target framework 构建；Windows/Windows bridge 优先 `net*-windows`，macOS 优先 `net*-maccatalyst`，其余宿主优先 `net*-android`。
+  - 排障入口：`.Rayman/runtime/dotnet.exec.last.json` 与 `.Rayman/logs/dotnet.exec.<timestamp>.log`；前者会在需要时补充 `owned_root_pid`、`cleanup_attempted`、`cleanup_result`、`cleanup_reason`、`cleanup_pids`。
   - 场景：当你怀疑依赖/构建/测试失败，想让 AI 进入“测试-修复-再测”的闭环时使用。
 
 ▶ Agent 路由 / dispatch
   - 作用：按任务类型路由到 `copilot|codex|local`，并自动处理云端白名单与回退。
   - 系统精简：当前仅精简 `dispatch`。满足版本门槛时会自动委派 `codex exec`（保留原任务入口与标签）。
+  - Capability 提示：OpenAI/API/docs 类任务会优先提示 OpenAI Docs MCP；browser/web/e2e 类任务会优先提示 Playwright MCP；WinForms / MAUI(Windows) / desktop / UIA 类任务会优先提示 Rayman WinApp MCP，并在 `.Rayman/runtime/agent_runs/*.json` 记录命中结果。
   - 审计报告：`.Rayman/runtime/system_slim.report.md`（含“已精简功能/未精简原因/版本变化提醒”）。
   - 产物：`.Rayman/runtime/agent_runs/<run_id>.json` 与 `last.json`。
   - 手动运行：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix`
   - 紧急绕过（审计）：`.Rayman/rayman.ps1 dispatch --TaskKind bugfix -PolicyBypass -BypassReason "紧急发布修复"`（会写入 `.Rayman/runtime/decision.log`）
+
+▶ Agent Capabilities
+  - 作用：同步/查看 Rayman 声明式 capability registry，并维护工作区级 `.codex/config.toml`。
+  - 默认能力：`openai_docs`（OpenAI Docs MCP）、`web_auto_test`（Playwright MCP + Rayman fallback）、`winapp_auto_test`（Rayman WinApp MCP + Rayman fallback）。
+  - 产物：`.Rayman/runtime/agent_capabilities.report.json`、`.Rayman/runtime/agent_capabilities.report.md`、`.codex/config.toml`。
+  - 手动运行：
+    - `.Rayman/rayman.ps1 agent-capabilities`
+    - `.Rayman/rayman.ps1 agent-capabilities --sync`
+
+▶ Windows 桌面自动化 / WinApp
+  - 作用：使用 Windows UI Automation 自动化 WinForms / MAUI(Windows) 桌面应用，不依赖 Appium / WinAppDriver。
+  - 就绪检查：`.Rayman/rayman.ps1 ensure-winapp`
+  - 运行 flow：`.Rayman/rayman.ps1 winapp-test --flow-file .Rayman/winapp.flow.sample.json`
+  - 控件树探查：`.Rayman/rayman.ps1 winapp-inspect --window-title-regex ".*"`
+  - 产物：`.Rayman/runtime/winapp.ready.windows.json`、`.Rayman/runtime/winapp-tests/last_result.json`、`.Rayman/runtime/winapp-tests/control_tree.json`
 
 ▶ 评审闭环 / review-loop
   - 作用：执行“dispatch → test-fix → 再测”迭代，最多 `RAYMAN_REVIEW_LOOP_MAX_ROUNDS` 轮（保持 Rayman 闭环，不替换为 codex review）。
@@ -106,8 +128,25 @@
 
 ▶ 拷贝后初始化自检 / copy-self-check
   - 作用：`doctor --copy-smoke` 的快捷别名，一条命令完成“拷贝后初始化可用性”验收。
+  - 严格模式：除首次 setup 成功外，还会验证 external workspace 命中 tracked Rayman assets 时会先阻断、显式设置 `RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1` 后才放行；同时验证 source workspace 允许 authored `.Rayman/` / `.SolutionName` 但仍阻断本地/生成资产。
   - 可选参数：`--strict`、`--scope wsl|host|all|sandbox`、`--timeout-seconds <秒>`、`--keep-temp`。
   - 手动运行：`.Rayman/rayman.ps1 copy-self-check`
+
+▶ 项目快速门禁 / fast-gate
+  - 作用：统一的 PR 级快速门禁入口，输出 `.Rayman/runtime/project_gates/fast.report.json`。
+  - 默认检查：requirements layout、protected assets、`build_command`、`extensions.project_fast_checks`。
+  - 项目扩展：通过工作区根目录 `.rayman.project.json` 配置，不建议直接改 workflow。
+  - 手动运行：`.Rayman/rayman.ps1 fast-gate`
+
+▶ 项目浏览器门禁 / browser-gate
+  - 作用：统一的浏览器 / 项目冒烟门禁入口，输出 `.Rayman/runtime/project_gates/browser.report.json`。
+  - 默认基线：Chromium；项目可在 `.rayman.project.json` 的 `browser_command` 中覆盖具体实现。
+  - 手动运行：`.Rayman/rayman.ps1 browser-gate`
+
+▶ 项目完整门禁 / full-gate
+  - 作用：统一的 nightly / manual / 发布前门禁入口，输出 `.Rayman/runtime/project_gates/full.report.json`，并联动 `release-gate -Mode project`。
+  - 扩展点：`full_gate_command` 与 `extensions.project_release_checks`。
+  - 手动运行：`.Rayman/rayman.ps1 full-gate`
 
 ▶ 严格出厂验收 / copy-self-check --strict
   - 作用：严格模式自检（包含 Release Gate），用于发给同事前的一键出厂验收。
@@ -137,11 +176,17 @@
   - 手动运行：`.Rayman/rayman.ps1 package-dist`
 
 ▶ 每日健康检查（自动）
-  - 作用：每天第一次打开 VS Code 时自动运行：检查挂起任务、（可选）Git 状态、扫描 TODO/FIXME，并自动更新 `.Rayman/CONTEXT.md`。
+  - 作用：按 freshness 运行健康检查；默认 24h 内只跑一次，或关键输入变化时重跑。
+  - 扫描范围：默认排除 `.Rayman/.dist`、`.Rayman/runtime`、`.Rayman/state`、`.Rayman/logs`、`node_modules`、`.artifacts`、`bin`、`obj`、`test-results` 等生成目录。
   - 默认：会自动执行 requirements 时间戳回填（`req-ts-backfill` 逻辑）。
   - 开关：设置环境变量 `RAYMAN_DAILY_REQ_TS_BACKFILL_ENABLED=0` 可关闭。
   - 可选守护：设置 `RAYMAN_DAILY_WINAPP_GUARD_SMOKE_ENABLED=1` 可在健康检查中附加执行 WinApp Guard 串行烟测（正例应通过、负例应失败）。
   - 手动运行：`.Rayman/rayman.ps1 health-check`
+
+▶ VS Code folderOpen bootstrap
+  - 作用：默认 profile=`conservative`，同步必跑 watcher/session 去重与 pending task；`daily health`、`context refresh`、轻量依赖检查改为 stale-only。
+  - runtime 报告：`.Rayman/runtime/vscode_bootstrap.last.json`
+  - 可选变量：`RAYMAN_VSCODE_BOOTSTRAP_PROFILE=conservative|active|strict`
 
 [帮助]
 ▶ ? 或 ？

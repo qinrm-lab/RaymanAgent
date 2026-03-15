@@ -20,53 +20,143 @@ run_ps1_cross() {
   return 2
 }
 
+rayman_bool_enabled() {
+  local raw="${1:-}"
+  local default_value="${2:-0}"
+  if [[ -z "${raw}" ]]; then
+    [[ "${default_value}" == "1" ]]
+    return $?
+  fi
+  case "${raw,,}" in
+    1|true|yes|y|on) return 0 ;;
+    0|false|no|n|off) return 1 ;;
+    *) [[ "${default_value}" == "1" ]] ;;
+  esac
+}
+
+rayman_should_emit_done_alert() {
+  local command_name="${1:-}"
+  shift || true
+
+  case "${command_name}" in
+    ""|help|-h|--help|copy-self-check|self-check|copy-check) return 1 ;;
+  esac
+
+  if rayman_bool_enabled "${CI:-}" 0; then
+    return 1
+  fi
+
+  if [[ ! -t 1 && ! -t 2 ]]; then
+    return 1
+  fi
+
+  local token=""
+  for token in "$@"; do
+    [[ -z "${token}" ]] && continue
+    token="${token#--}"
+    token="${token#-}"
+    case "${token,,}" in
+      json|as-json|asjson) return 1 ;;
+    esac
+  done
+
+  if ! rayman_bool_enabled "${RAYMAN_ALERTS_ENABLED:-}" 1; then
+    return 1
+  fi
+
+  if ! rayman_bool_enabled "${RAYMAN_ALERT_DONE_ENABLED:-}" 1; then
+    return 1
+  fi
+
+  return 0
+}
+
+rayman_emit_done_alert() {
+  local command_name="${1:-}"
+  shift || true
+
+  if ! rayman_should_emit_done_alert "${command_name}" "$@"; then
+    return 0
+  fi
+
+  local title="Rayman 完成提醒"
+  local message="Rayman 命令已完成：${command_name}"
+  local root
+  root="$(pwd)"
+  local alert_script="${root}/.Rayman/scripts/utils/request_attention.ps1"
+
+  if [[ -f "${alert_script}" ]]; then
+    if command -v pwsh >/dev/null 2>&1; then
+      pwsh -NoProfile -ExecutionPolicy Bypass -File "${alert_script}" -Kind done -Title "${title}" -Message "${message}" -WorkspaceRoot "${root}" >/dev/null 2>&1 || true
+      return 0
+    fi
+    if command -v powershell.exe >/dev/null 2>&1; then
+      local alert_script_win="${alert_script}"
+      local root_win="${root}"
+      if command -v wslpath >/dev/null 2>&1; then
+        alert_script_win="$(wslpath -w "${alert_script}")"
+        root_win="$(wslpath -w "${root}")"
+      fi
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${alert_script_win}" -Kind done -Title "${title}" -Message "${message}" -WorkspaceRoot "${root_win}" >/dev/null 2>&1 || true
+      return 0
+    fi
+  fi
+
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "${title}" "${message}" >/dev/null 2>&1 || true
+  fi
+
+  if rayman_bool_enabled "${RAYMAN_ALERT_TTS_ENABLED:-}" 1 && rayman_bool_enabled "${RAYMAN_ALERT_TTS_DONE_ENABLED:-}" 1; then
+    if command -v spd-say >/dev/null 2>&1; then
+      spd-say "${message}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
+orig_cmd="${cmd}"
+orig_args=("$@")
 
-case "$cmd" in
-  help|-h|--help)
-    cat <<'TXT'
-Rayman CLI (v159)
+rayman_show_help() {
+  local catalog="./.Rayman/config/command_catalog.tsv"
+  cat <<'TXT'
+Rayman CLI (v161)
 
 Usage:
   ./.Rayman/rayman <command>
 
+Platform tags:
+  [all]          Publicly supported from both bash `rayman` and PowerShell `rayman.ps1`.
+  [pwsh-only]    Use `rayman.ps1 <command>`.
+  [windows-only] Use `rayman.ps1 <command>` on a Windows host.
+
 Commands:
-  init        Run full init (environment setup)
-  watch       Start watcher (prompt sync + fast-init for new projects)
-  fast-init   Generate missing/new requirements only (no installs)
-  migrate     Migrate legacy requirements into new structure
-  doctor      Read-only health check (rules profile: doctor)
-  check       Run check suite
-  ensure-test-deps  Detect and auto-install SDK/toolchain needed for project tests
-  ensure-playwright Ensure Playwright browser toolchain readiness for web auto-acceptance
-  clean       Governance cleanup (tmp/runtime/test bundles; optional aggressive mode)
-  snapshot    Create rollback snapshot under .Rayman/runtime/snapshots
-  metrics     Show rules/check telemetry summary (supports --json/assert flags)
-  trend       Generate daily telemetry trend report
-  baseline-guard  Compare recent telemetry vs historical baseline
-  telemetry-export Generate telemetry artifact bundle for CI/archive
-  telemetry-index Rebuild telemetry artifact index
-  telemetry-prune Prune telemetry artifact history and refresh index
-  dispatch    Route task backend: copilot|codex|local (policy + fallback)
-  review-loop Run dispatch + test-fix iterative review loop
-  first-pass-report Generate first-pass KPI report
-  prompts     List/show/apply prompt templates from .github/prompts
-  release     Run release gate (rules profile: release)
-  dev         Run dev profile once (fast-init + prompt sync)
-
-Doctor extras:
-  --copy-smoke         Copy .Rayman to temp folder and run setup smoke
-  --strict             Use strict setup path (no SkipReleaseGate/no env relaxation)
-  --keep-temp          Keep temp copy workspace even when smoke passes
-  --scope <value>      Playwright scope for copy smoke: wsl|host|all|sandbox (default: wsl)
-
-Clean extras:
-  --copy-smoke-artifacts 0|1  Also clean /tmp/rayman_copy_smoke_* artifacts
-
-Env flags:
-  RAYMAN_DEBUG=1   Enable debug traces
 TXT
+
+  if [[ ! -f "${catalog}" ]]; then
+    echo "  (command catalog missing: ${catalog})"
+    return 2
+  fi
+
+  while IFS=$'\t' read -r name platform group summary recommended; do
+    [[ -z "${name}" ]] && continue
+    [[ "${name}" == \#* ]] && continue
+    [[ "${platform}" != "all" ]] && continue
+    printf '  %-18s [%s] %s\n' "${name}" "${platform}" "${summary}"
+  done < "${catalog}"
+
+  cat <<'TXT'
+
+Notes:
+  - This bash entry publicly supports only commands tagged `[all]`.
+  - For `[pwsh-only]` or `[windows-only]` commands, use `rayman.ps1 <command>`.
+TXT
+}
+
+case "$cmd" in
+  help|-h|--help)
+    rayman_show_help
     ;;
 
   init)
@@ -138,8 +228,24 @@ TXT
     fi
     ;;
 
+  copy-self-check|self-check|copy-check)
+    exec bash "$0" doctor --copy-smoke "$@"
+    ;;
+
   check)
     bash ./.Rayman/run/check.sh
+    ;;
+
+  fast-gate)
+    run_ps1_cross "./.Rayman/scripts/project/run_project_gate.ps1" -WorkspaceRoot "$(pwd)" -Lane fast "$@"
+    ;;
+
+  browser-gate)
+    run_ps1_cross "./.Rayman/scripts/project/run_project_gate.ps1" -WorkspaceRoot "$(pwd)" -Lane browser "$@"
+    ;;
+
+  full-gate)
+    run_ps1_cross "./.Rayman/scripts/project/run_project_gate.ps1" -WorkspaceRoot "$(pwd)" -Lane full "$@"
     ;;
 
   ensure-test-deps)
@@ -148,6 +254,18 @@ TXT
 
   ensure-playwright)
     bash ./.Rayman/scripts/pwa/ensure_playwright_wsl.sh "$@"
+    ;;
+
+  ensure-winapp)
+    run_ps1_cross "./.Rayman/scripts/windows/ensure_winapp.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  winapp-test)
+    run_ps1_cross "./.Rayman/scripts/windows/run_winapp_flow.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
+  winapp-inspect)
+    run_ps1_cross "./.Rayman/scripts/windows/inspect_winapp.ps1" -WorkspaceRoot "$(pwd)" "$@"
     ;;
 
   clean)
@@ -198,6 +316,10 @@ TXT
     run_ps1_cross "./.Rayman/scripts/agents/prompts_catalog.ps1" -WorkspaceRoot "$(pwd)" "$@"
     ;;
 
+  agent-capabilities)
+    run_ps1_cross "./.Rayman/scripts/agents/ensure_agent_capabilities.ps1" -WorkspaceRoot "$(pwd)" "$@"
+    ;;
+
   release)
     bash ./.Rayman/run/rules.sh release
     ;;
@@ -211,3 +333,5 @@ TXT
     exit 2
     ;;
 esac
+
+rayman_emit_done_alert "${orig_cmd}" "${orig_args[@]}"

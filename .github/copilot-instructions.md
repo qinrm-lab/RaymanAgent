@@ -1,4 +1,18 @@
-# Rayman AI 助手自定义指令
+﻿# Rayman AI 助手自定义指令
+
+详细编码约定与文件类型规则请优先参考：.github/instructions/general.instructions.md、.github/instructions/backend.instructions.md、.github/instructions/frontend.instructions.md。
+
+复杂任务开始前，请优先读取 .Rayman/CONTEXT.md 与 .Rayman/context/skills.auto.md；若它们缺失或过期，请先运行“更新上下文”。
+
+Rayman 会自动生成并维护工作区级 `.codex/config.toml`，用于给 Codex 注入 OpenAI Docs MCP、Playwright MCP 与 Rayman WinApp MCP；不要把这些 Codex 专用 capability 混入 `.Rayman/mcp/mcp_servers.json`。
+
+当任务涉及 OpenAI 产品、API、模型、SDK 或官方文档时，请优先使用 OpenAI Docs MCP，而不是依赖过期记忆。
+
+当任务涉及网页自动化、浏览器排障、页面录制、E2E 或 UI 测试时，请优先使用 Playwright MCP；若当前环境拿不到 MCP，则先走 `.Rayman/rayman.ps1 ensure-playwright`，失败时再降级到 `.Rayman/rayman.ps1 pwa-test`。
+
+当任务涉及 WinForms、MAUI(Windows)、原生桌面窗口、对话框或 UI Automation 时，请优先使用 Rayman WinApp MCP；若当前环境拿不到 MCP，则先走 `.Rayman/rayman.ps1 ensure-winapp`，失败时再降级到 `.Rayman/rayman.ps1 winapp-test`。
+
+Copilot 环境如果没有等价 MCP，不要伪造能力；按 Rayman 已提供的命令入口做最佳努力降级即可。
 
 当用户在聊天框中输入单个问号（? 或 ？）时，请读取 .Rayman/commands.txt 文件的内容，并将其作为可用命令列表展示给用户。
 
@@ -13,7 +27,7 @@
 
 当用户输入 "自愈" 或 "测试并修复" 时，请运行 .Rayman/scripts/repair/run_tests_and_fix.ps1 脚本。如果报错，请读取 .Rayman/state/last_error.log 并自动尝试修复代码。
 
-当用户输入 "更新上下文" 时，请运行 .Rayman/scripts/utils/generate_context.ps1 脚本。在执行复杂任务前，请优先读取 .Rayman/CONTEXT.md 了解项目结构。
+当用户输入 "更新上下文" 时，请运行 .Rayman/scripts/utils/generate_context.ps1 脚本。该脚本会刷新 .Rayman/CONTEXT.md 与 .Rayman/context/skills.auto.md；在执行复杂任务前，请优先读取它们了解项目结构与建议能力。
 
 当用户输入 "拷贝后自检"、"拷贝初始化自检" 或 "自检初始化" 时，请运行 .Rayman/rayman.ps1 copy-self-check，用于验证 .Rayman 拷贝到新项目后是否能成功初始化。
 
@@ -28,12 +42,4 @@
 
 【重要】当你在执行任务过程中，遇到需要用户手动确认、输入信息或进行人机交互时，请务必先运行 .Rayman/scripts/utils/request_attention.ps1 脚本，通过语音提醒用户。你可以通过 -Message 参数传递具体的提示内容，例如：.Rayman/scripts/utils/request_attention.ps1 -Message "需要您确认部署配置"。
 
-【规划增强】当用户的需求较复杂、信息不完整或表述不清晰时：
-1) 先自动给出一个简短的可执行计划（分步骤/待办）；
-2) 提出最多 3-4 个关键澄清问题；
-3) 若用户未回复，按“最小返工”的默认方案继续推进，并在关键分歧点再次确认。
-
-【模型与输出策略】
-- 优先使用用户选择的模型。如果不可用，请自动降级选择当前可用的最强模型（如 Claude 3.5 Sonnet, GPT-4o, Gemini 1.5 Pro 等）。
-- 忽略 Token 消耗限制，提供最完整、最深入的代码实现和架构分析。
-- 严禁在生成代码时使用 // ...existing code... 或类似占位符省略逻辑，必须输出完整的、可直接运行的代码块。
+其余通用治理、输出、验证与回滚要求，以 AGENTS.md、.Rayman/CONTEXT.md、.Rayman/README.md 和 .Rayman/config/*.json 为准；避免在本文件重复堆叠长篇规则。

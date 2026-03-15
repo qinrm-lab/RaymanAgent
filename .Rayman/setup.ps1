@@ -17,6 +17,22 @@ if ($NoAutoMigrateLegacyRag) {
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $raymanCommonPath = Join-Path $PSScriptRoot "common.ps1"
 $raymanCommonImported = $false
+$workspaceStateGuardResult = $null
+$workspaceStateGuardError = ''
+$workspaceStateGuardScript = Join-Path $PSScriptRoot 'scripts\utils\workspace_state_guard.ps1'
+
+if (Test-Path -LiteralPath $workspaceStateGuardScript -PathType Leaf) {
+    try {
+        $workspaceStateGuardJson = & $workspaceStateGuardScript -WorkspaceRoot $WorkspaceRoot -Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$workspaceStateGuardJson)) {
+            $workspaceStateGuardResult = $workspaceStateGuardJson | ConvertFrom-Json -ErrorAction Stop
+        }
+    } catch {
+        $workspaceStateGuardError = $_.Exception.Message
+    }
+} else {
+    $workspaceStateGuardError = ("missing: {0}" -f $workspaceStateGuardScript)
+}
 
 function Get-EnvBoolCompat([string]$Name, [bool]$Default) {
     $raw = [Environment]::GetEnvironmentVariable($Name)
@@ -342,6 +358,11 @@ function Ensure-WorkspaceEnvDefaults {
         'RAYMAN_PLAYWRIGHT_AUTO_INSTALL' = '1'
         'RAYMAN_PLAYWRIGHT_SETUP_SCOPE' = 'wsl'
         'RAYMAN_GIT_SAFECRLF_SUPPRESS' = '1'
+        'RAYMAN_SETUP_GIT_INIT' = '1'
+        'RAYMAN_SETUP_GITHUB_LOGIN' = '1'
+        'RAYMAN_SETUP_GITHUB_LOGIN_STRICT' = '0'
+        'RAYMAN_GITHUB_HOST' = 'github.com'
+        'RAYMAN_GITHUB_GIT_PROTOCOL' = 'https'
         'RAYMAN_AUTO_REPAIR_NESTED_RAYMAN' = '1'
         'RAYMAN_SANDBOX_OFFLINE_CACHE_ENABLED' = '1'
         'RAYMAN_SANDBOX_OFFLINE_CACHE_COPY_BROWSERS' = '1'
@@ -353,12 +374,19 @@ function Ensure-WorkspaceEnvDefaults {
         'RAYMAN_AGENT_DEFAULT_BACKEND' = 'local'
         'RAYMAN_AGENT_FALLBACK_ORDER' = 'codex,local'
         'RAYMAN_AGENT_CLOUD_ENABLED' = '0'
+        'RAYMAN_AGENT_CAPABILITIES_ENABLED' = '1'
+        'RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED' = '1'
+        'RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED' = '1'
+        'RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED' = '1'
         'RAYMAN_AGENT_POLICY_BYPASS' = '0'
         'RAYMAN_AGENT_CLOUD_WHITELIST' = ''
+        'RAYMAN_WINAPP_REQUIRE' = '0'
+        'RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS' = '15000'
         'RAYMAN_FIRST_PASS_WINDOW' = '20'
         'RAYMAN_REVIEW_LOOP_MAX_ROUNDS' = '2'
-        'RAYMAN_SCM_IGNORE_MODE' = 'info-exclude'
+        'RAYMAN_VSCODE_BOOTSTRAP_PROFILE' = 'conservative'
         'RAYMAN_SCM_CHANGE_SOFT_LIMIT' = '100'
+        'RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS' = '0'
     }
 
     $raw = ''
@@ -445,9 +473,29 @@ function Sync-RaymanAssetsFromDistIfMissing {
             New-Item -ItemType Directory -Force -Path $targetScriptsRoot | Out-Null
         }
 
+        $sourceScriptsRootFull = ''
+        try {
+            $sourceScriptsRootFull = [System.IO.Path]::GetFullPath($sourceScriptsRoot).TrimEnd('\', '/')
+        } catch {
+            $sourceScriptsRootFull = [string]$sourceScriptsRoot
+        }
+        $sourceScriptsRootPrefix = $sourceScriptsRootFull + [System.IO.Path]::DirectorySeparatorChar
         $sourceFiles = @(Get-ChildItem -LiteralPath $sourceScriptsRoot -Recurse -File -ErrorAction SilentlyContinue)
         foreach ($sourceFile in $sourceFiles) {
-            $relativePath = $sourceFile.FullName.Substring($sourceScriptsRoot.Length).TrimStart('\', '/')
+            $sourceFileFull = ''
+            try {
+                $sourceFileFull = [System.IO.Path]::GetFullPath([string]$sourceFile.FullName)
+            } catch {
+                $sourceFileFull = [string]$sourceFile.FullName
+            }
+
+            if ($sourceFileFull.StartsWith($sourceScriptsRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $relativePath = $sourceFileFull.Substring($sourceScriptsRootPrefix.Length).TrimStart('\', '/')
+            } else {
+                $errors++
+                Write-Host ("⚠️ [asset-heal] 无法推导相对路径，已跳过: root={0}; file={1}" -f $sourceScriptsRootFull, $sourceFileFull) -ForegroundColor Yellow
+                continue
+            }
             if ([string]::IsNullOrWhiteSpace($relativePath)) { continue }
 
             $targetPath = Join-Path $targetScriptsRoot $relativePath
@@ -559,17 +607,31 @@ function Invoke-EnsureRequirementsLayout {
     }
 }
 
+function Get-RaymanDefaultScmIgnoreMode {
+    param([string]$WorkspaceRoot)
+
+    $workspaceKind = Get-RaymanWorkspaceKind -WorkspaceRoot $WorkspaceRoot
+    if ($workspaceKind -eq 'external') {
+        return 'gitignore'
+    }
+
+    return 'info-exclude'
+}
+
 function Get-RaymanScmIgnoreMode {
+    param([string]$WorkspaceRoot)
+
+    $defaultMode = Get-RaymanDefaultScmIgnoreMode -WorkspaceRoot $WorkspaceRoot
     $rawMode = [Environment]::GetEnvironmentVariable('RAYMAN_SCM_IGNORE_MODE')
-    if ([string]::IsNullOrWhiteSpace($rawMode)) { return 'info-exclude' }
+    if ([string]::IsNullOrWhiteSpace($rawMode)) { return $defaultMode }
 
     switch ($rawMode.Trim().ToLowerInvariant()) {
         'info-exclude' { return 'info-exclude' }
         'gitignore' { return 'gitignore' }
         'off' { return 'off' }
         default {
-            Write-Host ("⚠️ [SCM] RAYMAN_SCM_IGNORE_MODE={0} 非法，回退为 info-exclude。" -f $rawMode) -ForegroundColor Yellow
-            return 'info-exclude'
+            Write-Host ("⚠️ [SCM] RAYMAN_SCM_IGNORE_MODE={0} 非法，回退为 {1}。" -f $rawMode, $defaultMode) -ForegroundColor Yellow
+            return $defaultMode
         }
     }
 }
@@ -578,15 +640,61 @@ function Get-RaymanScmSoftLimit {
     return (Get-EnvIntCompat -Name 'RAYMAN_SCM_CHANGE_SOFT_LIMIT' -Default 100 -Min 1 -Max 200000)
 }
 
+function Get-RaymanScmIgnoreRules {
+    param([string]$WorkspaceRoot)
+
+    $workspaceKind = Get-RaymanWorkspaceKind -WorkspaceRoot $WorkspaceRoot
+    if ($workspaceKind -eq 'external') {
+        return @(
+            '.Rayman/'
+            '.SolutionName'
+            '.rayman.env.ps1'
+            '.cursorrules'
+            '.clinerules'
+            '.github/copilot-instructions.md'
+            '.vscode/tasks.json'
+            '.vscode/settings.json'
+            '.artifacts/'
+            'obj/'
+            'bin/'
+            'test-results/'
+        )
+    }
+
+    return @(
+        '.Rayman/context/skills.auto.md'
+        '.Rayman/logs/'
+        '.Rayman/runtime/'
+        '.Rayman/state/'
+        '.Rayman/mcp/*.bak'
+        '.Rayman/release/delivery-pack-*.md'
+        '.Rayman/release/public-release-notes-*.md'
+        '.Rayman/release/release-notes-*.md'
+        '.cursorrules'
+        '.clinerules'
+        '.vscode/tasks.json'
+        '.vscode/settings.json'
+        '.rayman.env.ps1'
+        '.env'
+        '.codex/config.toml'
+        '.artifacts/'
+        'obj/'
+        'bin/'
+        'test-results/'
+    )
+}
+
 function Update-RaymanScmIgnoreRules {
     param([string]$WorkspaceRoot)
 
-    $mode = Get-RaymanScmIgnoreMode
+    $workspaceKind = Get-RaymanWorkspaceKind -WorkspaceRoot $WorkspaceRoot
+    $mode = Get-RaymanScmIgnoreMode -WorkspaceRoot $WorkspaceRoot
     if ($mode -eq 'off') {
         Write-Host "⏭️ [SCM] 已关闭忽略规则注入（RAYMAN_SCM_IGNORE_MODE=off）。" -ForegroundColor DarkCyan
         return [pscustomobject]@{
             mode = $mode
             applied = $false
+            workspace_kind = $workspaceKind
             target_path = ''
             reason = 'disabled_by_env'
         }
@@ -594,21 +702,7 @@ function Update-RaymanScmIgnoreRules {
 
     $beginMarker = '# RAYMAN:GENERATED:BEGIN'
     $endMarker = '# RAYMAN:GENERATED:END'
-    $ignoreRules = @(
-        '.Rayman/.dist/'
-        '.Rayman/config/'
-        '.Rayman/runtime/'
-        '.Rayman/state/'
-        '.Rayman/logs/'
-        '.Rayman/scripts/'
-        '.cursorrules'
-        '.clinerules'
-        '.github/copilot-instructions.md'
-        '.vscode/tasks.json'
-        '.vscode/settings.json'
-        '.rayman.env.ps1'
-        '.SolutionName'
-    )
+    $ignoreRules = @(Get-RaymanScmIgnoreRules -WorkspaceRoot $WorkspaceRoot)
 
     $targetPath = ''
     if ($mode -eq 'gitignore') {
@@ -620,6 +714,7 @@ function Update-RaymanScmIgnoreRules {
             return [pscustomobject]@{
                 mode = $mode
                 applied = $false
+                workspace_kind = $workspaceKind
                 target_path = ''
                 reason = 'git_info_missing'
             }
@@ -667,7 +762,7 @@ function Update-RaymanScmIgnoreRules {
         }
 
         [void]$output.Add($beginMarker)
-        [void]$output.Add('# Managed by Rayman setup.ps1 (SCM noise control)')
+        [void]$output.Add(("# Managed by Rayman setup.ps1 (SCM noise control, workspace_kind={0})" -f $workspaceKind))
         foreach ($rule in $ignoreRules) {
             [void]$output.Add([string]$rule)
         }
@@ -676,11 +771,12 @@ function Update-RaymanScmIgnoreRules {
         $newContent = ($output -join "`r`n") + "`r`n"
         Set-Content -LiteralPath $targetPath -Value $newContent -Encoding UTF8
 
-        Write-Host ("✅ [SCM] 已注入忽略规则（mode={0}）: {1}" -f $mode, $targetPath) -ForegroundColor Green
+        Write-Host ("✅ [SCM] 已注入忽略规则（workspace={0}, mode={1}）: {2}" -f $workspaceKind, $mode, $targetPath) -ForegroundColor Green
         Write-Host "ℹ️ [SCM] 提示：已被 Git 跟踪的文件不受 ignore 规则影响，需手动取消跟踪（例如 git rm --cached）。" -ForegroundColor DarkCyan
         return [pscustomobject]@{
             mode = $mode
             applied = $true
+            workspace_kind = $workspaceKind
             target_path = $targetPath
             reason = 'ok'
         }
@@ -689,6 +785,7 @@ function Update-RaymanScmIgnoreRules {
         return [pscustomobject]@{
             mode = $mode
             applied = $false
+            workspace_kind = $workspaceKind
             target_path = $targetPath
             reason = 'write_failed'
         }
@@ -811,6 +908,61 @@ function Write-RaymanScmSoftLimitWarning {
     }
 }
 
+function Write-RaymanScmTrackedNoiseDiagnostics {
+    param(
+        [object]$Analysis,
+        [switch]$Block
+    )
+
+    if ($null -eq $Analysis) { return }
+    if (-not [bool]$Analysis.available -or -not [bool]$Analysis.insideGit) { return }
+
+    $raymanSummary = Format-RaymanScmTrackedNoiseGroups -Groups $Analysis.raymanGroups
+    $raymanSamples = Format-RaymanScmTrackedNoiseSamples -Groups $Analysis.raymanGroups
+    $advisorySummary = Format-RaymanScmTrackedNoiseGroups -Groups $Analysis.advisoryGroups
+    $advisorySamples = Format-RaymanScmTrackedNoiseSamples -Groups $Analysis.advisoryGroups
+    $workspaceKind = [string]$Analysis.workspaceKind
+
+    if ($Block -and [bool]$Analysis.raymanBlocked) {
+        if ($workspaceKind -eq 'source') {
+            Write-Host "❌ [SCM] tracked_rayman_assets_blocked: 检测到 source workspace 的本地/生成资产已被 Git 跟踪。" -ForegroundColor Red
+        } else {
+            Write-Host "❌ [SCM] tracked_rayman_assets_blocked: 检测到 external workspace 的 Rayman 本地资产已被 Git 跟踪。" -ForegroundColor Red
+        }
+        if (-not [string]::IsNullOrWhiteSpace($raymanSummary)) {
+            Write-Host ("   Rayman 资产分布: {0}" -f $raymanSummary) -ForegroundColor DarkYellow
+        }
+        if (-not [string]::IsNullOrWhiteSpace($raymanSamples)) {
+            Write-Host ("   样例: {0}" -f $raymanSamples) -ForegroundColor DarkYellow
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Analysis.raymanCommand)) {
+            Write-Host ("   修复命令: {0}" -f [string]$Analysis.raymanCommand) -ForegroundColor Yellow
+        }
+        Write-Host "   说明: ignore 规则（.gitignore / .git/info/exclude）仅对 untracked 生效；tracked 文件必须先从 Git 索引移除。" -ForegroundColor DarkYellow
+        if ($workspaceKind -eq 'external') {
+            Write-Host "   external workspace 只建议提交业务源码与 .<SolutionName>/；.Rayman/ 与根级 Rayman 元数据应保持未跟踪。" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "   source workspace 可跟踪 authored .Rayman/ 与 .SolutionName，但本地/生成资产不应入库。" -ForegroundColor DarkYellow
+        }
+        Write-Host "   如需明确允许当前仓库跟踪 Rayman 资产，请在 .rayman.env.ps1 中设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1。" -ForegroundColor DarkYellow
+    } elseif ([int]$Analysis.raymanTrackedCount -gt 0 -and [bool]$Analysis.allowTrackedRaymanAssets) {
+        Write-Host ("ℹ️ [SCM] 已显式放行 tracked Rayman assets（RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1）: {0}" -f $raymanSummary) -ForegroundColor DarkCyan
+    }
+
+    if ([bool]$Analysis.advisoryPresent) {
+        Write-Host "⚠️ [SCM] 检测到非 Rayman 常见产物目录已被 Git 跟踪（仅告警，不阻断 setup）。" -ForegroundColor Yellow
+        if (-not [string]::IsNullOrWhiteSpace($advisorySummary)) {
+            Write-Host ("   目录分布: {0}" -f $advisorySummary) -ForegroundColor DarkYellow
+        }
+        if (-not [string]::IsNullOrWhiteSpace($advisorySamples)) {
+            Write-Host ("   样例: {0}" -f $advisorySamples) -ForegroundColor DarkYellow
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Analysis.advisoryCommand)) {
+            Write-Host ("   建议命令: {0}" -f [string]$Analysis.advisoryCommand) -ForegroundColor DarkYellow
+        }
+    }
+}
+
 $setupLogsDir = Join-Path $WorkspaceRoot ".Rayman\logs"
 if (-not (Test-Path -LiteralPath $setupLogsDir -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $setupLogsDir | Out-Null
@@ -822,6 +974,15 @@ try {
     Start-Transcript -Path $script:SetupLogPath -Force | Out-Null
     $script:SetupTranscriptActive = $true
     Write-Host ("🧾 [setup] 日志: {0}" -f $script:SetupLogPath) -ForegroundColor DarkCyan
+    if ($null -ne $workspaceStateGuardResult) {
+        if ([bool]$workspaceStateGuardResult.scrubbed) {
+            Write-Host ("🧹 [workspace-state] 检测到跨工作区拷贝，已清理 {0} 项（source={1}）。" -f [int]$workspaceStateGuardResult.removed_count, [string]$workspaceStateGuardResult.foreign_workspace_root) -ForegroundColor DarkCyan
+        } else {
+            Write-Host ("ℹ️ [workspace-state] 已刷新当前工作区 marker: {0}" -f [string]$workspaceStateGuardResult.marker_path) -ForegroundColor DarkCyan
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($workspaceStateGuardError)) {
+        Write-Host ("⚠️ [workspace-state] 预清理失败：{0}" -f $workspaceStateGuardError) -ForegroundColor Yellow
+    }
 } catch {
     Write-Host ("⚠️ [setup] 启动 transcript 失败: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
 }
@@ -930,6 +1091,26 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_GIT_SAFECRLF_SUPPRESS)) {
     `$env:RAYMAN_GIT_SAFECRLF_SUPPRESS = '1'
 }
 
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SETUP_GIT_INIT)) {
+    `$env:RAYMAN_SETUP_GIT_INIT = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SETUP_GITHUB_LOGIN)) {
+    `$env:RAYMAN_SETUP_GITHUB_LOGIN = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SETUP_GITHUB_LOGIN_STRICT)) {
+    `$env:RAYMAN_SETUP_GITHUB_LOGIN_STRICT = '0'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_GITHUB_HOST)) {
+    `$env:RAYMAN_GITHUB_HOST = 'github.com'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_GITHUB_GIT_PROTOCOL)) {
+    `$env:RAYMAN_GITHUB_GIT_PROTOCOL = 'https'
+}
+
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AUTO_REPAIR_NESTED_RAYMAN)) {
     `$env:RAYMAN_AUTO_REPAIR_NESTED_RAYMAN = '1'
 }
@@ -978,12 +1159,36 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CLOUD_ENABLED)) {
     `$env:RAYMAN_AGENT_CLOUD_ENABLED = '0'
 }
 
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CAPABILITIES_ENABLED)) {
+    `$env:RAYMAN_AGENT_CAPABILITIES_ENABLED = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED)) {
+    `$env:RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED)) {
+    `$env:RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED)) {
+    `$env:RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED = '1'
+}
+
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_POLICY_BYPASS)) {
     `$env:RAYMAN_AGENT_POLICY_BYPASS = '0'
 }
 
 if (`$null -eq `$env:RAYMAN_AGENT_CLOUD_WHITELIST) {
     `$env:RAYMAN_AGENT_CLOUD_WHITELIST = ''
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_WINAPP_REQUIRE)) {
+    `$env:RAYMAN_WINAPP_REQUIRE = '0'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS)) {
+    `$env:RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS = '15000'
 }
 
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_FIRST_PASS_WINDOW)) {
@@ -994,12 +1199,16 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS)) {
     `$env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS = '2'
 }
 
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SCM_IGNORE_MODE)) {
-    `$env:RAYMAN_SCM_IGNORE_MODE = 'info-exclude'
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_VSCODE_BOOTSTRAP_PROFILE)) {
+    `$env:RAYMAN_VSCODE_BOOTSTRAP_PROFILE = 'conservative'
 }
 
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SCM_CHANGE_SOFT_LIMIT)) {
     `$env:RAYMAN_SCM_CHANGE_SOFT_LIMIT = '100'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS)) {
+    `$env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS = '0'
 }
 "@
     Set-Content -Path $workspaceEnvFile -Value $workspaceEnvContent -Encoding UTF8
@@ -1038,6 +1247,21 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_PLAYWRIGHT_AUTO_INSTALL)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_GIT_SAFECRLF_SUPPRESS)) {
     $env:RAYMAN_GIT_SAFECRLF_SUPPRESS = '1'
 }
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SETUP_GIT_INIT)) {
+    $env:RAYMAN_SETUP_GIT_INIT = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SETUP_GITHUB_LOGIN)) {
+    $env:RAYMAN_SETUP_GITHUB_LOGIN = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SETUP_GITHUB_LOGIN_STRICT)) {
+    $env:RAYMAN_SETUP_GITHUB_LOGIN_STRICT = '0'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_GITHUB_HOST)) {
+    $env:RAYMAN_GITHUB_HOST = 'github.com'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_GITHUB_GIT_PROTOCOL)) {
+    $env:RAYMAN_GITHUB_GIT_PROTOCOL = 'https'
+}
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AUTO_REPAIR_NESTED_RAYMAN)) {
     $env:RAYMAN_AUTO_REPAIR_NESTED_RAYMAN = '1'
 }
@@ -1071,11 +1295,29 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_FALLBACK_ORDER)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CLOUD_ENABLED)) {
     $env:RAYMAN_AGENT_CLOUD_ENABLED = '0'
 }
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CAPABILITIES_ENABLED)) {
+    $env:RAYMAN_AGENT_CAPABILITIES_ENABLED = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED)) {
+    $env:RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED)) {
+    $env:RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED)) {
+    $env:RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED = '1'
+}
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_POLICY_BYPASS)) {
     $env:RAYMAN_AGENT_POLICY_BYPASS = '0'
 }
 if ($null -eq $env:RAYMAN_AGENT_CLOUD_WHITELIST) {
     $env:RAYMAN_AGENT_CLOUD_WHITELIST = ''
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_WINAPP_REQUIRE)) {
+    $env:RAYMAN_WINAPP_REQUIRE = '0'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS)) {
+    $env:RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS = '15000'
 }
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_FIRST_PASS_WINDOW)) {
     $env:RAYMAN_FIRST_PASS_WINDOW = '20'
@@ -1083,16 +1325,20 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_FIRST_PASS_WINDOW)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS)) {
     $env:RAYMAN_REVIEW_LOOP_MAX_ROUNDS = '2'
 }
-if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SCM_IGNORE_MODE)) {
-    $env:RAYMAN_SCM_IGNORE_MODE = 'info-exclude'
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_VSCODE_BOOTSTRAP_PROFILE)) {
+    $env:RAYMAN_VSCODE_BOOTSTRAP_PROFILE = 'conservative'
 }
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SCM_CHANGE_SOFT_LIMIT)) {
     $env:RAYMAN_SCM_CHANGE_SOFT_LIMIT = '100'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS)) {
+    $env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS = '0'
 }
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_PRESERVE_RAG_NAMESPACE)) {
     $env:RAYMAN_PRESERVE_RAG_NAMESPACE = '0'
 }
 
+$script:ScmTrackedNoiseAnalysis = $null
 if (-not $raymanCommonImported) {
     if (Test-Path -LiteralPath $raymanCommonPath -PathType Leaf) {
         . $raymanCommonPath
@@ -1103,6 +1349,96 @@ if (-not $raymanCommonImported) {
 }
 if ($raymanCommonImported) {
     [void](Repair-RaymanNestedDir -WorkspaceRoot $WorkspaceRoot)
+    $script:ScmTrackedNoiseAnalysis = Get-RaymanScmTrackedNoiseAnalysis -WorkspaceRoot $WorkspaceRoot
+    if ($null -ne $script:ScmTrackedNoiseAnalysis -and [bool]$script:ScmTrackedNoiseAnalysis.raymanBlocked) {
+        Write-RaymanScmTrackedNoiseDiagnostics -Analysis $script:ScmTrackedNoiseAnalysis -Block
+        throw 'tracked_rayman_assets_blocked'
+    }
+}
+
+$script:GitBootstrapReport = $null
+$script:GitBootstrapReportPath = Join-Path (Join-Path $WorkspaceRoot '.Rayman\runtime') 'git.bootstrap.last.json'
+if ($raymanCommonImported -and (Get-Command Invoke-RaymanGitBootstrap -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "===== Git Bootstrap =====" -ForegroundColor Cyan
+    $gitBootstrapOptions = Get-RaymanSetupGitBootstrapOptions -WorkspaceRoot $WorkspaceRoot
+    $script:GitBootstrapReport = Invoke-RaymanGitBootstrap `
+        -WorkspaceRoot $WorkspaceRoot `
+        -GitInitEnabled ([bool]$gitBootstrapOptions.git_init_enabled) `
+        -GitHubLoginEnabled ([bool]$gitBootstrapOptions.github_login_enabled) `
+        -GitHubLoginStrict ([bool]$gitBootstrapOptions.github_login_strict) `
+        -GitHubHost ([string]$gitBootstrapOptions.github_host) `
+        -GitProtocol ([string]$gitBootstrapOptions.github_git_protocol) `
+        -AllowInteractiveGitHubLogin ([bool]$gitBootstrapOptions.allow_interactive_github_login) `
+        -BeforeGitHubLogin {
+            Invoke-RaymanAttentionAlert -Kind 'manual' -Reason '需要完成 GitHub 登录以启用 Git 远程认证。' -WorkspaceRoot $WorkspaceRoot | Out-Null
+        }
+
+    try {
+        $gitBootstrapRuntimeDir = Split-Path -Parent $script:GitBootstrapReportPath
+        if (-not (Test-Path -LiteralPath $gitBootstrapRuntimeDir -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $gitBootstrapRuntimeDir | Out-Null
+        }
+        $script:GitBootstrapReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:GitBootstrapReportPath -Encoding UTF8
+    } catch {
+        Write-Host ("⚠️ [Git Bootstrap] 无法写入报告: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+
+    if (-not [bool]$script:GitBootstrapReport.git_available) {
+        Write-Host "⚠️ [Git] 未检测到 git，可继续 setup，但当前工作区暂不能直接使用 Git。" -ForegroundColor Yellow
+    } elseif ([bool]$script:GitBootstrapReport.git_initialized) {
+        Write-Host ("✅ [Git] 已初始化本地仓库（{0}）" -f [string]$script:GitBootstrapReport.git_init_detail) -ForegroundColor Green
+    } elseif ([bool]$script:GitBootstrapReport.git_repo_detected) {
+        Write-Host "ℹ️ [Git] 已检测到现有 Git 仓库，跳过初始化。" -ForegroundColor DarkCyan
+    } else {
+        Write-Host ("⚠️ [Git] 未完成自动初始化（detail={0}）。" -f [string]$script:GitBootstrapReport.git_init_detail) -ForegroundColor Yellow
+    }
+
+    switch ([string]$script:GitBootstrapReport.github_auth_status) {
+        'authenticated' {
+            if ([bool]$script:GitBootstrapReport.github_setup_git_success) {
+                if ([bool]$script:GitBootstrapReport.github_login_attempted) {
+                    Write-Host ("✅ [GitHub] 已完成登录并执行 auth setup-git（{0}）" -f [string]$script:GitBootstrapReport.github_cli) -ForegroundColor Green
+                } else {
+                    Write-Host ("✅ [GitHub] 已检测到登录状态并执行 auth setup-git（{0}）" -f [string]$script:GitBootstrapReport.github_cli) -ForegroundColor Green
+                }
+            } else {
+                Write-Host ("⚠️ [GitHub] 已登录，但 auth setup-git 失败（{0}）。" -f [string]$script:GitBootstrapReport.github_cli) -ForegroundColor Yellow
+            }
+        }
+        'skipped' {
+            switch ([string]$script:GitBootstrapReport.skipped_reason) {
+                'github_login_disabled' {
+                    Write-Host "ℹ️ [GitHub] 已按配置跳过登录（RAYMAN_SETUP_GITHUB_LOGIN=0）。" -ForegroundColor DarkCyan
+                }
+                'github_login_noninteractive' {
+                    Write-Host "ℹ️ [GitHub] 当前为非交互场景，已跳过登录。" -ForegroundColor DarkCyan
+                }
+                'github_cli_missing' {
+                    Write-Host "⚠️ [GitHub] 未找到 GitHub CLI，已跳过登录与 auth setup-git。" -ForegroundColor Yellow
+                }
+            }
+        }
+        'unauthenticated' {
+            Write-Host ("⚠️ [GitHub] 当前仍未登录（{0}）。" -f [string]$script:GitBootstrapReport.github_cli) -ForegroundColor Yellow
+        }
+        'unknown' {
+            Write-Host ("⚠️ [GitHub] 无法确认登录状态（{0}）。" -f [string]$script:GitBootstrapReport.github_cli) -ForegroundColor Yellow
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:GitBootstrapReport.repair_action)) {
+        Write-Host ("   修复命令/动作: {0}" -f [string]$script:GitBootstrapReport.repair_action) -ForegroundColor DarkYellow
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:GitBootstrapReport.error_message)) {
+        Write-Host ("   诊断信息: {0}" -f [string]$script:GitBootstrapReport.error_message) -ForegroundColor DarkYellow
+    }
+
+    if ([bool]$script:GitBootstrapReport.should_block_setup) {
+        Write-Host "❌ [Git Bootstrap] GitHub 登录严格模式未通过，setup 已停止。" -ForegroundColor Red
+        Write-Host ("   报告路径: {0}" -f $script:GitBootstrapReportPath) -ForegroundColor Yellow
+        exit 3
+    }
 }
 
 # 1. 自动检测 SolutionName
@@ -1171,9 +1507,22 @@ $instructionsFile = Join-Path $githubDir "copilot-instructions.md"
 $instructionsContent = @"
 # Rayman AI 助手自定义指令
 
+详细编码约定与文件类型规则请优先参考：`.github/instructions/general.instructions.md`、`.github/instructions/backend.instructions.md`、`.github/instructions/frontend.instructions.md`。
+
+复杂任务开始前，请优先读取 `.Rayman/CONTEXT.md` 与 `.Rayman/context/skills.auto.md`；若它们缺失或过期，请先运行“更新上下文”。
+
+Rayman 会自动生成并维护工作区级 `.codex/config.toml`，用于给 Codex 注入 OpenAI Docs MCP 与 Playwright MCP；不要把这些 Codex 专用 capability 混入 `.Rayman/mcp/mcp_servers.json`。
+
+当任务涉及 OpenAI 产品、API、模型、SDK 或官方文档时，请优先使用 OpenAI Docs MCP，而不是依赖过期记忆。
+
+当任务涉及网页自动化、浏览器排障、页面录制、E2E 或 UI 测试时，请优先使用 Playwright MCP；若当前环境拿不到 MCP，则先走 `.Rayman/rayman.ps1 ensure-playwright`，失败时再降级到 `.Rayman/rayman.ps1 pwa-test`。
+
+Copilot 环境如果没有等价 MCP，不要伪造能力；按 Rayman 已提供的命令入口做最佳努力降级即可。
+
 当用户在聊天框中输入单个问号（`?` 或 `？`）时，请读取 `.Rayman/commands.txt` 文件的内容，并将其作为可用命令列表展示给用户。
 
 当用户输入 "初始化" 或 "运行 setup" 时，请运行 `.Rayman/setup.ps1` 脚本来初始化环境。
+setup 默认会准备本地 Git 仓库；交互式场景下会尝试 GitHub 登录并执行 `auth setup-git`，但不会自动创建 remote 仓库。
 
 当用户输入 "WSL 安装依赖" 或 "安装 WSL 依赖" 时，请运行 `.Rayman/scripts/utils/ensure_wsl_deps.ps1` 脚本，它会在 Ubuntu(WSL2) 中自动安装 `pwsh`、通知与语音依赖（需要 sudo 密码）。
 
@@ -1184,7 +1533,7 @@ $instructionsContent = @"
 
 当用户输入 "自愈" 或 "测试并修复" 时，请运行 `.Rayman/scripts/repair/run_tests_and_fix.ps1` 脚本。如果报错，请读取 `.Rayman/state/last_error.log` 并自动尝试修复代码。
 
-当用户输入 "更新上下文" 时，请运行 `.Rayman/scripts/utils/generate_context.ps1` 脚本。在执行复杂任务前，请优先读取 `.Rayman/CONTEXT.md` 了解项目结构。
+当用户输入 "更新上下文" 时，请运行 `.Rayman/scripts/utils/generate_context.ps1` 脚本。该脚本会刷新 `.Rayman/CONTEXT.md` 与 `.Rayman/context/skills.auto.md`；在执行复杂任务前，请优先读取它们了解项目结构与建议能力。
 
 当用户输入 "拷贝后自检"、"拷贝初始化自检" 或 "自检初始化" 时，请运行 `.Rayman/rayman.ps1 copy-self-check`，用于验证 `.Rayman` 拷贝到新项目后是否能成功初始化。
 
@@ -1199,15 +1548,7 @@ $instructionsContent = @"
 
 【重要】当你在执行任务过程中，遇到需要用户手动确认、输入信息或进行人机交互时，请务必先运行 `.Rayman/scripts/utils/request_attention.ps1` 脚本，通过语音提醒用户。你可以通过 `-Message` 参数传递具体的提示内容，例如：`.Rayman/scripts/utils/request_attention.ps1 -Message "需要您确认部署配置"`。
 
-【规划增强】当用户的需求较复杂、信息不完整或表述不清晰时：
-1) 先自动给出一个简短的可执行计划（分步骤/待办）；
-2) 提出最多 3-4 个关键澄清问题；
-3) 若用户未回复，按“最小返工”的默认方案继续推进，并在关键分歧点再次确认。
-
-【模型与输出策略】
-- 优先使用用户选择的模型。如果不可用，请自动降级选择当前可用的最强模型（如 Claude 3.5 Sonnet, GPT-4o, Gemini 1.5 Pro 等）。
-- 忽略 Token 消耗限制，提供最完整、最深入的代码实现和架构分析。
-- 严禁在生成代码时使用 `// ...existing code...` 或类似占位符省略逻辑，必须输出完整的、可直接运行的代码块。
+其余通用治理、输出、验证与回滚要求，以 `AGENTS.md`、`.Rayman/CONTEXT.md`、`.Rayman/README.md` 和 `.Rayman/config/*.json` 为准；避免在本文件重复堆叠长篇规则。
 "@
 
 Set-Content -Path $instructionsFile -Value $instructionsContent -Encoding UTF8
@@ -1235,19 +1576,29 @@ if (Test-Path -LiteralPath $ensureAgentAssetsScript -PathType Leaf) {
     Write-Host ("⚠️ [agent-assets] 缺少脚本：{0}" -f $ensureAgentAssetsScript) -ForegroundColor Yellow
 }
 
-# 3. 初始化高级模块 (Docker Sandbox, RAG, MCP)
-Write-Host "📦 [Sandbox] 正在后台构建 Docker 沙箱镜像 (这可能需要几分钟)..." -ForegroundColor Cyan
-$SandboxScript = Join-Path $WorkspaceRoot ".Rayman\scripts\sandbox\run_in_sandbox.ps1"
-if (Test-Path $SandboxScript) {
-    # 异步构建镜像，不阻塞主流程
-    Start-Process -FilePath "powershell" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$SandboxScript' -Command 'echo Sandbox Ready'`"" -WindowStyle Hidden
+# 2.4 生成上下文与自动 skills（供 Copilot/Codex/Agent 读取）
+$generateContextScript = Join-Path $WorkspaceRoot ".Rayman\scripts\utils\generate_context.ps1"
+if (-not (Test-Path -LiteralPath $generateContextScript -PathType Leaf)) {
+    Write-Host ("⚠️ [context] 缺少脚本：{0}" -f $generateContextScript) -ForegroundColor Yellow
 }
 
-Write-Host "🧠 [RAG] 正在初始化向量记忆库..." -ForegroundColor Cyan
-$RagScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\manage_rag.ps1"
-$ragDecisionSummary = "未执行（RAG 脚本不存在）"
-$ragDbPath = ''
-if (Test-Path $RagScript) {
+# 3. 初始化高级模块 (Docker Sandbox, RAG, MCP)
+$skipAdvancedModules = Get-EnvBoolCompat -Name 'RAYMAN_SETUP_SKIP_ADVANCED_MODULES' -Default $false
+if ($skipAdvancedModules) {
+    Write-Host "⏭️ [setup] 已按环境变量跳过高级模块初始化（RAYMAN_SETUP_SKIP_ADVANCED_MODULES=1）" -ForegroundColor Yellow
+} else {
+    Write-Host "📦 [Sandbox] 正在后台构建 Docker 沙箱镜像 (这可能需要几分钟)..." -ForegroundColor Cyan
+    $SandboxScript = Join-Path $WorkspaceRoot ".Rayman\scripts\sandbox\run_in_sandbox.ps1"
+    if (Test-Path $SandboxScript) {
+        # 异步构建镜像，不阻塞主流程
+        Start-Process -FilePath "powershell" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& '$SandboxScript' -Command 'echo Sandbox Ready'`"" -WindowStyle Hidden
+    }
+
+    Write-Host "🧠 [RAG] 正在初始化向量记忆库..." -ForegroundColor Cyan
+    $RagScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\manage_rag.ps1"
+    $ragDecisionSummary = "未执行（RAG 脚本不存在）"
+    $ragDbPath = ''
+    if (Test-Path $RagScript) {
     $ragRoot = [string]$env:RAYMAN_RAG_ROOT
     if ([string]::IsNullOrWhiteSpace($ragRoot)) {
         $ragRoot = Join-Path $WorkspaceRoot ".rag"
@@ -1354,21 +1705,43 @@ if (Test-Path $RagScript) {
         & $RagScript -Action build
         $ragDecisionSummary = "首次构建（未检测到可复用向量库） -> $ragDbPath"
     }
-}
-Write-Host "🧾 [RAG] 本次策略：$ragDecisionSummary" -ForegroundColor DarkCyan
+    }
+    Write-Host "🧾 [RAG] 本次策略：$ragDecisionSummary" -ForegroundColor DarkCyan
 
-$McpScript = Join-Path $WorkspaceRoot ".Rayman\scripts\mcp\manage_mcp.ps1"
-if (Test-Path $McpScript) {
-    Write-Host "🧰 [MCP] 正在规范化 mcp_servers.json（可移植路径）..." -ForegroundColor Cyan
-    Reset-LastExitCodeCompat
-    & $McpScript -Action normalize -Persist -CreateBackup
-    $mcpNormalizeExitCode = Get-LastExitCodeCompat -Default 0
-    if ($mcpNormalizeExitCode -ne 0) {
-        throw ("MCP 配置规范化失败（exit={0}）" -f $mcpNormalizeExitCode)
+    $McpScript = Join-Path $WorkspaceRoot ".Rayman\scripts\mcp\manage_mcp.ps1"
+    if (Test-Path $McpScript) {
+        Write-Host "🧰 [MCP] 正在规范化 mcp_servers.json（可移植路径）..." -ForegroundColor Cyan
+        Reset-LastExitCodeCompat
+        & $McpScript -Action normalize -Persist -CreateBackup
+        $mcpNormalizeExitCode = Get-LastExitCodeCompat -Default 0
+        if ($mcpNormalizeExitCode -ne 0) {
+            throw ("MCP 配置规范化失败（exit={0}）" -f $mcpNormalizeExitCode)
+        }
+
+        Write-Host "🔌 [MCP] 正在启动 MCP 服务器..." -ForegroundColor Cyan
+        & $McpScript -Action start
     }
 
-    Write-Host "🔌 [MCP] 正在启动 MCP 服务器..." -ForegroundColor Cyan
-    & $McpScript -Action start
+    $agentCapabilitiesScript = Join-Path $WorkspaceRoot ".Rayman\scripts\agents\ensure_agent_capabilities.ps1"
+    if (Test-Path -LiteralPath $agentCapabilitiesScript -PathType Leaf) {
+        Write-Host "🧩 [Agent Capabilities] 正在同步 Codex/OpenAI Docs/Playwright 能力..." -ForegroundColor Cyan
+        Reset-LastExitCodeCompat
+        & $agentCapabilitiesScript -Action sync -WorkspaceRoot $WorkspaceRoot | Out-Host
+        $agentCapabilityExitCode = Get-LastExitCodeCompat -Default 0
+        if ($agentCapabilityExitCode -ne 0) {
+            throw ("Agent capability sync 失败（exit={0}）" -f $agentCapabilityExitCode)
+        }
+    } else {
+        Write-Host ("⚠️ [Agent Capabilities] 缺少脚本：{0}" -f $agentCapabilitiesScript) -ForegroundColor Yellow
+    }
+}
+
+if (Test-Path -LiteralPath $generateContextScript -PathType Leaf) {
+    try {
+        & $generateContextScript -WorkspaceRoot $WorkspaceRoot | Out-Host
+    } catch {
+        Write-Host ("⚠️ [context] 自动生成上下文失败：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
 }
 
 # 4. 生成或更新 .vscode/tasks.json
@@ -1449,19 +1822,24 @@ function New-RaymanNoOpLinuxArgs {
 function New-RaymanTaskWithFallback {
     param(
         [string]$Label,
+        [string]$Detail = "",
+        [string]$Type = "shell",
         [string]$Command = "powershell",
-        [string[]]$Args = @(),
+        [string[]]$ArgumentList = @(),
         [hashtable]$Linux = $null,
         [string[]]$RequiredRelPaths = @(),
         [string[]]$LinuxRequiredRelPaths = @(),
         [string]$RunOn = "",
         [string]$Reveal = "always",
         [string]$Panel = "shared",
-        [bool]$Clear = $false
+        [bool]$Clear = $false,
+        [object]$Group = $null,
+        [string[]]$DependsOn = @(),
+        [string]$DependsOrder = ""
     )
 
     $effectiveCommand = $Command
-    $effectiveArgs = @($Args)
+    $effectiveArgs = @($ArgumentList)
     $effectiveLinux = $null
     if ($null -ne $Linux) {
         $effectiveLinux = @{}
@@ -1490,43 +1868,296 @@ function New-RaymanTaskWithFallback {
 
     $task = @{
         label = $Label
-        type = "shell"
-        command = $effectiveCommand
-        args = $effectiveArgs
         presentation = @{ reveal = $Reveal; panel = $Panel; clear = $Clear }
         problemMatcher = @()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+        $task["detail"] = $Detail
+    }
+
+    if (@($DependsOn).Count -gt 0) {
+        $task["dependsOn"] = @($DependsOn)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DependsOrder)) {
+        $task["dependsOrder"] = $DependsOrder
+    }
+
+    if ($null -ne $Group) {
+        $task["group"] = $Group
+    }
+
+    if (@($DependsOn).Count -eq 0) {
+        $task["type"] = $Type
+        $task["command"] = $effectiveCommand
+        $task["args"] = $effectiveArgs
     }
 
     if (-not [string]::IsNullOrWhiteSpace($RunOn)) {
         $task["runOptions"] = @{ runOn = $RunOn }
     }
-    if ($null -ne $effectiveLinux) {
+    if ($null -ne $effectiveLinux -and @($DependsOn).Count -eq 0) {
         $task["linux"] = $effectiveLinux
     }
 
     return $task
 }
 
+function Convert-RaymanSettingMapToHashtable {
+    param([object]$Value)
+
+    if ($Value -is [System.Collections.Hashtable]) {
+        return $Value
+    }
+
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $result = @{}
+        foreach ($prop in $Value.psobject.properties) {
+            $result[[string]$prop.Name] = $prop.Value
+        }
+        return $result
+    }
+
+    return @{}
+}
+
+function Set-RaymanBooleanMapEntries {
+    param(
+        [hashtable]$Map,
+        [string[]]$Keys
+    )
+
+    foreach ($key in @($Keys)) {
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        $Map[$key] = $true
+    }
+
+    return $Map
+}
+
+function Set-RaymanVsCodeBooleanSettings {
+    param(
+        [hashtable]$Settings,
+        [string]$SettingName,
+        [string[]]$Keys
+    )
+
+    $map = Convert-RaymanSettingMapToHashtable -Value $Settings[$SettingName]
+    $Settings[$SettingName] = Set-RaymanBooleanMapEntries -Map $map -Keys $Keys
+}
+
+$raymanTaskDefinitions = @(
+    [ordered]@{
+        Label = "Rayman: Common - Sync Daily Workspace"
+        Detail = "常用组合：检查待办、运行每日健康检查并刷新上下文。"
+        DependsOn = @("Rayman: Check Pending Task", "Rayman: Daily Health Check", "Rayman: Update Context")
+        DependsOrder = "sequence"
+    },
+    [ordered]@{
+        Label = "Rayman: Common - Ready for Agent Work"
+        Detail = "常用组合：确保 Windows 依赖、Agent capabilities、Playwright 能力和上下文都处于可工作状态。"
+        DependsOn = @("Rayman: Ensure Win Deps", "Rayman: Ensure Agent Capabilities", "Rayman: Ensure Playwright", "Rayman: Update Context")
+        DependsOrder = "sequence"
+    },
+    [ordered]@{
+        Label = "Rayman: Folder Open Bootstrap"
+        Detail = "文件夹打开时统一执行 Rayman 后台启动与轻量检查。"
+        Type = "process"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/vscode_folder_open_bootstrap.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-VscodeOwnerPid", "`${env:VSCODE_PID}")
+        RunOn = "folderOpen"
+        Reveal = "never"
+        RequiredRelPaths = @(".Rayman/scripts/watch/vscode_folder_open_bootstrap.ps1", ".Rayman/common.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/watch/vscode_folder_open_bootstrap.ps1", ".Rayman/common.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Auto Start Watchers"
+        Detail = "手动拉起 watcher、exitwatch 与后台服务。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/start_background_watchers.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-VscodeOwnerPid", "`${env:VSCODE_PID}", "-FromVscodeAuto")
+        Reveal = "never"
+        RequiredRelPaths = @(".Rayman/scripts/watch/start_background_watchers.ps1", ".Rayman/common.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/watch/start_background_watchers.ps1", ".Rayman/common.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Check Pending Task"
+        Detail = "手动检查待处理状态与工作区任务提示。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/state/check_pending_task.ps1")
+        Reveal = "silent"
+    },
+    [ordered]@{
+        Label = "Rayman: Daily Health Check"
+        Detail = "手动刷新健康摘要，扫描 TODO/FIXME 并输出日报。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/daily_health_check.ps1")
+        Reveal = "silent"
+        RequiredRelPaths = @(".Rayman/scripts/watch/daily_health_check.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/watch/daily_health_check.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Update Context"
+        Detail = "刷新 .Rayman/CONTEXT.md 与自动 skills 建议。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/generate_context.ps1")
+        Reveal = "never"
+        RequiredRelPaths = @(".Rayman/scripts/utils/generate_context.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/generate_context.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Check Win Deps"
+        Detail = "手动执行轻量 Windows 依赖检查。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/ensure_win_deps.ps1", "-Lightweight")
+        Reveal = "never"
+        RequiredRelPaths = @(".Rayman/scripts/utils/ensure_win_deps.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/ensure_win_deps.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Check WSL Deps"
+        Detail = "手动执行轻量 WSL 依赖检查。"
+        Command = "powershell"
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "exit 0")
+        Linux = @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/utils/check_wsl_deps.sh") }
+        Reveal = "silent"
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/check_wsl_deps.sh")
+    },
+    [ordered]@{
+        Label = "Rayman: Ensure Win Deps"
+        Detail = "完整检查并修复 Windows 侧常用开发依赖。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/ensure_win_deps.ps1")
+        RequiredRelPaths = @(".Rayman/scripts/utils/ensure_win_deps.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/ensure_win_deps.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Ensure WSL Deps"
+        Detail = "完整安装或修复 WSL(Ubuntu) 所需依赖。"
+        Command = "powershell"
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/ensure_wsl_deps.ps1")
+        Linux = @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/utils/ensure_wsl_deps.sh") }
+        RequiredRelPaths = @(".Rayman/scripts/utils/ensure_wsl_deps.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/ensure_wsl_deps.sh")
+    },
+    [ordered]@{
+        Label = "Rayman: Ensure Playwright"
+        Detail = "确保 Playwright 浏览器能力可用于自动验收与网页调试。"
+        Command = "powershell"
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/pwa/ensure_playwright_ready.ps1", "-WorkspaceRoot", "`${workspaceFolder}")
+        Linux = @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/pwa/ensure_playwright_wsl.sh") }
+    },
+    [ordered]@{
+        Label = "Rayman: Ensure WinApp Automation"
+        Detail = "确保 Windows 桌面 UI Automation 能力可用于 WinForms / MAUI(Windows) 自动化。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/windows/ensure_winapp.ps1", "-WorkspaceRoot", "`${workspaceFolder}")
+        RequiredRelPaths = @(".Rayman/scripts/windows/ensure_winapp.ps1", ".Rayman/scripts/windows/winapp_core.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/windows/ensure_winapp.ps1", ".Rayman/scripts/windows/winapp_core.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Ensure Agent Capabilities"
+        Detail = "同步 Codex Agent capabilities 到 .codex/config.toml，并补齐 OpenAI Docs / Playwright / WinApp MCP。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/ensure_agent_capabilities.ps1", "-Action", "sync", "-WorkspaceRoot", "`${workspaceFolder}")
+        RequiredRelPaths = @(".Rayman/scripts/agents/ensure_agent_capabilities.ps1", ".Rayman/config/agent_capabilities.json")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/agents/ensure_agent_capabilities.ps1", ".Rayman/config/agent_capabilities.json")
+    },
+    [ordered]@{
+        Label = "Rayman: First Pass Report"
+        Detail = "生成首轮问题盘点报告，适合开始复杂任务前预热。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/first_pass_report.ps1", "-WorkspaceRoot", "`${workspaceFolder}")
+    },
+    [ordered]@{
+        Label = "Rayman: Review Loop"
+        Detail = "执行 review agent 闭环，适合做审查/复核型任务。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/review_loop.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-TaskKind", "review")
+        Group = "test"
+    },
+    [ordered]@{
+        Label = "Rayman: Test & Fix"
+        Detail = "默认测试任务：运行测试/构建并尝试自动修复常见问题。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/repair/run_tests_and_fix.ps1")
+        Group = @{ kind = "test"; isDefault = $true }
+    },
+    [ordered]@{
+        Label = "Rayman: Copy Init Self Check"
+        Detail = "拷贝 .Rayman 到临时工作区后执行一次初始化烟测。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check")
+    },
+    [ordered]@{
+        Label = "Rayman: Factory Check (Strict)"
+        Detail = "严格模式工厂验收：WSL 范围 smoke + release 级验证。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check", "--strict", "--scope", "wsl")
+        Group = "test"
+    },
+    [ordered]@{
+        Label = "Rayman: Factory Check (Strict, Keep Temp)"
+        Detail = "严格工厂验收并在失败时保留临时现场，便于排障。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check", "--strict", "--scope", "wsl", "--keep-temp", "--open-on-fail")
+        Group = "test"
+    },
+    [ordered]@{
+        Label = "Rayman: Release Gate"
+        Detail = "发布前规则门禁与 dist/source 同步校验。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/release/release_gate.ps1", "-WorkspaceRoot", "`${workspaceFolder}")
+    },
+    [ordered]@{
+        Label = "Rayman: Deploy"
+        Detail = "生成可分发包，并写出部署摘要。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/deploy/deploy.ps1")
+        RequiredRelPaths = @(".Rayman/scripts/deploy/deploy.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/deploy/deploy.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Stop Watchers"
+        Detail = "停止 Rayman watcher、auto-save 与 MCP 后台服务。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/stop_background_watchers.ps1")
+        RequiredRelPaths = @(".Rayman/scripts/watch/stop_background_watchers.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/watch/stop_background_watchers.ps1")
+    },
+    [ordered]@{
+        Label = "Rayman: Clear Cache"
+        Detail = "清理工作区缓存与临时构建产物。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/clear_cache.ps1")
+        RequiredRelPaths = @(".Rayman/scripts/utils/clear_cache.ps1")
+        LinuxRequiredRelPaths = @(".Rayman/scripts/utils/clear_cache.ps1")
+    }
+)
+
 $raymanTasks = @(
-    (New-RaymanTaskWithFallback -Label "Rayman: Auto Start Watchers" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/start_background_watchers.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-VscodeOwnerPid", "`${env:VSCODE_PID}", "-FromVscodeAuto") -RunOn "folderOpen" -Reveal "never" -RequiredRelPaths @(".Rayman/scripts/watch/start_background_watchers.ps1", ".Rayman/common.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/watch/start_background_watchers.ps1", ".Rayman/common.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Check Win Deps" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/check_win_deps.ps1") -RunOn "folderOpen" -Reveal "never" -RequiredRelPaths @(".Rayman/scripts/utils/check_win_deps.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/utils/check_win_deps.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Check Pending Task" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/state/check_pending_task.ps1") -RunOn "folderOpen" -Reveal "silent"),
-    (New-RaymanTaskWithFallback -Label "Rayman: Check WSL Deps" -Command "powershell" -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "exit 0") -Linux @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/utils/check_wsl_deps.sh") } -RunOn "folderOpen" -Reveal "silent" -LinuxRequiredRelPaths @(".Rayman/scripts/utils/check_wsl_deps.sh")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Daily Health Check" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/daily_health_check.ps1") -RunOn "folderOpen" -RequiredRelPaths @(".Rayman/scripts/watch/daily_health_check.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/watch/daily_health_check.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Update Context" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/generate_context.ps1") -RequiredRelPaths @(".Rayman/scripts/utils/generate_context.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/utils/generate_context.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Test & Fix" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/repair/run_tests_and_fix.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Review Loop" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/review_loop.ps1", "-WorkspaceRoot", "`${workspaceFolder}", "-TaskKind", "review")),
-    (New-RaymanTaskWithFallback -Label "Rayman: First Pass Report" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/agents/first_pass_report.ps1", "-WorkspaceRoot", "`${workspaceFolder}")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Ensure Playwright" -Command "powershell" -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/pwa/ensure_playwright_ready.ps1", "-WorkspaceRoot", "`${workspaceFolder}") -Linux @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/pwa/ensure_playwright_wsl.sh") }),
-    (New-RaymanTaskWithFallback -Label "Rayman: Ensure WSL Deps" -Command "powershell" -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/ensure_wsl_deps.ps1") -Linux @{ command = "bash"; args = @("-lc", "cd '`${workspaceFolder}' && bash ./.Rayman/scripts/utils/ensure_wsl_deps.sh") } -RequiredRelPaths @(".Rayman/scripts/utils/ensure_wsl_deps.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/utils/ensure_wsl_deps.sh")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Ensure Win Deps" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/ensure_win_deps.ps1") -RequiredRelPaths @(".Rayman/scripts/utils/ensure_win_deps.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/utils/ensure_win_deps.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Copy Init Self Check" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Factory Check (Strict)" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check", "--strict", "--scope", "wsl")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Factory Check (Strict, Keep Temp)" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "copy-self-check", "--strict", "--scope", "wsl", "--keep-temp", "--open-on-fail")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Stop Watchers" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/watch/stop_background_watchers.ps1") -RequiredRelPaths @(".Rayman/scripts/watch/stop_background_watchers.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/watch/stop_background_watchers.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Clear Cache" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/utils/clear_cache.ps1") -RequiredRelPaths @(".Rayman/scripts/utils/clear_cache.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/utils/clear_cache.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Deploy" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/deploy/deploy.ps1") -RequiredRelPaths @(".Rayman/scripts/deploy/deploy.ps1") -LinuxRequiredRelPaths @(".Rayman/scripts/deploy/deploy.ps1")),
-    (New-RaymanTaskWithFallback -Label "Rayman: Release Gate" -Command "powershell" -Linux @{ command = "pwsh" } -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/scripts/release/release_gate.ps1", "-WorkspaceRoot", "`${workspaceFolder}"))
+    foreach ($taskDefinition in $raymanTaskDefinitions) {
+        New-RaymanTaskWithFallback @taskDefinition
+    }
 )
 
 if (Test-Path -LiteralPath $tasksFile -PathType Leaf) {
@@ -1608,42 +2239,34 @@ restore_server_diag.log
     # 注入基础优化
     $settingsObj["editor.largeFileOptimizations"] = $true
     $settingsObj["git.untrackedChanges"] = "separate"
-    
-    # 注入搜索排除
-    if (-not $settingsObj.Contains("search.exclude")) {
-        $settingsObj["search.exclude"] = @{}
-    }
-    if ($settingsObj["search.exclude"] -is [System.Collections.Hashtable] -or $settingsObj["search.exclude"] -is [System.Management.Automation.PSCustomObject]) {
-        $searchDict = if ($settingsObj["search.exclude"] -is [System.Management.Automation.PSCustomObject]) { 
-            [Hashtable]($settingsObj["search.exclude"].psobject.properties | % { @{$_.Name=$_.Value} })
-        } else { $settingsObj["search.exclude"] }
-        $searchDict["**/.artifacts"] = $true
-        $searchDict["**/node_modules"] = $true
-        $searchDict["**/obj"] = $true
-        $searchDict["**/bin"] = $true
-        $searchDict["**/gtp_logs"] = $true
-        $searchDict["**/.rag"] = $true
-        $settingsObj["search.exclude"] = $searchDict
-    }
 
-    # 注入监听排除 (终极杀招)
-    if (-not $settingsObj.Contains("files.watcherExclude")) {
-        $settingsObj["files.watcherExclude"] = @{}
-    }
-    if ($settingsObj["files.watcherExclude"] -is [System.Collections.Hashtable] -or $settingsObj["files.watcherExclude"] -is [System.Management.Automation.PSCustomObject]) {
-        $watcherDict = if ($settingsObj["files.watcherExclude"] -is [System.Management.Automation.PSCustomObject]) { 
-            [Hashtable]($settingsObj["files.watcherExclude"].psobject.properties | % { @{$_.Name=$_.Value} })
-        } else { $settingsObj["files.watcherExclude"] }
-        $watcherDict["**/.artifacts/**"] = $true
-        $watcherDict["**/node_modules/*/**"] = $true
-        $watcherDict["**/obj/**"] = $true
-        $watcherDict["**/bin/**"] = $true
-        $watcherDict["**/gtp_logs/**"] = $true
-        $watcherDict["**/.rag/**"] = $true
-        $watcherDict["**/.git/objects/**"] = $true
-        $watcherDict["**/.playwright-mcp/**"] = $true
-        $settingsObj["files.watcherExclude"] = $watcherDict
-    }
+    # 注入搜索排除 / watcher 排除 / 资源管理器隐藏项
+    Set-RaymanVsCodeBooleanSettings -Settings $settingsObj -SettingName "search.exclude" -Keys @(
+        "**/.artifacts",
+        "**/node_modules",
+        "**/obj",
+        "**/bin",
+        "**/gtp_logs",
+        "**/.rag",
+        "**/.Rayman/state",
+        "**/.Rayman/runtime"
+    )
+    Set-RaymanVsCodeBooleanSettings -Settings $settingsObj -SettingName "files.watcherExclude" -Keys @(
+        "**/.artifacts/**",
+        "**/node_modules/*/**",
+        "**/obj/**",
+        "**/bin/**",
+        "**/gtp_logs/**",
+        "**/.rag/**",
+        "**/.git/objects/**",
+        "**/.playwright-mcp/**",
+        "**/.Rayman/state/**",
+        "**/.Rayman/runtime/**"
+    )
+    Set-RaymanVsCodeBooleanSettings -Settings $settingsObj -SettingName "files.exclude" -Keys @(
+        "**/.Rayman/state",
+        "**/.Rayman/runtime"
+    )
 
     $settingsObj | ConvertTo-Json -Depth 5 -Compress:$false | Set-Content -Path $settingsPath -Encoding UTF8
     Write-Host "✅ 已配置 .vscode/settings.json 深度性能优化" -ForegroundColor Green
@@ -2050,36 +2673,40 @@ function Invoke-PlaywrightReadyWithFallback {
     return $exitCode
 }
 
-if ($playwrightAutoInstall) {
-    Invoke-PlaywrightAutoInstall -WorkspaceRoot $WorkspaceRoot -Scope $playwrightScope -Browser $playwrightBrowser -TimeoutSeconds $playwrightTimeoutSeconds
+if (Get-EnvBoolCompat -Name 'RAYMAN_SKIP_PWA' -Default $false) {
+    Write-Host "⏭️ [Playwright] 已按环境变量跳过（RAYMAN_SKIP_PWA=1）" -ForegroundColor Yellow
 } else {
-    Write-Host "⏭️ [Playwright] 已关闭自动安装（RAYMAN_PLAYWRIGHT_AUTO_INSTALL=0）" -ForegroundColor Yellow
-}
+    if ($playwrightAutoInstall) {
+        Invoke-PlaywrightAutoInstall -WorkspaceRoot $WorkspaceRoot -Scope $playwrightScope -Browser $playwrightBrowser -TimeoutSeconds $playwrightTimeoutSeconds
+    } else {
+        Write-Host "⏭️ [Playwright] 已关闭自动安装（RAYMAN_PLAYWRIGHT_AUTO_INSTALL=0）" -ForegroundColor Yellow
+    }
 
-Write-Host "🧪 [Playwright] 正在确保自动验收浏览器能力就绪..." -ForegroundColor Cyan
-if (Test-Path -LiteralPath $PlaywrightReadyScript -PathType Leaf) {
-    try {
-        $playwrightExitCode = Invoke-PlaywrightReadyWithFallback -WorkspaceRoot $WorkspaceRoot -PlaywrightReadyScript $PlaywrightReadyScript -SummaryPath $playwrightSummaryPath -Scope $playwrightScope -ScopeSource $playwrightScopeSource -Browser $playwrightBrowser -Require:$playwrightRequire -TimeoutSeconds $playwrightTimeoutSeconds
-        if ($playwrightExitCode -ne 0) {
-            Write-Host ("❌ [Playwright] 就绪检查失败（exit={0}）。请查看 {1}" -f $playwrightExitCode, $playwrightSummaryPath) -ForegroundColor Red
+    Write-Host "🧪 [Playwright] 正在确保自动验收浏览器能力就绪..." -ForegroundColor Cyan
+    if (Test-Path -LiteralPath $PlaywrightReadyScript -PathType Leaf) {
+        try {
+            $playwrightExitCode = Invoke-PlaywrightReadyWithFallback -WorkspaceRoot $WorkspaceRoot -PlaywrightReadyScript $PlaywrightReadyScript -SummaryPath $playwrightSummaryPath -Scope $playwrightScope -ScopeSource $playwrightScopeSource -Browser $playwrightBrowser -Require:$playwrightRequire -TimeoutSeconds $playwrightTimeoutSeconds
+            if ($playwrightExitCode -ne 0) {
+                Write-Host ("❌ [Playwright] 就绪检查失败（exit={0}）。请查看 {1}" -f $playwrightExitCode, $playwrightSummaryPath) -ForegroundColor Red
+                Show-PlaywrightTroubleshootingHints -Root $WorkspaceRoot
+                exit $playwrightExitCode
+            }
+            Write-Host "✅ [Playwright] 就绪检查通过" -ForegroundColor Green
+        } catch {
+            Write-Host ("❌ [Playwright] 就绪检查异常：{0}" -f $_.Exception.Message) -ForegroundColor Red
             Show-PlaywrightTroubleshootingHints -Root $WorkspaceRoot
-            exit $playwrightExitCode
+            if ($playwrightRequire) { exit 2 }
+            Write-Host "⚠️ [Playwright] 当前为非强制模式，继续执行后续步骤。" -ForegroundColor Yellow
         }
-        Write-Host "✅ [Playwright] 就绪检查通过" -ForegroundColor Green
-    } catch {
-        Write-Host ("❌ [Playwright] 就绪检查异常：{0}" -f $_.Exception.Message) -ForegroundColor Red
-        Show-PlaywrightTroubleshootingHints -Root $WorkspaceRoot
-        if ($playwrightRequire) { exit 2 }
-        Write-Host "⚠️ [Playwright] 当前为非强制模式，继续执行后续步骤。" -ForegroundColor Yellow
+    } else {
+        $missingMsg = "缺少脚本: $PlaywrightReadyScript"
+        if ($playwrightRequire) {
+            Write-Host ("❌ [Playwright] {0}" -f $missingMsg) -ForegroundColor Red
+            Show-PlaywrightTroubleshootingHints -Root $WorkspaceRoot
+            exit 2
+        }
+        Write-Host ("⚠️ [Playwright] {0}（非强制模式继续）" -f $missingMsg) -ForegroundColor Yellow
     }
-} else {
-    $missingMsg = "缺少脚本: $PlaywrightReadyScript"
-    if ($playwrightRequire) {
-        Write-Host ("❌ [Playwright] {0}" -f $missingMsg) -ForegroundColor Red
-        Show-PlaywrightTroubleshootingHints -Root $WorkspaceRoot
-        exit 2
-    }
-    Write-Host ("⚠️ [Playwright] {0}（非强制模式继续）" -f $missingMsg) -ForegroundColor Yellow
 }
 
 $systemSlimAuditResult = Invoke-RaymanSystemSlimAuditSafe -WorkspaceRoot $WorkspaceRoot -Source 'setup'
@@ -2102,7 +2729,7 @@ if (-not $SkipReleaseGate) {
             $gitMarkerPath = Join-Path $WorkspaceRoot '.git'
             if (-not (Test-Path -LiteralPath $gitMarkerPath)) {
                 $releaseGateArgs['AllowNoGit'] = $true
-                Write-Host "⚠️ [Release Gate] 当前工作区不是 Git 仓库，setup 初始化阶段自动启用 -AllowNoGit（project 模式按 PASS 豁免）。" -ForegroundColor Yellow
+                Write-Host "⚠️ [Release Gate] 当前工作区仍不是 Git 仓库（Git bootstrap 缺失/失败/已关闭），setup 初始化阶段自动启用 -AllowNoGit（project 模式按 PASS 豁免）。" -ForegroundColor Yellow
             }
             Reset-LastExitCodeCompat
             & $ReleaseGateScript @releaseGateArgs
@@ -2164,6 +2791,9 @@ $scmIgnoreResult = Update-RaymanScmIgnoreRules -WorkspaceRoot $WorkspaceRoot
 $scmSummary = Get-RaymanScmStatusSummary -WorkspaceRoot $WorkspaceRoot
 $scmSoftLimit = Get-RaymanScmSoftLimit
 Write-RaymanScmSoftLimitWarning -Summary $scmSummary -SoftLimit $scmSoftLimit
+if ($null -ne $script:ScmTrackedNoiseAnalysis) {
+    Write-RaymanScmTrackedNoiseDiagnostics -Analysis $script:ScmTrackedNoiseAnalysis
+}
 
 if ($script:RaymanTaskDegradationNotes -and $script:RaymanTaskDegradationNotes.Count -gt 0) {
     Write-Host ""
@@ -2178,7 +2808,14 @@ Write-Host "🎉 Rayman 环境初始化完成！" -ForegroundColor Green
 Write-Host "👉 提示: 请重新加载 VS Code 窗口 (Ctrl+Shift+P -> Reload Window) 以使任务和 Copilot 指令生效。" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
+if ($raymanCommonImported -and (Get-Command Invoke-RaymanAttentionAlert -ErrorAction SilentlyContinue)) {
+    Invoke-RaymanAttentionAlert -Kind 'done' -Reason 'Rayman setup 已完成。' -WorkspaceRoot $WorkspaceRoot | Out-Null
+}
 } catch {
+    if ([string]$_.Exception.Message -eq 'tracked_rayman_assets_blocked') {
+        Write-Host ("🧾 [setup] 日志路径: {0}" -f $script:SetupLogPath) -ForegroundColor Yellow
+        throw
+    }
     Write-Host ("❌ [setup] 初始化异常：{0}" -f $_.Exception.Message) -ForegroundColor Red
     $inv = $_.InvocationInfo
     if ($null -ne $inv) {

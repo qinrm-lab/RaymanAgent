@@ -12,6 +12,14 @@ function Warn([string]$Message) { Write-Host ("[win-check] {0}" -f $Message) -Fo
 
 & (Join-Path $WorkspaceRoot '.Rayman\win-preflight.ps1') -WorkspaceRoot $WorkspaceRoot
 
+$agentContract = Join-Path $WorkspaceRoot '.Rayman\scripts\agents\check_agent_contract.ps1'
+if (Test-Path -LiteralPath $agentContract -PathType Leaf) {
+  Info 'run agent contract check'
+  & $agentContract -WorkspaceRoot $WorkspaceRoot
+} else {
+  Warn ("agent contract script not found: {0}" -f $agentContract)
+}
+
 $releaseGate = Join-Path $WorkspaceRoot '.Rayman\scripts\release\release_gate.ps1'
 if (Test-Path -LiteralPath $releaseGate -PathType Leaf) {
   Info 'run standard release gate'

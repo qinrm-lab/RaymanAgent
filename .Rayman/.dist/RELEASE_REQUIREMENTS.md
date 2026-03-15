@@ -1,6 +1,6 @@
 # Rayman 发布验收标准（Release Requirements）
 
-> 当前版本： v159
+> 当前版本： v161
 
 > 适用范围：本工作区内的 **Rayman 工具链发布包（vXXX.zip）**。
 >

@@ -11,6 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # note: keep this script fully PowerShell 5.1 compatible
+$releaseGateStartedAt = Get-Date
 
 function Info([string]$m){ Write-Host ("ℹ️  [release-gate] {0}" -f $m) -ForegroundColor Cyan }
 function Ok([string]$m){ Write-Host ("✅ [release-gate] {0}" -f $m) -ForegroundColor Green }
@@ -36,11 +37,21 @@ function Add-Result {
 function Get-QuickFixCommandsForCheck([string]$CheckName) {
   switch ($CheckName) {
     'Git工作区检测' { return @('git init') }
+    'Rayman资产Git跟踪噪声' { return @('git rm -r --cached -- .Rayman .SolutionName .cursorrules .clinerules .rayman.env.ps1 .github/copilot-instructions.md') }
+    '非Rayman产物Git跟踪噪声' { return @('git rm -r --cached -- .dotnet10 dist publish .tmp .temp') }
     'Dist镜像同步' { return @('.\\.Rayman\\rayman.ps1 dist-sync') }
     '版本一致性' { return @('.\\.Rayman\\rayman.ps1 release-gate -Mode project') }
     'RAG路径隔离' { return @('$env:RAYMAN_RAG_ROOT=".rag"', '.\\.Rayman\\rayman.ps1 migrate-rag') }
     'MCP配置可移植性' { return @('.\\.Rayman\\scripts\\mcp\\manage_mcp.ps1 -Action status') }
     'Playwright摘要结构' { return @('.\\.Rayman\\rayman.ps1 ensure-playwright') }
+    'Agent能力同步' { return @('.\\.Rayman\\rayman.ps1 agent-capabilities --sync') }
+    'Windows桌面自动化能力' { return @('.\\.Rayman\\rayman.ps1 ensure-winapp') }
+    '快速契约Lane' { return @('bash ./.Rayman/scripts/testing/run_fast_contract.sh') }
+    '项目快速门禁' { return @('.\\.Rayman\\rayman.ps1 fast-gate') }
+    '项目浏览器门禁' { return @('.\\.Rayman\\rayman.ps1 browser-gate') }
+    'PowerShell逻辑单测' { return @('.\\.Rayman\\scripts\\testing\\run_pester_tests.ps1 -WorkspaceRoot "$PWD"') }
+    'Bash逻辑单测' { return @('bash ./.Rayman/scripts/testing/run_bats_tests.sh') }
+    '宿主环境冒烟' { return @('.\\.Rayman\\scripts\\testing\\run_host_smoke.ps1 -WorkspaceRoot "$PWD"') }
     '依赖自动补全默认项' { return @('.\\.Rayman\\setup.ps1') }
     'MCP/RAG最小可用性' { return @('.\\.Rayman\\scripts\\mcp\\manage_mcp.ps1 -Action start', '.\\.Rayman\\scripts\\rag\\manage_rag.ps1 -Action build') }
     '单仓库增强风险快照' { return @('.\\.Rayman\\rayman.ps1 single-repo-upgrade --RiskMode strict --ApproveHighRisk') }
@@ -55,6 +66,22 @@ function Read-JsoncFile([string]$Path) {
   $raw = $raw -replace '(?m)//.*$', ''
   $raw = $raw -replace '(?s)/\*.*?\*/', ''
   return ($raw | ConvertFrom-Json)
+}
+
+function Get-JsonOrNull([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try {
+    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    return $null
+  }
+}
+
+function Get-PropValue([object]$Object, [string]$Name, $Default = $null) {
+  if ($null -eq $Object) { return $Default }
+  $prop = $Object.PSObject.Properties[$Name]
+  if ($null -eq $prop -or $null -eq $prop.Value) { return $Default }
+  return $prop.Value
 }
 
 function Get-FirstMatches([string[]]$Items, [int]$Limit = 5) {
@@ -143,8 +170,41 @@ function Get-DisplayRelativePath([string]$BasePath, [string]$FullPath) {
   return ($full -replace '\\', '/')
 }
 
+function Get-FileHashCompat([string]$Path, [string]$Algorithm = 'SHA1') {
+  $cmd = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+  if ($null -ne $cmd) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm $Algorithm).Hash
+  }
+
+  $alg = [System.Security.Cryptography.HashAlgorithm]::Create($Algorithm)
+  if ($null -eq $alg) {
+    throw ("hash algorithm not supported: {0}" -f $Algorithm)
+  }
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $bytes = $alg.ComputeHash($stream)
+  } finally {
+    try { $stream.Dispose() } catch {}
+    try { $alg.Dispose() } catch {}
+  }
+
+  return ([System.BitConverter]::ToString($bytes)).Replace('-', '')
+}
+
 function Resolve-ChildPowerShellHost {
-  $candidates = @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+  $isWindowsHost = $false
+  try {
+    $isWindowsHost = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+  } catch {
+    $isWindowsHost = $false
+  }
+
+  $candidates = if ($isWindowsHost) {
+    @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+  } else {
+    @('pwsh', 'powershell', 'pwsh.exe', 'powershell.exe')
+  }
   foreach ($name in $candidates) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
@@ -206,6 +266,8 @@ function Invoke-RaymanAutoSnapshotIfNoGit([string]$Root, [string]$Reason) {
   }
 }
 
+. (Join-Path $PSScriptRoot 'release_gate.lib.ps1')
+
 function Get-EnvBoolCompat([string]$Name, [bool]$Default = $false) {
   $raw = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
@@ -219,6 +281,29 @@ function Get-EnvBoolCompat([string]$Name, [bool]$Default = $false) {
     'no' { return $false }
     'off' { return $false }
     default { return $Default }
+  }
+}
+
+function Set-EnvOverride {
+  param(
+    [hashtable]$Backup,
+    [string]$Name,
+    [string]$Value
+  )
+
+  if (-not $Backup.ContainsKey($Name)) {
+    $Backup[$Name] = [string][System.Environment]::GetEnvironmentVariable($Name)
+  }
+  [System.Environment]::SetEnvironmentVariable($Name, $Value)
+}
+
+function Restore-EnvOverrides {
+  param(
+    [hashtable]$Backup
+  )
+
+  foreach ($name in $Backup.Keys) {
+    [System.Environment]::SetEnvironmentVariable($name, [string]$Backup[$name])
   }
 }
 
@@ -305,9 +390,14 @@ function Set-ReleaseGateProxyEnv([string]$Root) {
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $raymanDir = Join-Path $WorkspaceRoot '.Rayman'
+$winAppCorePath = Join-Path $raymanDir 'scripts\windows\winapp_core.ps1'
 $runtimeDir = Join-Path $raymanDir 'runtime'
 if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
   New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+}
+
+if (Test-Path -LiteralPath $winAppCorePath -PathType Leaf) {
+  . $winAppCorePath
 }
 
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
@@ -325,8 +415,8 @@ $results = New-Object System.Collections.Generic.List[object]
 $residualCacheHintEnabled = $false
 $residualCacheHintMessage = ''
 $residualCacheHintPossible = $false
-$expectedTag = 'V159'
-$expectedVersion = 'v159'
+$expectedTag = 'V161'
+$expectedVersion = 'V161'
 
 $allowNoGitByEnv = Get-EnvBoolCompat -Name 'RAYMAN_ALLOW_NO_GIT' -Default $false
 $allowNoGitEffective = ($AllowNoGit -or $allowNoGitByEnv)
@@ -359,6 +449,85 @@ $scanIgnoreRules = @(
   '/\.rayman/scripts/release/release_gate\.ps1$',
   '/\.rayman/\.dist/scripts/release/release_gate\.ps1$'
 )
+$commonScript = Join-Path $raymanDir 'common.ps1'
+$commonImported = $false
+$commonImportError = ''
+if (Test-Path -LiteralPath $commonScript -PathType Leaf) {
+  try {
+    . $commonScript
+    $commonImported = $true
+  } catch {
+    $commonImportError = $_.Exception.Message
+  }
+} else {
+  $commonImportError = ("common.ps1 缺失: {0}" -f $commonScript)
+}
+
+if (-not $isGitWorkspace) {
+  Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status PASS -Detail '当前目录不是 Git 仓库，跳过 tracked Rayman assets 检查' -Action '如需 SCM 噪声治理，请在 Git 工作区中运行'
+  Add-Result -Results $results -Name '非Rayman产物Git跟踪噪声' -Status PASS -Detail '当前目录不是 Git 仓库，跳过 tracked noisy dirs 检查' -Action '如需 SCM 噪声治理，请在 Git 工作区中运行'
+} elseif (-not $commonImported) {
+  $detail = if ([string]::IsNullOrWhiteSpace($commonImportError)) { 'common.ps1 导入失败，无法分析 SCM 跟踪噪声' } else { "common.ps1 导入失败：$commonImportError" }
+  Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status FAIL -Detail $detail -Action '修复 .Rayman/common.ps1 后重试'
+  Add-Result -Results $results -Name '非Rayman产物Git跟踪噪声' -Status FAIL -Detail $detail -Action '修复 .Rayman/common.ps1 后重试'
+} else {
+  $trackedNoise = Get-RaymanScmTrackedNoiseAnalysis -WorkspaceRoot $WorkspaceRoot
+  if (-not [bool]$trackedNoise.available -or -not [bool]$trackedNoise.insideGit) {
+    $detail = ("SCM 噪声分析不可用：status={0}, reason={1}" -f [string]$trackedNoise.status, [string]$trackedNoise.reason)
+    Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status FAIL -Detail $detail -Action '检查 Git 可用性与 common.ps1 分析逻辑'
+    Add-Result -Results $results -Name '非Rayman产物Git跟踪噪声' -Status FAIL -Detail $detail -Action '检查 Git 可用性与 common.ps1 分析逻辑'
+  } else {
+    $workspaceKind = [string]$trackedNoise.workspaceKind
+    $raymanDetail = Format-RaymanScmTrackedNoiseGroups -Groups $trackedNoise.raymanGroups
+    if ([bool]$trackedNoise.raymanBlocked) {
+      $action = if ([string]::IsNullOrWhiteSpace([string]$trackedNoise.raymanCommand)) {
+        if ($workspaceKind -eq 'source') {
+          '移除 source workspace 的本地/生成资产，或在确需临时入库时于 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
+        } else {
+          '移除 external workspace 的 tracked Rayman 本地资产，或在确需临时入库时于 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
+        }
+      } else {
+        if ($workspaceKind -eq 'source') {
+          "{0}；如需临时保留这些本地/生成资产，则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1" -f [string]$trackedNoise.raymanCommand
+        } else {
+          "{0}；external workspace 只建议提交业务源码与 .<SolutionName>/，如需临时保留则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1" -f [string]$trackedNoise.raymanCommand
+        }
+      }
+      $detail = if ($workspaceKind -eq 'source') {
+        "检测到 source workspace 本地/生成资产已被 Git 跟踪: {0}" -f $raymanDetail
+      } else {
+        "检测到 external workspace 的 Rayman 本地资产已被 Git 跟踪: {0}" -f $raymanDetail
+      }
+      Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status FAIL -Detail $detail -Action $action
+    } elseif ([int]$trackedNoise.raymanTrackedCount -gt 0) {
+      $detail = if ($workspaceKind -eq 'source') {
+        "已显式放行 source workspace 本地/生成资产: {0}" -f $raymanDetail
+      } else {
+        "已显式放行 external workspace tracked Rayman assets: {0}" -f $raymanDetail
+      }
+      Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status PASS -Detail $detail -Action '如需恢复阻断，移除 .rayman.env.ps1 中的 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
+    } else {
+      $detail = if ($workspaceKind -eq 'source') {
+        '未发现 source workspace 本地/生成资产 Git 跟踪噪声'
+      } else {
+        '未发现 external workspace Rayman 本地资产 Git 跟踪噪声'
+      }
+      Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status PASS -Detail $detail
+    }
+
+    $advisoryDetail = Format-RaymanScmTrackedNoiseGroups -Groups $trackedNoise.advisoryGroups
+    if ([bool]$trackedNoise.advisoryPresent) {
+      $action = if ([string]::IsNullOrWhiteSpace([string]$trackedNoise.advisoryCommand)) {
+        '如需清理索引，请移除这些常见产物目录的 tracked 状态'
+      } else {
+        ("建议清理索引：{0}" -f [string]$trackedNoise.advisoryCommand)
+      }
+      Add-Result -Results $results -Name '非Rayman产物Git跟踪噪声' -Status WARN -Detail ("检测到 tracked noisy dirs: {0}" -f $advisoryDetail) -Action $action
+    } else {
+      Add-Result -Results $results -Name '非Rayman产物Git跟踪噪声' -Status PASS -Detail '未发现 tracked noisy dirs'
+    }
+  }
+}
 
 Info "开始执行 Release Gate..."
 Info ("运行模式: {0}" -f $Mode)
@@ -397,9 +566,9 @@ if ($Mode -eq 'standard') {
     $versionIssues.Add('missing AGENTS.md/agents.md (resolved path not found)') | Out-Null
   } else {
     $agentsRaw = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8
-    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V159') {
+    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
       $agentsRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $agentsPath
-      $versionIssues.Add(("{0} missing V159 marker" -f $agentsRel)) | Out-Null
+      $versionIssues.Add(("{0} missing V161 marker" -f $agentsRel)) | Out-Null
     }
   }
 }
@@ -408,8 +577,8 @@ if (-not (Test-Path -LiteralPath $agentsTemplatePath -PathType Leaf)) {
   $versionIssues.Add('missing .Rayman/agents.template.md') | Out-Null
 } else {
   $templateRaw = Get-Content -LiteralPath $agentsTemplatePath -Raw -Encoding UTF8
-  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V159') {
-    $versionIssues.Add('.Rayman/agents.template.md missing V159 marker') | Out-Null
+  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
+    $versionIssues.Add('.Rayman/agents.template.md missing V161 marker') | Out-Null
   }
 }
 
@@ -513,6 +682,7 @@ $requiredFiles = @(
   '.Rayman/common.ps1',
   '.Rayman/scripts/release/release_gate.ps1',
   '.Rayman/scripts/release/contract_git_safe.sh',
+  '.Rayman/scripts/release/contract_scm_tracked_noise.sh',
   '.Rayman/scripts/release/contract_nested_repair.sh',
   '.Rayman/scripts/pwa/ensure_playwright_ready.ps1',
   '.Rayman/scripts/pwa/ensure_playwright_wsl.sh',
@@ -520,13 +690,19 @@ $requiredFiles = @(
   '.Rayman/scripts/rag/build_index.py',
   '.Rayman/scripts/mcp/manage_mcp.ps1',
   '.Rayman/scripts/watch/start_background_watchers.ps1',
+  '.Rayman/scripts/watch/vscode_folder_open_bootstrap.ps1',
+  '.Rayman/scripts/watch/daily_health_check.ps1',
   '.Rayman/scripts/state/save_state.ps1',
   '.Rayman/scripts/state/resume_state.ps1',
+  '.Rayman/scripts/utils/diagnose_residual_diagnostics.ps1',
+  '.Rayman/scripts/utils/request_attention.ps1',
   '.Rayman/scripts/agents/ensure_agent_assets.ps1',
+  '.Rayman/scripts/agents/ensure_agent_capabilities.ps1',
   '.Rayman/scripts/agents/dispatch.ps1',
   '.Rayman/scripts/agents/review_loop.ps1',
   '.Rayman/scripts/agents/first_pass_report.ps1',
-  '.Rayman/scripts/agents/prompts_catalog.ps1'
+  '.Rayman/scripts/agents/prompts_catalog.ps1',
+  '.Rayman/config/agent_capabilities.json'
 )
 
 $missing = @()
@@ -582,6 +758,8 @@ if (-not (Test-Path -LiteralPath $tasksPath -PathType Leaf)) {
     if ($tasksJson.tasks) { $labels = @($tasksJson.tasks | ForEach-Object { [string]$_.label }) }
     $requiredLabels = @(
       'Rayman: Auto Start Watchers',
+      'Rayman: Ensure Agent Capabilities',
+      'Rayman: Ensure WinApp Automation',
       'Rayman: Check Win Deps',
       'Rayman: Test & Fix',
       'Rayman: Release Gate'
@@ -602,13 +780,15 @@ if (-not (Test-Path -LiteralPath $tasksPath -PathType Leaf)) {
 
 # 5) RAG 路径隔离（必须位于工作区根目录 .rag/<namespace>）
 $ragPathIssues = @()
-$commonScript = Join-Path $raymanDir 'common.ps1'
 $ragPaths = $null
-if (-not (Test-Path -LiteralPath $commonScript -PathType Leaf)) {
-  $ragPathIssues += 'common.ps1 缺失，无法解析 RAG 路径'
+if (-not $commonImported) {
+  if ([string]::IsNullOrWhiteSpace($commonImportError)) {
+    $ragPathIssues += 'common.ps1 导入失败，无法解析 RAG 路径'
+  } else {
+    $ragPathIssues += ("common.ps1 导入失败，无法解析 RAG 路径: {0}" -f $commonImportError)
+  }
 } else {
   try {
-    . $commonScript
     $ragPaths = Get-RaymanRagPaths -WorkspaceRoot $WorkspaceRoot
   } catch {
     $ragPathIssues += ("RAG 路径解析失败: {0}" -f $_.Exception.Message)
@@ -721,23 +901,27 @@ if (-not (Test-Path -LiteralPath $playwrightSummaryPath -PathType Leaf)) {
 } else {
   try {
     $playSummary = Get-Content -LiteralPath $playwrightSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    $requiredFields = @(
-      'schema','scope','browser','require','timeout_seconds','workspace_root',
-      'started_at','finished_at','success','error_type','error_message','script_stack',
-      'host_ps_version','host_is_windows','stage','detail_log','wsl','sandbox'
-    )
-    foreach ($field in $requiredFields) {
-      if ($null -eq $playSummary.PSObject.Properties[$field]) {
-        $playwrightSummaryIssues.Add(("缺少字段: {0}" -f $field)) | Out-Null
+    if (-not (Test-ReportWorkspaceRootMatch -Report $playSummary -WorkspaceRoot $WorkspaceRoot)) {
+      $playwrightSummaryIssues.Add(("stale_report_workspace_mismatch:{0}" -f (Get-ReportWorkspaceRoot -Report $playSummary))) | Out-Null
+    } else {
+      $requiredFields = @(
+        'schema','scope','browser','require','timeout_seconds','workspace_root',
+        'started_at','finished_at','success','error_type','error_message','script_stack',
+        'host_ps_version','host_is_windows','stage','detail_log','wsl','sandbox'
+      )
+      foreach ($field in $requiredFields) {
+        if ($null -eq $playSummary.PSObject.Properties[$field]) {
+          $playwrightSummaryIssues.Add(("缺少字段: {0}" -f $field)) | Out-Null
+        }
       }
-    }
 
-    if ($null -ne $playSummary.PSObject.Properties['success'] -and (-not [bool]$playSummary.success)) {
-      if ([string]::IsNullOrWhiteSpace([string]$playSummary.error_message)) {
-        $playwrightSummaryIssues.Add('success=false 但 error_message 为空') | Out-Null
-      }
-      if ([string]::IsNullOrWhiteSpace([string]$playSummary.script_stack)) {
-        $playwrightSummaryIssues.Add('success=false 但 script_stack 为空') | Out-Null
+      if ($null -ne $playSummary.PSObject.Properties['success'] -and (-not [bool]$playSummary.success)) {
+        if ([string]::IsNullOrWhiteSpace([string]$playSummary.error_message)) {
+          $playwrightSummaryIssues.Add('success=false 但 error_message 为空') | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$playSummary.script_stack)) {
+          $playwrightSummaryIssues.Add('success=false 但 script_stack 为空') | Out-Null
+        }
       }
     }
   } catch {
@@ -764,6 +948,11 @@ if (-not (Test-Path -LiteralPath $setupScriptPath -PathType Leaf)) {
     'RAYMAN_SELF_HEAL_AUTO_DEP_INSTALL'
     'RAYMAN_PLAYWRIGHT_REQUIRE'
     'RAYMAN_PLAYWRIGHT_AUTO_INSTALL'
+    'RAYMAN_SETUP_GIT_INIT'
+    'RAYMAN_SETUP_GITHUB_LOGIN'
+    'RAYMAN_SETUP_GITHUB_LOGIN_STRICT'
+    'RAYMAN_GITHUB_HOST'
+    'RAYMAN_GITHUB_GIT_PROTOCOL'
     'RAYMAN_SANDBOX_OFFLINE_CACHE_ENABLED'
     'RAYMAN_SANDBOX_OFFLINE_CACHE_COPY_BROWSERS'
     'RAYMAN_SANDBOX_OFFLINE_CACHE_REFRESH_HOURS'
@@ -776,6 +965,9 @@ if (-not (Test-Path -LiteralPath $setupScriptPath -PathType Leaf)) {
     'RAYMAN_AGENT_CLOUD_ENABLED'
     'RAYMAN_AGENT_POLICY_BYPASS'
     'RAYMAN_AGENT_CLOUD_WHITELIST'
+    'RAYMAN_AGENT_CAPABILITIES_ENABLED'
+    'RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED'
+    'RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED'
     'RAYMAN_FIRST_PASS_WINDOW'
     'RAYMAN_REVIEW_LOOP_MAX_ROUNDS'
   )
@@ -790,6 +982,160 @@ if ($autoDepsDefaultIssues.Count -eq 0) {
   Add-Result -Results $results -Name '依赖自动补全默认项' -Status PASS -Detail 'setup 模板已包含依赖自动补全默认变量'
 } else {
   Add-Result -Results $results -Name '依赖自动补全默认项' -Status FAIL -Detail ($autoDepsDefaultIssues -join ' | ') -Action '补齐 setup.ps1 中 .rayman.env 默认变量块'
+}
+
+# 8.1) Agent capability sync 契约（生成 .codex/config.toml managed block 并验证幂等）
+$agentCapabilityIssues = New-Object System.Collections.Generic.List[string]
+$agentCapabilityConfigPath = Join-Path $raymanDir 'config\agent_capabilities.json'
+$agentCapabilityScriptPath = Join-Path $raymanDir 'scripts\agents\ensure_agent_capabilities.ps1'
+$codexConfigPath = Join-Path $WorkspaceRoot '.codex\config.toml'
+$agentCapabilityReportPath = Join-Path $runtimeDir 'agent_capabilities.report.json'
+
+if (-not (Test-Path -LiteralPath $agentCapabilityConfigPath -PathType Leaf)) {
+  $agentCapabilityIssues.Add(("missing: {0}" -f $agentCapabilityConfigPath)) | Out-Null
+} else {
+  $capRaw = Get-Content -LiteralPath $agentCapabilityConfigPath -Raw -Encoding UTF8
+  foreach ($token in @('rayman.agent_capabilities.v1', '"openai_docs"', '"web_auto_test"', '"openaiDeveloperDocs"', '"@playwright/mcp"')) {
+    if ($capRaw -notmatch [regex]::Escape($token)) {
+      $agentCapabilityIssues.Add(("agent_capabilities.json 缺少标记: {0}" -f $token)) | Out-Null
+    }
+  }
+}
+
+if (-not (Test-Path -LiteralPath $agentCapabilityScriptPath -PathType Leaf)) {
+  $agentCapabilityIssues.Add(("missing: {0}" -f $agentCapabilityScriptPath)) | Out-Null
+} else {
+  $envBackup = @{}
+  try {
+    Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_AGENT_CAPABILITIES_SKIP_PREPARE' -Value '1'
+    & $agentCapabilityScriptPath -WorkspaceRoot $WorkspaceRoot -Action sync | Out-Null
+    $firstHash = ''
+    if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
+      $firstHash = Get-FileHashCompat -Path $codexConfigPath -Algorithm 'SHA1'
+    }
+
+    & $agentCapabilityScriptPath -WorkspaceRoot $WorkspaceRoot -Action sync | Out-Null
+    $secondHash = ''
+    if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
+      $secondHash = Get-FileHashCompat -Path $codexConfigPath -Algorithm 'SHA1'
+    }
+
+    $capabilityReport = Get-JsonOrNull -Path $agentCapabilityReportPath
+    if ($null -eq $capabilityReport) {
+      $agentCapabilityIssues.Add(("agent capability report 缺失或解析失败: {0}" -f $agentCapabilityReportPath)) | Out-Null
+    } else {
+      if (-not [bool]$capabilityReport.registry_valid) {
+        $agentCapabilityIssues.Add('agent capability report 标记 registry_valid=false') | Out-Null
+      }
+
+      $activeCaps = @($capabilityReport.active_capabilities | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+      $managedBlockPresent = [bool]$capabilityReport.managed_block_present
+      $codexConfigExists = Test-Path -LiteralPath $codexConfigPath -PathType Leaf
+      $codexConfigRaw = ''
+      if ($codexConfigExists) {
+        $codexConfigRaw = Get-Content -LiteralPath $codexConfigPath -Raw -Encoding UTF8
+      }
+      $markersPresent = ($codexConfigRaw -match [regex]::Escape('# >>> Rayman managed capabilities >>>') -and $codexConfigRaw -match [regex]::Escape('# <<< Rayman managed capabilities <<<'))
+      if ($managedBlockPresent -ne $markersPresent) {
+        $agentCapabilityIssues.Add('agent capability report 与 .codex/config.toml 的 managed block 状态不一致') | Out-Null
+      }
+
+      if ([bool]$capabilityReport.global_enabled -and $activeCaps.Count -gt 0) {
+        if (-not $codexConfigExists) {
+          $agentCapabilityIssues.Add((".codex/config.toml 未生成: {0}" -f $codexConfigPath)) | Out-Null
+        } elseif (-not $markersPresent) {
+          $agentCapabilityIssues.Add('.codex/config.toml 缺少 managed block 标记') | Out-Null
+        } else {
+          if ($activeCaps -contains 'openai_docs') {
+            foreach ($token in @('mcp_servers.openaiDeveloperDocs', 'https://developers.openai.com/mcp')) {
+              if ($codexConfigRaw -notmatch [regex]::Escape($token)) {
+                $agentCapabilityIssues.Add((".codex/config.toml 缺少 OpenAI Docs MCP 标记: {0}" -f $token)) | Out-Null
+              }
+            }
+          }
+          if ($activeCaps -contains 'web_auto_test') {
+            foreach ($token in @('mcp_servers.playwright', '@playwright/mcp')) {
+              if ($codexConfigRaw -notmatch [regex]::Escape($token)) {
+                $agentCapabilityIssues.Add((".codex/config.toml 缺少 Playwright MCP 标记: {0}" -f $token)) | Out-Null
+              }
+            }
+          }
+          if ($activeCaps -contains 'winapp_auto_test') {
+            foreach ($token in @('mcp_servers.raymanWinApp', 'winapp_mcp_server.ps1')) {
+              if ($codexConfigRaw -notmatch [regex]::Escape($token)) {
+                $agentCapabilityIssues.Add((".codex/config.toml 缺少 WinApp MCP 标记: {0}" -f $token)) | Out-Null
+              }
+            }
+          }
+        }
+      }
+
+      if (-not [string]::IsNullOrWhiteSpace($firstHash) -and -not [string]::IsNullOrWhiteSpace($secondHash) -and $firstHash -ne $secondHash) {
+        $agentCapabilityIssues.Add('.codex/config.toml 连续两次 sync 后哈希不一致（非幂等）') | Out-Null
+      }
+    }
+  } catch {
+    $agentCapabilityIssues.Add(("ensure_agent_capabilities.ps1 执行失败: {0}" -f $_.Exception.Message)) | Out-Null
+  } finally {
+    Restore-EnvOverrides -Backup $envBackup
+  }
+}
+
+if ($agentCapabilityIssues.Count -eq 0) {
+  Add-Result -Results $results -Name 'Agent能力同步' -Status PASS -Detail 'registry / script / .codex/config.toml managed block 均通过，连续 sync 幂等'
+} else {
+  Add-Result -Results $results -Name 'Agent能力同步' -Status FAIL -Detail ($agentCapabilityIssues -join ' | ') -Action '执行 ./.Rayman/rayman.ps1 agent-capabilities --sync 并修复 registry/script/config'
+}
+
+# 8.1) Windows 桌面自动化能力
+$winAppCapabilityIssues = New-Object System.Collections.Generic.List[string]
+$winAppEnsurePath = Join-Path $raymanDir 'scripts\windows\ensure_winapp.ps1'
+$winAppReadyPath = Join-Path $raymanDir 'runtime\winapp.ready.windows.json'
+$winAppCapabilityStatus = 'PASS'
+$winAppCapabilityDetail = ''
+
+if (-not (Test-Path -LiteralPath $winAppEnsurePath -PathType Leaf)) {
+  $winAppCapabilityIssues.Add(("missing: {0}" -f $winAppEnsurePath)) | Out-Null
+} else {
+  try {
+    if (Test-Path variable:LASTEXITCODE) { $global:LASTEXITCODE = 0 }
+    & $winAppEnsurePath -WorkspaceRoot $WorkspaceRoot -Require:$false | Out-Null
+    if (-not (Test-Path -LiteralPath $winAppReadyPath -PathType Leaf)) {
+      $winAppCapabilityIssues.Add(("readiness report missing: {0}" -f $winAppReadyPath)) | Out-Null
+    } else {
+      $winAppReport = Get-JsonOrNull -Path $winAppReadyPath
+      if ($null -eq $winAppReport) {
+        $winAppCapabilityIssues.Add(("readiness report parse failed: {0}" -f $winAppReadyPath)) | Out-Null
+      } elseif ([bool](Get-PropValue -Object $winAppReport -Name 'ready' -Default $false)) {
+        $winAppCapabilityStatus = 'PASS'
+        $winAppCapabilityDetail = 'Windows UI Automation readiness passed'
+      } else {
+        $reason = [string](Get-PropValue -Object $winAppReport -Name 'reason' -Default 'unknown')
+        $detail = [string](Get-PropValue -Object $winAppReport -Name 'detail' -Default '')
+        $notApplicable = $false
+        if (Get-Command Test-WinAppReadinessReasonNotApplicable -ErrorAction SilentlyContinue) {
+          $notApplicable = Test-WinAppReadinessReasonNotApplicable -Reason $reason
+        }
+        if ($notApplicable) {
+          $winAppCapabilityStatus = 'PASS'
+          $winAppCapabilityDetail = ('desktop capability not applicable on current host: {0} ({1})' -f $reason, $detail)
+        } elseif ($reason -eq 'desktop_session_unavailable') {
+          $winAppCapabilityStatus = 'WARN'
+          $winAppCapabilityDetail = ('desktop capability unavailable in current environment: {0} ({1})' -f $reason, $detail)
+        } else {
+          $winAppCapabilityIssues.Add(("desktop readiness failed: {0} ({1})" -f $reason, $detail)) | Out-Null
+        }
+      }
+    }
+  } catch {
+    $winAppCapabilityIssues.Add(("ensure_winapp.ps1 执行失败: {0}" -f $_.Exception.Message)) | Out-Null
+  }
+}
+
+if ($winAppCapabilityIssues.Count -gt 0) {
+  Add-Result -Results $results -Name 'Windows桌面自动化能力' -Status FAIL -Detail ($winAppCapabilityIssues -join ' | ') -Action '执行 ./.Rayman/rayman.ps1 ensure-winapp 并修复 UIAutomation 环境'
+} else {
+  Add-Result -Results $results -Name 'Windows桌面自动化能力' -Status $winAppCapabilityStatus -Detail $winAppCapabilityDetail -Action $(if ($winAppCapabilityStatus -eq 'WARN') { '在 Windows 交互式桌面中执行 ./.Rayman/rayman.ps1 ensure-winapp 复核' } else { '' })
 }
 
 # 9) DotNet 执行摘要字段契约（run_tests_and_fix）
@@ -829,14 +1175,20 @@ if ($dotnetSummaryContractIssues.Count -eq 0) {
 $agentContractIssues = New-Object System.Collections.Generic.List[string]
 $raymanCliPath = Join-Path $raymanDir 'rayman.ps1'
 $dispatchPath = Join-Path $raymanDir 'scripts\agents\dispatch.ps1'
+$agentContractCheckPath = Join-Path $raymanDir 'scripts\agents\check_agent_contract.ps1'
 $reviewLoopPath = Join-Path $raymanDir 'scripts\agents\review_loop.ps1'
 $firstPassPath = Join-Path $raymanDir 'scripts\agents\first_pass_report.ps1'
 $promptCatalogPath = Join-Path $raymanDir 'scripts\agents\prompts_catalog.ps1'
+$winAppEnsureScriptPath = Join-Path $raymanDir 'scripts\windows\ensure_winapp.ps1'
+$winAppFlowScriptPath = Join-Path $raymanDir 'scripts\windows\run_winapp_flow.ps1'
+$winAppInspectScriptPath = Join-Path $raymanDir 'scripts\windows\inspect_winapp.ps1'
+$winAppMcpScriptPath = Join-Path $raymanDir 'scripts\windows\winapp_mcp_server.ps1'
+$winAppSampleFlowPath = Join-Path $raymanDir 'winapp.flow.sample.json'
 $routerCfgPath = Join-Path $raymanDir 'config\agent_router.json'
 $policyCfgPath = Join-Path $raymanDir 'config\agent_policy.json'
 $reviewCfgPath = Join-Path $raymanDir 'config\review_loop.json'
 
-foreach ($p in @($dispatchPath, $reviewLoopPath, $firstPassPath, $promptCatalogPath, $routerCfgPath, $policyCfgPath, $reviewCfgPath)) {
+foreach ($p in @($dispatchPath, $agentContractCheckPath, $reviewLoopPath, $firstPassPath, $promptCatalogPath, $winAppEnsureScriptPath, $winAppFlowScriptPath, $winAppInspectScriptPath, $winAppMcpScriptPath, $winAppSampleFlowPath, $routerCfgPath, $policyCfgPath, $reviewCfgPath)) {
   if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
     $agentContractIssues.Add(("missing: {0}" -f $p)) | Out-Null
   }
@@ -844,7 +1196,7 @@ foreach ($p in @($dispatchPath, $reviewLoopPath, $firstPassPath, $promptCatalogP
 
 if (Test-Path -LiteralPath $raymanCliPath -PathType Leaf) {
   $raymanRaw = Get-Content -LiteralPath $raymanCliPath -Raw -Encoding UTF8
-  foreach ($token in @('"dispatch"', '"review-loop"', '"first-pass-report"', '"prompts"')) {
+  foreach ($token in @('"agent-contract"', '"agent-capabilities"', '"ensure-winapp"', '"winapp-test"', '"winapp-inspect"', '"dispatch"', '"review-loop"', '"first-pass-report"', '"prompts"')) {
     if ($raymanRaw -notmatch [regex]::Escape($token)) {
       $agentContractIssues.Add(("rayman.ps1 未暴露命令: {0}" -f $token)) | Out-Null
     }
@@ -859,6 +1211,23 @@ if (Test-Path -LiteralPath $dispatchPath -PathType Leaf) {
     if ($dispatchRaw -notmatch [regex]::Escape($token)) {
       $agentContractIssues.Add(("dispatch.ps1 缺少 policy bypass 审计标记: {0}" -f $token)) | Out-Null
     }
+  }
+}
+
+if (Test-Path -LiteralPath $agentContractCheckPath -PathType Leaf) {
+  try {
+    $null = & $agentContractCheckPath -WorkspaceRoot $WorkspaceRoot -AsJson
+    $agentCheckExitCode = 0
+    if (Test-Path variable:LASTEXITCODE) {
+      $agentCheckExitCode = [int]$LASTEXITCODE
+    } elseif (-not $?) {
+      $agentCheckExitCode = 1
+    }
+    if ($agentCheckExitCode -ne 0) {
+      $agentContractIssues.Add(("check_agent_contract.ps1 返回非零退出码: {0}" -f $agentCheckExitCode)) | Out-Null
+    }
+  } catch {
+    $agentContractIssues.Add(("check_agent_contract.ps1 执行失败: {0}" -f $_.Exception.Message)) | Out-Null
   }
 }
 
@@ -929,6 +1298,227 @@ if (-not (Test-Path -LiteralPath $singleRepoRiskPath -PathType Leaf)) {
   }
 }
 
+# 9.3) 自动化测试 Lane 结果消费
+$testLaneDir = Join-Path $runtimeDir 'test_lanes'
+$laneDefinitions = @(
+  [pscustomobject]@{
+    Name = '快速契约Lane'
+    FileName = 'fast_contract.report.json'
+    Schema = 'rayman.testing.fast_contract.v1'
+    SuccessProperty = 'success'
+    OverallProperty = ''
+    MissingInProject = 'WARN'
+    MissingInStandard = 'FAIL'
+    FailInProject = 'FAIL'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 bash ./.Rayman/scripts/testing/run_fast_contract.sh'
+  }
+  [pscustomobject]@{
+    Name = 'PowerShell逻辑单测'
+    FileName = 'pester.report.json'
+    Schema = 'rayman.testing.pester.v1'
+    SuccessProperty = 'success'
+    OverallProperty = ''
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'FAIL'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_pester_tests.ps1 -WorkspaceRoot "$PWD"'
+  }
+  [pscustomobject]@{
+    Name = 'Bash逻辑单测'
+    FileName = 'bats.report.json'
+    Schema = 'rayman.testing.bats.v1'
+    SuccessProperty = 'success'
+    OverallProperty = ''
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'FAIL'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 bash ./.Rayman/scripts/testing/run_bats_tests.sh'
+  }
+  [pscustomobject]@{
+    Name = '宿主环境冒烟'
+    FileName = 'host_smoke.report.json'
+    Schema = 'rayman.testing.host_smoke.v1'
+    SuccessProperty = ''
+    OverallProperty = 'overall'
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'WARN'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD"'
+  }
+)
+
+foreach ($lane in $laneDefinitions) {
+  $laneReportPath = Join-Path $testLaneDir ([string]$lane.FileName)
+  $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+    $missingStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
+    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail ("缺少测试报告: {0}" -f $laneReportRel) -Action ([string]$lane.Action)
+    continue
+  }
+
+  $laneReport = Get-JsonOrNull -Path $laneReportPath
+  $laneEval = Get-TestLaneReportEvaluation -Report $laneReport -ExpectedSchema ([string]$lane.Schema) -SuccessProperty ([string]$lane.SuccessProperty) -OverallProperty ([string]$lane.OverallProperty) -WorkspaceRoot $WorkspaceRoot
+  if ([string]$lane.Name -eq 'Bash逻辑单测' -and [string]$laneEval.status -eq 'FAIL' -and $null -ne $laneReport) {
+    $laneReason = [string](Get-PropValue -Object $laneReport -Name 'reason' -Default '')
+    $laneExitCode = [string](Get-PropValue -Object $laneReport -Name 'exit_code' -Default '')
+    if ($laneReason -eq 'tool_missing' -or $laneExitCode -eq '2') {
+      $laneEval = [pscustomobject]@{
+        status = 'WARN'
+        detail = 'bats not installed on current host'
+      }
+    }
+  }
+
+  $detailParts = New-Object System.Collections.Generic.List[string]
+  $detailParts.Add([string]$laneEval.detail) | Out-Null
+  if ($null -ne $laneReport) {
+    $generatedAt = [string](Get-PropValue -Object $laneReport -Name 'generated_at' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($generatedAt)) {
+      $detailParts.Add(("generated_at={0}" -f $generatedAt)) | Out-Null
+    }
+    $counts = Get-PropValue -Object $laneReport -Name 'counts' -Default $null
+    if ($null -ne $counts) {
+      $countTokens = New-Object System.Collections.Generic.List[string]
+      foreach ($countName in @('pass', 'warn', 'fail', 'skip')) {
+        $countValue = Get-PropValue -Object $counts -Name $countName -Default $null
+        if ($null -ne $countValue -and [string]$countValue -ne '') {
+          $countTokens.Add(("{0}={1}" -f $countName, $countValue)) | Out-Null
+        }
+      }
+      foreach ($countName in @('total', 'passed', 'failed', 'skipped', 'inconclusive')) {
+        $countValue = Get-PropValue -Object $laneReport -Name $countName -Default $null
+        if ($null -ne $countValue -and [string]$countValue -ne '') {
+          $countTokens.Add(("{0}={1}" -f $countName, $countValue)) | Out-Null
+        }
+      }
+      if ($countTokens.Count -gt 0) {
+        $detailParts.Add(($countTokens -join ', ')) | Out-Null
+      }
+    }
+  }
+  $detailParts.Add(("report={0}" -f $laneReportRel)) | Out-Null
+  $laneDetail = ($detailParts -join '; ')
+
+  switch ([string]$laneEval.status) {
+    'PASS' {
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status PASS -Detail $laneDetail
+    }
+    'WARN' {
+      $warnStatus = if ($Mode -eq 'project') { [string]$lane.WarnInProject } else { [string]$lane.WarnInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $warnStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    'STALE' {
+      $staleStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $staleStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    'FAIL' {
+      $failStatus = if ($Mode -eq 'project') { [string]$lane.FailInProject } else { [string]$lane.FailInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $failStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    default {
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status FAIL -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+  }
+}
+
+# 9.4) 项目工作流 Lane 结果消费
+$projectGateDir = Join-Path $runtimeDir 'project_gates'
+$projectGateDefinitions = @(
+  [pscustomobject]@{
+    Name = '项目快速门禁'
+    FileName = 'fast.report.json'
+    Schema = 'rayman.project_gate.v1'
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'FAIL'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 .\.Rayman\rayman.ps1 fast-gate'
+  }
+  [pscustomobject]@{
+    Name = '项目浏览器门禁'
+    FileName = 'browser.report.json'
+    Schema = 'rayman.project_gate.v1'
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'FAIL'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 .\.Rayman\rayman.ps1 browser-gate'
+  }
+)
+
+foreach ($lane in $projectGateDefinitions) {
+  $laneReportPath = Join-Path $projectGateDir ([string]$lane.FileName)
+  $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+    $missingStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
+    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail ("缺少项目 gate 报告: {0}" -f $laneReportRel) -Action ([string]$lane.Action)
+    continue
+  }
+
+  $laneReport = Get-JsonOrNull -Path $laneReportPath
+  $laneEval = Get-TestLaneReportEvaluation -Report $laneReport -ExpectedSchema ([string]$lane.Schema) -SuccessProperty '' -OverallProperty 'overall' -WorkspaceRoot $WorkspaceRoot
+  $detailParts = New-Object System.Collections.Generic.List[string]
+  $detailParts.Add([string]$laneEval.detail) | Out-Null
+  if ($null -ne $laneReport) {
+    $generatedAt = [string](Get-PropValue -Object $laneReport -Name 'generated_at' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($generatedAt)) {
+      $detailParts.Add(("generated_at={0}" -f $generatedAt)) | Out-Null
+    }
+    $counts = Get-PropValue -Object $laneReport -Name 'counts' -Default $null
+    if ($null -ne $counts) {
+      $countTokens = New-Object System.Collections.Generic.List[string]
+      foreach ($countName in @('pass', 'warn', 'fail', 'skip', 'total')) {
+        $countValue = Get-PropValue -Object $counts -Name $countName -Default $null
+        if ($null -ne $countValue -and [string]$countValue -ne '') {
+          $countTokens.Add(("{0}={1}" -f $countName, $countValue)) | Out-Null
+        }
+      }
+      if ($countTokens.Count -gt 0) {
+        $detailParts.Add(($countTokens -join ', ')) | Out-Null
+      }
+    }
+  }
+  $detailParts.Add(("report={0}" -f $laneReportRel)) | Out-Null
+  $laneDetail = ($detailParts -join '; ')
+
+  switch ([string]$laneEval.status) {
+    'PASS' {
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status PASS -Detail $laneDetail
+    }
+    'WARN' {
+      $warnStatus = if ($Mode -eq 'project') { [string]$lane.WarnInProject } else { [string]$lane.WarnInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $warnStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    'STALE' {
+      $staleStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $staleStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    'FAIL' {
+      $failStatus = if ($Mode -eq 'project') { [string]$lane.FailInProject } else { [string]$lane.FailInStandard }
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status $failStatus -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+    default {
+      Add-Result -Results $results -Name ([string]$lane.Name) -Status FAIL -Detail $laneDetail -Action ([string]$lane.Action)
+    }
+  }
+}
+
 # 10) MCP/RAG 最小可用性
 $mcpScript = Join-Path $raymanDir 'scripts\mcp\manage_mcp.ps1'
 $ragScript = Join-Path $raymanDir 'scripts\rag\manage_rag.ps1'
@@ -949,46 +1539,13 @@ if (-not (Test-Path -LiteralPath $mcpScript -PathType Leaf)) {
     }
     $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $mcpScript, '-Action', 'status')
     $mcpExit = 1
-    $mcpTimedOut = $false
-    $statusTimeoutSeconds = 20
-    $statusTimeoutRaw = [Environment]::GetEnvironmentVariable('RAYMAN_RELEASE_GATE_MCP_STATUS_TIMEOUT_SECONDS')
-    if (-not [string]::IsNullOrWhiteSpace([string]$statusTimeoutRaw)) {
-      $parsedTimeout = 0
-      if ([int]::TryParse($statusTimeoutRaw, [ref]$parsedTimeout) -and $parsedTimeout -gt 0) {
-        $statusTimeoutSeconds = $parsedTimeout
-      }
+    [void](& $childPs @childArgs)
+    if (Test-Path variable:LASTEXITCODE) {
+      $mcpExit = [int]$LASTEXITCODE
+    } elseif ($?) {
+      $mcpExit = 0
     }
-    $statusTimeoutMs = [Math]::Max(1000, ($statusTimeoutSeconds * 1000))
-    try {
-      $proc = Start-Process -FilePath $childPs -ArgumentList $childArgs -PassThru -ErrorAction Stop
-      if ($null -ne $proc) {
-        if ($proc.WaitForExit($statusTimeoutMs)) {
-          if ($null -ne $proc.ExitCode) {
-            $mcpExit = [int]$proc.ExitCode
-          } else {
-            $mcpExit = 0
-          }
-        } else {
-          $mcpTimedOut = $true
-          try { $proc.Kill() } catch {}
-          $mcpExit = 124
-        }
-      } else {
-        $mcpExit = 0
-      }
-    } catch {
-      # Fallback path for hosts where Start-Process spawn behavior is restricted.
-      [void](& $childPs @childArgs)
-      if (Test-Path variable:LASTEXITCODE) {
-        $mcpExit = [int]$LASTEXITCODE
-      } elseif ($?) {
-        $mcpExit = 0
-      }
-    }
-    if ($mcpTimedOut) {
-      $mcpOk = $false
-      $mcpStatusDetail = ("status timeout={0}s, host={1}" -f $statusTimeoutSeconds, $childPs)
-    } elseif ($mcpExit -ne 0) {
+    if ($mcpExit -ne 0) {
       $mcpOk = $false
       $mcpStatusDetail = ("status exit={0}, host={1}" -f $mcpExit, $childPs)
     }
@@ -1293,6 +1850,14 @@ try {
       report_path = [string]$ReportPath
     } | ConvertTo-Json -Depth 5)
   }
+}
+
+if (Get-Command Write-RaymanRulesTelemetryRecord -ErrorAction SilentlyContinue) {
+  try {
+    $releaseGateDurationMs = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $releaseGateStartedAt).TotalMilliseconds))
+    $releaseGateExitCode = if ($overall -eq 'FAIL') { 2 } else { 0 }
+    Write-RaymanRulesTelemetryRecord -WorkspaceRoot $WorkspaceRoot -Profile 'release-gate' -Stage 'final' -Scope $Mode -Status $overall -ExitCode $releaseGateExitCode -DurationMs $releaseGateDurationMs -Command 'release-gate' | Out-Null
+  } catch {}
 }
 
 if ($overall -eq 'FAIL') {

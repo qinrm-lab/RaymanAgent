@@ -3,17 +3,20 @@ param(
   [string]$Scope = '',
   [string]$Browser = '',
   [object]$Require = $null,
-  [int]$TimeoutSeconds = 0
+  [int]$TimeoutSeconds = 0,
+  [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Info([string]$Message) {
+  if ($Json) { return }
   Write-Host ("[playwright-ready] {0}" -f $Message)
 }
 
 function Warn([string]$Message) {
+  if ($Json) { return }
   Write-Host ("[playwright-ready][warn] {0}" -f $Message) -ForegroundColor Yellow
 }
 
@@ -192,6 +195,8 @@ function Get-LastNativeExitCodeOrDefault([int]$DefaultCode = 0) {
   return $DefaultCode
 }
 
+. (Join-Path $PSScriptRoot 'playwright_ready.lib.ps1')
+
 $script:PlaywrightReadyStage = 'bootstrap'
 $WorkspaceRootResolved = ''
 $RuntimeDir = ''
@@ -205,6 +210,7 @@ $ScopeEffective = ''
 $BrowserEffective = ''
 $TimeoutEffective = 0
 $RequireEffective = $false
+$summaryJsonText = ''
 $summary = $null
 $HostIsWindows = Test-HostIsWindows
 
@@ -1128,17 +1134,24 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($SummaryPath)) {
       try {
-        ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $SummaryPath -Encoding UTF8
+        $summaryJsonText = ($summary | ConvertTo-Json -Depth 10)
+        $summaryJsonText | Set-Content -LiteralPath $SummaryPath -Encoding UTF8
         Info ("summary: {0}" -f $SummaryPath)
       } catch {
         Warn ("failed to write summary: {0}" -f $_.Exception.Message)
       }
+    } elseif ($null -ne $summary) {
+      $summaryJsonText = ($summary | ConvertTo-Json -Depth 10)
     }
 
     if ($failed -and -not [string]::IsNullOrWhiteSpace($DetailLogPath)) {
       Info ("detail log: {0}" -f $DetailLogPath)
     }
   }
+}
+
+if ($Json -and -not [string]::IsNullOrWhiteSpace($summaryJsonText)) {
+  Write-Output $summaryJsonText
 }
 
 if ($RequireEffective -and (-not [bool]$summary.success)) {

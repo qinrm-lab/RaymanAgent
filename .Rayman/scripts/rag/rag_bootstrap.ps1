@@ -36,13 +36,13 @@ function Get-RaymanRagPythonCandidates {
     $seen = New-Object System.Collections.Generic.HashSet[string]
 
     function Add-Candidate {
-        param([string]$Exe, [string[]]$Args = @(), [string]$Label = '')
+        param([string]$Exe, [string[]]$Parameters = @(), [string]$Label = '')
         if ([string]::IsNullOrWhiteSpace($Exe)) { return }
 
         $cmd = Get-Command $Exe -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $cmd) { return }
 
-        $argKey = if ($Args -and $Args.Count -gt 0) { ($Args -join ' ') } else { '' }
+        $argKey = if ($Parameters -and $Parameters.Count -gt 0) { ($Parameters -join ' ') } else { '' }
         $key = ("{0}|{1}" -f $Exe.Trim().ToLowerInvariant(), $argKey.Trim().ToLowerInvariant())
         if (-not $seen.Add($key)) { return }
 
@@ -52,7 +52,7 @@ function Get-RaymanRagPythonCandidates {
 
         $list.Add([pscustomobject]@{
             Exe = $Exe
-            Args = @($Args)
+            Parameters = @($Parameters)
             Label = $Label
         }) | Out-Null
     }
@@ -65,11 +65,11 @@ function Get-RaymanRagPythonCandidates {
         if ($parts.Length -eq 0) { return }
 
         $exe = [string]$parts[0]
-        $args = @()
-        if ($parts.Length -gt 1) { $args = @($parts[1..($parts.Length - 1)]) }
+        $parameters = @()
+        if ($parts.Length -gt 1) { $parameters = @($parts[1..($parts.Length - 1)]) }
 
         $label = if ([string]::IsNullOrWhiteSpace($Prefix)) { $Spec } else { "$Prefix=$Spec" }
-        Add-Candidate -Exe $exe -Args $args -Label $label
+        Add-Candidate -Exe $exe -Parameters $parameters -Label $label
     }
 
     Add-FromSpec -Spec $RagPythonEnv -Prefix 'RAYMAN_RAG_PYTHON'
@@ -82,7 +82,7 @@ function Get-RaymanRagPythonCandidates {
 
     Add-Candidate -Exe 'python' -Label 'python'
     Add-Candidate -Exe 'python3' -Label 'python3'
-    Add-Candidate -Exe 'py' -Args @('-3') -Label 'py -3'
+    Add-Candidate -Exe 'py' -Parameters @('-3') -Label 'py -3'
 
     return $list.ToArray()
 }
@@ -90,7 +90,7 @@ function Get-RaymanRagPythonCandidates {
 function Test-RaymanRagDeps {
     param([pscustomobject]$Runtime)
 
-    & $Runtime.Exe @($Runtime.Args + @('-c', 'import chromadb, sentence_transformers, langchain_text_splitters')) 2>$null
+    & $Runtime.Exe @($Runtime.Parameters + @('-c', 'import chromadb, sentence_transformers, langchain_text_splitters')) 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -133,7 +133,7 @@ function Invoke-RaymanRagBootstrap {
 
     $runtime = $candidates[0]
     $result.PythonExe = [string]$runtime.Exe
-    $result.PythonArgs = @([string[]]$runtime.Args)
+    $result.PythonArgs = @([string[]]$runtime.Parameters)
     $result.PythonLabel = [string]$runtime.Label
     $result.PythonInvocation = if ($result.PythonArgs.Count -gt 0) { "$($result.PythonExe) $($result.PythonArgs -join ' ')" } else { $result.PythonExe }
 
@@ -155,7 +155,7 @@ function Invoke-RaymanRagBootstrap {
     }
 
     Write-RagBootstrapInfo ("正在安装 RAG 依赖（{0}）..." -f $result.PythonLabel)
-    & $runtime.Exe @($runtime.Args + @('-m', 'pip', 'install', '-r', $requirementsPath, '-q'))
+    & $runtime.Exe @($runtime.Parameters + @('-m', 'pip', 'install', '-r', $requirementsPath, '-q'))
     if ($LASTEXITCODE -ne 0) {
         $result.Message = ("依赖安装失败（解释器={0}）" -f $result.PythonLabel)
         return $result

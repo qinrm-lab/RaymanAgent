@@ -2,7 +2,13 @@
   "schema": "rayman.model_routing.v1",
   "defaults": {
     "route": "ui_selected",
-    "fallback_behavior": "preserve_current_flow"
+    "fallback_behavior": "next_route_then_manual",
+    "route_fallback_order": [
+      "gemini_latest_pro",
+      "claude_latest_opus",
+      "gpt_latest"
+    ],
+    "manual_fallback_route": "ui_selected"
   },
   "task_aliases": {
     "bugfix": "fix",
@@ -43,6 +49,6 @@
   "prompt_routes": {
     "review.initial": "gemini_latest_pro",
     "review.counter": "claude_latest_opus",
-    "review.final": "gemini_latest_pro"
+    "review.final": "gpt_latest"
   }
 }

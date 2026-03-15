@@ -1,10 +1,17 @@
 param(
   [Parameter(Position=0)][string]$Command = "help",
-  [Parameter(Position=1, ValueFromRemainingArguments=$true)][string[]]$Args
+  [Parameter(Position=1, ValueFromRemainingArguments=$true)][string[]]$CliArgs
 )
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+$commandCatalogScript = Join-Path $PSScriptRoot 'scripts\utils\command_catalog.ps1'
+if (Test-Path -LiteralPath $commandCatalogScript -PathType Leaf) {
+  . $commandCatalogScript
+}
 
 $cmd = $Command.ToLowerInvariant()
 $commandProvided = $PSBoundParameters.ContainsKey('Command')
+$script:RaymanCliWorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 function Get-RaymanMenuStatePath {
   $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -45,27 +52,33 @@ function Set-RaymanLastMenuChoice([int]$Index, [string]$CommandName, [string[]]$
 
 function Show-RaymanInteractiveMenu {
   $menu = @(
-    @{ Index = 1;  Command = 'init';              Desc = '初始化环境';              Args = @() },
-    @{ Index = 2;  Command = 'ensure-win-deps';   Desc = 'Windows 依赖检查';        Args = @() },
-    @{ Index = 3;  Command = 'ensure-wsl-deps';   Desc = 'WSL 依赖检查/安装';       Args = @() },
-    @{ Index = 4;  Command = 'proxy-health';      Desc = '代理健康检查（自动 refresh）'; Args = @('--refresh') },
-    @{ Index = 5;  Command = 'ensure-playwright'; Desc = 'Playwright 就绪检查';     Args = @() },
-    @{ Index = 6;  Command = 'test-fix';          Desc = '测试并修复（自愈）';      Args = @() },
-    @{ Index = 7;  Command = 'release-gate';      Desc = '发布闸门检查';            Args = @() },
-    @{ Index = 8;  Command = 'context-update';    Desc = '更新上下文';              Args = @() },
-    @{ Index = 9;  Command = 'cache-clear';       Desc = '清理缓存';                Args = @() },
-    @{ Index = 10; Command = 'state-save';        Desc = '保存状态';                Args = @() },
-    @{ Index = 11; Command = 'state-resume';      Desc = '恢复状态';                Args = @() },
-    @{ Index = 12; Command = 'watch-auto';        Desc = '启动后台监听';            Args = @() },
-    @{ Index = 13; Command = 'watch-stop';        Desc = '停止后台监听';            Args = @() },
-    @{ Index = 14; Command = 'prompts';           Desc = 'Prompt 模板管理';         Args = @('-Action', 'list') },
-    @{ Index = 15; Command = 'copy-self-check';   Desc = '拷贝后初始化自检';        Args = @() },
-    @{ Index = 16; Command = 'pwa-test';          Desc = 'PWA 自动化测试（本机兜底）'; Args = @() },
-    @{ Index = 17; Command = 'winapp-test';       Desc = 'Windows桌面自动化（WinForms/MAUI）'; Args = @() },
-    @{ Index = 18; Command = 'winapp-inspect';    Desc = 'Windows控件树探查';       Args = @() },
-    @{ Index = 19; Command = 'linux-test';        Desc = 'WSL Linux 自动化自测';   Args = @() },
-    @{ Index = 20; Command = 'single-repo-upgrade'; Desc = '单仓库深度增强（质量优先）'; Args = @() },
-    @{ Index = 21; Command = 'single-repo-kpi';   Desc = '单仓库KPI看板生成';        Args = @() }
+    @{ Index = 1;  Command = 'init';              Desc = '初始化环境';              DefaultArgs = @() },
+    @{ Index = 2;  Command = 'ensure-win-deps';   Desc = 'Windows 依赖检查';        DefaultArgs = @() },
+    @{ Index = 3;  Command = 'ensure-wsl-deps';   Desc = 'WSL 依赖检查/安装';       DefaultArgs = @() },
+    @{ Index = 4;  Command = 'proxy-health';      Desc = '代理健康检查（自动 refresh）'; DefaultArgs = @('--refresh') },
+    @{ Index = 5;  Command = 'ensure-playwright'; Desc = 'Playwright 就绪检查';     DefaultArgs = @() },
+    @{ Index = 6;  Command = 'test-fix';          Desc = '测试并修复（自愈）';      DefaultArgs = @() },
+    @{ Index = 7;  Command = 'release-gate';      Desc = '发布闸门检查';            DefaultArgs = @() },
+    @{ Index = 8;  Command = 'context-update';    Desc = '更新上下文';              DefaultArgs = @() },
+    @{ Index = 9;  Command = 'cache-clear';       Desc = '清理缓存';                DefaultArgs = @() },
+    @{ Index = 10; Command = 'state-save';        Desc = '保存状态';                DefaultArgs = @() },
+    @{ Index = 11; Command = 'state-resume';      Desc = '恢复状态';                DefaultArgs = @() },
+    @{ Index = 12; Command = 'watch-auto';        Desc = '启动后台监听';            DefaultArgs = @() },
+    @{ Index = 13; Command = 'watch-stop';        Desc = '停止后台监听';            DefaultArgs = @() },
+    @{ Index = 14; Command = 'prompts';           Desc = 'Prompt 模板管理';         DefaultArgs = @('-Action', 'list') },
+    @{ Index = 15; Command = 'copy-self-check';   Desc = '拷贝后初始化自检';        DefaultArgs = @() },
+    @{ Index = 16; Command = 'pwa-test';          Desc = 'PWA 自动化测试（本机兜底）'; DefaultArgs = @() },
+    @{ Index = 17; Command = 'ensure-winapp';     Desc = 'Windows桌面自动化就绪检查'; DefaultArgs = @() },
+    @{ Index = 18; Command = 'winapp-test';       Desc = 'Windows桌面自动化（WinForms/MAUI）'; DefaultArgs = @() },
+    @{ Index = 19; Command = 'winapp-inspect';    Desc = 'Windows控件树探查';       DefaultArgs = @() },
+    @{ Index = 20; Command = 'linux-test';        Desc = 'WSL Linux 自动化自测';   DefaultArgs = @() },
+    @{ Index = 21; Command = 'single-repo-upgrade'; Desc = '单仓库深度增强（质量优先）'; DefaultArgs = @() },
+    @{ Index = 22; Command = 'single-repo-kpi';   Desc = '单仓库KPI看板生成';        DefaultArgs = @() },
+    @{ Index = 23; Command = 'agent-contract';    Desc = 'Agent 契约自检';           DefaultArgs = @() },
+    @{ Index = 24; Command = 'agent-capabilities'; Desc = 'Agent 能力同步/状态';      DefaultArgs = @() },
+    @{ Index = 25; Command = 'fast-gate';         Desc = '项目快速门禁';              DefaultArgs = @() },
+    @{ Index = 26; Command = 'browser-gate';      Desc = '项目浏览器门禁';            DefaultArgs = @() },
+    @{ Index = 27; Command = 'full-gate';         Desc = '项目完整门禁';              DefaultArgs = @() }
   )
 
   $last = Get-RaymanLastMenuChoice
@@ -111,11 +124,11 @@ function Show-RaymanInteractiveMenu {
     if ($defaultIndex -gt 0) {
       $pickedDefault = $menu | Where-Object { $_.Index -eq $defaultIndex } | Select-Object -First 1
       if ($pickedDefault) {
-        Set-RaymanLastMenuChoice -Index $pickedDefault.Index -CommandName $pickedDefault.Command -CommandArgs $pickedDefault.Args
-        return @{ Command = $pickedDefault.Command; Args = @($pickedDefault.Args) }
+        Set-RaymanLastMenuChoice -Index $pickedDefault.Index -CommandName $pickedDefault.Command -CommandArgs $pickedDefault.DefaultArgs
+        return @{ Command = $pickedDefault.Command; CliArgs = @($pickedDefault.DefaultArgs) }
       }
     }
-    return @{ Command = 'help'; Args = @() }
+    return @{ Command = 'help'; CliArgs = @() }
   }
 
   $token = $choice.Trim()
@@ -124,8 +137,8 @@ function Show-RaymanInteractiveMenu {
   if ([int]::TryParse($token, [ref]$parsedIndex)) {
     $pickedByIndex = $menu | Where-Object { $_.Index -eq $parsedIndex } | Select-Object -First 1
     if ($pickedByIndex) {
-      Set-RaymanLastMenuChoice -Index $pickedByIndex.Index -CommandName $pickedByIndex.Command -CommandArgs $pickedByIndex.Args
-      return @{ Command = $pickedByIndex.Command; Args = @($pickedByIndex.Args) }
+      Set-RaymanLastMenuChoice -Index $pickedByIndex.Index -CommandName $pickedByIndex.Command -CommandArgs $pickedByIndex.DefaultArgs
+      return @{ Command = $pickedByIndex.Command; CliArgs = @($pickedByIndex.DefaultArgs) }
     }
   }
 
@@ -134,7 +147,7 @@ function Show-RaymanInteractiveMenu {
     default {
       $parts = @($token -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
       if ($parts.Count -eq 0) {
-        return @{ Command = 'help'; Args = @() }
+        return @{ Command = 'help'; CliArgs = @() }
       }
 
       $name = $parts[0]
@@ -145,102 +158,46 @@ function Show-RaymanInteractiveMenu {
 
       $matched = $menu | Where-Object { $_.Command -ieq $name } | Select-Object -First 1
       if ($matched) {
-        $finalArgs = @($matched.Args) + @($extraArgs)
+        $finalArgs = @($matched.DefaultArgs) + @($extraArgs)
         Set-RaymanLastMenuChoice -Index $matched.Index -CommandName $matched.Command -CommandArgs $finalArgs
-        return @{ Command = $matched.Command; Args = $finalArgs }
+        return @{ Command = $matched.Command; CliArgs = $finalArgs }
       }
 
       Set-RaymanLastMenuChoice -Index 0 -CommandName $name -CommandArgs $extraArgs
-      return @{ Command = $name; Args = $extraArgs }
+      return @{ Command = $name; CliArgs = $extraArgs }
     }
   }
 }
 
 function Show-Help {
-@"
-Rayman CLI (v159)
+  if (Get-Command Format-RaymanHelpText -ErrorAction SilentlyContinue) {
+    Write-Output (Format-RaymanHelpText -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Surface pwsh)
+    return
+  }
+
+  @"
+Rayman CLI (v161)
 
 Usage:
   .\.Rayman\rayman.cmd <command>
-
-Commands:
-  init        Run Windows init (sandbox/pxy checks)
-  watch       Start Windows watcher (prompt sync + fast-init)
-  watch-auto  Start background watchers (prompt-watch + alert-watch)
-  watch-stop  Stop background watchers (prompt-watch + alert-watch + auto-save + MCP)
-  alert-watch Start Windows attention watcher (popup/manual-action alerts)
-  alert-stop  Stop Windows attention watcher
-  fast-init   Generate missing/new requirements only (no installs)
-  migrate     Migrate legacy requirements into new structure
-  migrate-rag Migrate legacy RAG DB from .Rayman/state to .rag/<namespace>
-  rag-bootstrap Probe/prepare RAG Python runtime and dependencies
-  doctor      Read-only health check
-  copy-self-check Run copy-initialization smoke check
-  check       Run check suite
-  ensure-test-deps Detect and auto-install SDK/toolchain needed for project tests
-  ensure-playwright Ensure Playwright browser toolchain readiness for web auto-acceptance
-  pwa-test    Run Playwright PWA flow test with local fallback when sandbox is unavailable
-  winapp-test Run Windows desktop UI flow test (WinForms/MAUI) with auto dependency bootstrap
-  winapp-inspect Export Windows desktop control tree by title regex for flow authoring
-  linux-test  Run Linux tests in WSL with auto dependency bootstrap and command auto-detection
-  clean       Governance cleanup (tmp/runtime/test bundles; optional aggressive mode)
-  snapshot    Create rollback snapshot under .Rayman/runtime/snapshots
-  metrics     Show rules/check telemetry summary (supports --json/assert flags)
-  trend       Generate daily telemetry trend report
-  baseline-guard Compare recent telemetry vs historical baseline
-  telemetry-export Generate telemetry artifact bundle for CI/archive
-  telemetry-index Rebuild telemetry artifact index
-  telemetry-prune Prune telemetry artifact history and refresh index
-  deploy      Deploy projects (auto-detect)
-  cache-clear Clear caches (bin/obj/node_modules etc)
-  state-save  Save task state + git stash
-  state-resume Resume state + git stash pop
-  test-fix    Run build/tests and write last_error logs
-  req-ts-backfill Backfill timestamps for requirements markdown files
-  dist-sync   Sync and validate .Rayman/.dist mirror (Windows-native)
-  diagnostics-residual Check script residual diagnostics (source/dist consistency)
-  release-gate Run release readiness gate and generate report
-  package-dist Build slim distributable .Rayman zip
-  context-update Generate .Rayman/CONTEXT.md
-  health-check Run daily health check once
-  proxy-health Show proxy candidates and current resolved proxy (supports --refresh/--json)
-  ensure-wsl-deps Install/verify WSL deps (pwsh, notify, voice)
-  ensure-win-deps Check Windows deps
-  dispatch    Route task backend: copilot|codex|local (with policy + fallback)
-  review-loop Run dispatch + test-fix iterative review loop
-  first-pass-report Generate first-pass KPI report from review-loop telemetry
-  single-repo-upgrade One-click single-repo deep upgrade (quality-first + automation depth)
-  single-repo-kpi Build single-repo KPI dashboard (first-pass/rounds/CFR/MTTR/manual-rate)
-  prompts     List/show/apply reusable prompt templates from .github/prompts
-  menu        Show interactive command picker
-  interactive Alias of menu
-
-Doctor extras:
-  --copy-smoke         Copy .Rayman to a temp folder and run setup smoke test
-  --strict             Use strict setup path (no SkipReleaseGate/no env relaxation)
-  --keep-temp          Keep temp copy workspace even when smoke passes
-  --open-on-fail       Auto open temp workspace when copy smoke fails
-  --scope <value>      Playwright scope for copy smoke: wsl|host|all|sandbox (default: wsl)
-
-Clean extras:
-  --copy-smoke-artifacts <0|1>  Also clean /tmp/rayman_copy_smoke_* artifacts
-
-Release Gate extras:
-  --mode <standard|project>     Select release gate profile
-  --allow-no-git                Downgrade non-git workspace to WARN (instead of FAIL)
-  --json                        Print machine-readable JSON report to stdout
-  --include-residual-diagnostics Run residual diagnostics check and append result into release-gate report
 "@
 }
 
-if ((-not $commandProvided) -or $cmd -eq 'menu' -or $cmd -eq 'interactive') {
+if ((-not $commandProvided) -and $cmd -ne 'menu' -and $cmd -ne 'interactive') {
+  Show-Help
+  Write-Host ''
+  Write-Host '提示：如需交互式菜单，请显式运行：.\.Rayman\rayman.cmd menu' -ForegroundColor Cyan
+  exit 0
+}
+
+if ($cmd -eq 'menu' -or $cmd -eq 'interactive') {
   $picked = Show-RaymanInteractiveMenu
   if ($null -eq $picked) { exit 0 }
   $cmd = ([string]$picked.Command).ToLowerInvariant()
-  if ($picked.ContainsKey('Args')) {
-    $Args = [string[]]$picked.Args
+  if ($picked.ContainsKey('CliArgs')) {
+    $CliArgs = [string[]]$picked['CliArgs']
   } else {
-    $Args = @()
+    $CliArgs = @()
   }
 }
 
@@ -268,7 +225,7 @@ function Stop-RaymanWatcherByPidFile([string]$PidFile, [string]$Name) {
   }
 }
 
-function Normalize-RaymanForwardArgs([string[]]$InputArgs, [string[]]$KnownParamNames) {
+function ConvertTo-RaymanForwardArgs([string[]]$InputArgs, [string[]]$KnownParamNames) {
   if (-not $InputArgs) { return @() }
   $known = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($n in $KnownParamNames) {
@@ -295,6 +252,248 @@ function Normalize-RaymanForwardArgs([string[]]$InputArgs, [string[]]$KnownParam
     [void]$out.Add($arg)
   }
   return @($out)
+}
+
+function Get-RaymanCliTokenName([string]$Token) {
+  if ([string]::IsNullOrWhiteSpace($Token)) { return '' }
+  return $Token.Trim().TrimStart('-')
+}
+
+function Test-RaymanCliTokenMatches([string]$Token, [string[]]$Names) {
+  $candidate = Get-RaymanCliTokenName -Token $Token
+  if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
+  foreach ($name in $Names) {
+    if ($candidate.Equals([string]$name, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Test-RaymanCliFlagPresent([string[]]$InputArgs, [string[]]$Names) {
+  foreach ($arg in @($InputArgs)) {
+    if (Test-RaymanCliTokenMatches -Token ([string]$arg) -Names $Names) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Get-RaymanCliOptionValue {
+  param(
+    [string[]]$InputArgs,
+    [string[]]$Names,
+    [object]$Default = $null,
+    [switch]$ThrowOnMissingValue
+  )
+
+  $argsArray = @($InputArgs)
+  for ($i = 0; $i -lt $argsArray.Count; $i++) {
+    if (-not (Test-RaymanCliTokenMatches -Token ([string]$argsArray[$i]) -Names $Names)) { continue }
+    if ($i + 1 -lt $argsArray.Count) {
+      return $argsArray[$i + 1]
+    }
+    if ($ThrowOnMissingValue) {
+      throw ('missing value for --{0}' -f $Names[0])
+    }
+    return $Default
+  }
+  return $Default
+}
+
+function ConvertTo-RaymanBoolValue([object]$Value, [bool]$Default) {
+  if ($null -eq $Value) { return $Default }
+  $text = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return $Default }
+  switch ($text.ToLowerInvariant()) {
+    '1' { return $true }
+    'true' { return $true }
+    'yes' { return $true }
+    'on' { return $true }
+    '0' { return $false }
+    'false' { return $false }
+    'no' { return $false }
+    'off' { return $false }
+    default { return $Default }
+  }
+}
+
+function Get-RaymanCliBoolOptionValue([string[]]$InputArgs, [string[]]$Names, [bool]$Default) {
+  $value = Get-RaymanCliOptionValue -InputArgs $InputArgs -Names $Names -Default $null
+  return (ConvertTo-RaymanBoolValue -Value $value -Default $Default)
+}
+
+function Resolve-RaymanCommandExitCode([int]$Default = 0) {
+  if (Test-Path variable:LASTEXITCODE) {
+    return [int]$LASTEXITCODE
+  }
+  return $(if ($?) { $Default } else { 1 })
+}
+
+function Test-RaymanCliDoneAlertSuppressed {
+  param(
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace($CommandName)) { return $true }
+
+  switch ($CommandName.Trim().ToLowerInvariant()) {
+    'help' { return $true }
+    'menu' { return $true }
+    'interactive' { return $true }
+    'copy-self-check' { return $true }
+    'self-check' { return $true }
+    'copy-check' { return $true }
+  }
+
+  if (Convert-RaymanStringToBool -Value ([Environment]::GetEnvironmentVariable('CI')) -Default $false) {
+    return $true
+  }
+
+  try {
+    if ([Console]::IsOutputRedirected -or [Console]::IsErrorRedirected) {
+      return $true
+    }
+  } catch {}
+
+  foreach ($arg in @($InputArgs)) {
+    $token = Get-RaymanCliTokenName -Token ([string]$arg)
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    switch ($token.ToLowerInvariant()) {
+      'json' { return $true }
+      'as-json' { return $true }
+      'asjson' { return $true }
+    }
+  }
+
+  return $false
+}
+
+function Invoke-RaymanCliDoneAlert {
+  param(
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if (Test-RaymanCliDoneAlertSuppressed -CommandName $CommandName -InputArgs $InputArgs) {
+    return
+  }
+
+  try {
+    $reason = 'Rayman 命令已完成。'
+    if (-not [string]::IsNullOrWhiteSpace($CommandName)) {
+      $reason = ("Rayman 命令已完成：{0}" -f $CommandName)
+    }
+    Invoke-RaymanAttentionAlert -Kind 'done' -Reason $reason -WorkspaceRoot $script:RaymanCliWorkspaceRoot | Out-Null
+  } catch {}
+}
+
+function Exit-RaymanCli {
+  param(
+    [int]$ExitCode,
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if ($ExitCode -eq 0) {
+    Invoke-RaymanCliDoneAlert -CommandName $CommandName -InputArgs $InputArgs
+  }
+
+  exit $ExitCode
+}
+
+function Get-RaymanLatestCopySmokeDebugBundlePath {
+  $tempDir = [System.IO.Path]::GetTempPath()
+  try {
+    $latest = Get-ChildItem -LiteralPath $tempDir -Directory -Filter 'rayman_copy_smoke_*' -ErrorAction Stop |
+      Where-Object { $_.LastWriteTime -ge (Get-Date).AddHours(-12) } |
+      Sort-Object LastWriteTime -Descending |
+      ForEach-Object {
+        $bundlePath = Join-Path $_.FullName '.Rayman\runtime\copy_smoke_debug_bundle.txt'
+        if (Test-Path -LiteralPath $bundlePath -PathType Leaf) {
+          [PSCustomObject]@{
+            BundlePath = $bundlePath
+            TempRoot = $_.FullName
+            LastWriteTime = $_.LastWriteTime
+          }
+        }
+      } |
+      Select-Object -First 1
+    return $latest
+  } catch {
+    return $null
+  }
+}
+
+function Get-RaymanCopySmokeDebugBundleValues([string]$BundlePath) {
+  if ([string]::IsNullOrWhiteSpace($BundlePath) -or -not (Test-Path -LiteralPath $BundlePath -PathType Leaf)) { return $null }
+  try {
+    $lines = Get-Content -LiteralPath $BundlePath -Encoding UTF8 -ErrorAction Stop
+    $map = [ordered]@{}
+    foreach ($line in $lines) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      if ([string]$line -notmatch '^[A-Za-z0-9_]+=(.*)$') { continue }
+      $parts = [string]$line -split '=', 2
+      if ($parts.Count -ne 2) { continue }
+      $map[$parts[0]] = $parts[1]
+    }
+    return [PSCustomObject]$map
+  } catch {
+    return $null
+  }
+}
+
+function Format-RaymanStopProcessCommand([string]$PidListText) {
+  if ([string]::IsNullOrWhiteSpace($PidListText)) { return $null }
+  $pidValues = New-Object System.Collections.Generic.List[string]
+  foreach ($token in ([string]$PidListText -split '[^0-9]+')) {
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    $parsed = 0
+    if ([int]::TryParse($token, [ref]$parsed) -and $parsed -gt 0) {
+      [void]$pidValues.Add([string]$parsed)
+    }
+  }
+  if ($pidValues.Count -eq 0) { return $null }
+  return ('Stop-Process -Id {0} -Force' -f ($pidValues -join ','))
+}
+
+function Show-RaymanDoctorCopySmokeHint {
+  $latest = Get-RaymanLatestCopySmokeDebugBundlePath
+  if ($null -eq $latest -or [string]::IsNullOrWhiteSpace([string]$latest.BundlePath)) { return }
+  $bundle = Get-RaymanCopySmokeDebugBundleValues -BundlePath ([string]$latest.BundlePath)
+  if ($null -eq $bundle) { return }
+
+  Write-Host '附加提示：检测到最近一次 copy smoke 的 Sandbox 摘要：' -ForegroundColor Yellow
+  if ($bundle.PSObject.Properties['sandbox_owner'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_owner)) {
+    Write-Host ("  owner: {0}" -f [string]$bundle.sandbox_owner) -ForegroundColor Yellow
+  }
+  if ($bundle.PSObject.Properties['sandbox_owned_pids'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_owned_pids)) {
+    Write-Host ("  owned pids: {0}" -f [string]$bundle.sandbox_owned_pids) -ForegroundColor Yellow
+  }
+  if ($bundle.PSObject.Properties['sandbox_foreign_pids'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_foreign_pids) -and [string]$bundle.sandbox_foreign_pids -ne '(none)') {
+    Write-Host ("  foreign pids: {0}（不要动）" -f [string]$bundle.sandbox_foreign_pids) -ForegroundColor Yellow
+  }
+  if ($bundle.PSObject.Properties['sandbox_unknown_pids'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_unknown_pids) -and [string]$bundle.sandbox_unknown_pids -ne '(none)') {
+    Write-Host ("  unknown pids: {0}（暂不建议处理）" -f [string]$bundle.sandbox_unknown_pids) -ForegroundColor Yellow
+  }
+  if ($bundle.PSObject.Properties['sandbox_suggest_close_pids'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_suggest_close_pids) -and [string]$bundle.sandbox_suggest_close_pids -ne '(none)') {
+    Write-Host ("  建议仅关闭：{0}" -f [string]$bundle.sandbox_suggest_close_pids) -ForegroundColor Yellow
+    $stopCommand = $null
+    if ($bundle.PSObject.Properties['sandbox_suggest_close_command'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.sandbox_suggest_close_command)) {
+      $stopCommand = [string]$bundle.sandbox_suggest_close_command
+    }
+    if ([string]::IsNullOrWhiteSpace($stopCommand)) {
+      $stopCommand = Format-RaymanStopProcessCommand -PidListText ([string]$bundle.sandbox_suggest_close_pids)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stopCommand)) {
+      Write-Host ("  可复制命令：{0}" -f $stopCommand) -ForegroundColor DarkYellow
+    }
+  }
+  if ($bundle.PSObject.Properties['temp_workspace'] -and -not [string]::IsNullOrWhiteSpace([string]$bundle.temp_workspace)) {
+    Write-Host ("  temp workspace: {0}" -f [string]$bundle.temp_workspace) -ForegroundColor DarkYellow
+  }
+  Write-Host ("  debug bundle: {0}" -f [string]$latest.BundlePath) -ForegroundColor DarkYellow
 }
 
 switch ($cmd) {
@@ -361,44 +560,21 @@ switch ($cmd) {
   }
 
   "migrate-rag" {
-    & "$PSScriptRoot\scripts\rag\migrate_legacy_rag.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args
+    & "$PSScriptRoot\scripts\rag\migrate_legacy_rag.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs
     break
   }
   "rag-bootstrap" {
-    & "$PSScriptRoot\scripts\rag\rag_bootstrap.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action ensure @Args
+    & "$PSScriptRoot\scripts\rag\rag_bootstrap.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action ensure @CliArgs
     break
   }
 
   "doctor" {
-    $copySmoke = $false
-    $copySmokeStrict = $false
-    $copySmokeKeepTemp = $false
-    $copySmokeTimeoutSeconds = 120
-    $copySmokeScope = 'wsl'
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--copy-smoke$' { $copySmoke = $true; continue }
-        '^--strict$' { $copySmokeStrict = $true; continue }
-        '^--keep-temp$' { $copySmokeKeepTemp = $true; continue }
-        '^--timeout-seconds$' {
-          if ($i + 1 -lt $Args.Count) {
-            $copySmokeTimeoutSeconds = [int][string]$Args[++$i]
-          } else {
-            throw 'missing value for --timeout-seconds'
-          }
-          continue
-        }
-        '^--scope$' {
-          if ($i + 1 -lt $Args.Count) {
-            $copySmokeScope = [string]$Args[++$i]
-          } else {
-            throw 'missing value for --scope'
-          }
-          continue
-        }
-      }
-    }
+    $doctorArgs = @($CliArgs)
+    $copySmoke = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('copy-smoke')
+    $copySmokeStrict = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('strict')
+    $copySmokeKeepTemp = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('keep-temp')
+    $copySmokeTimeoutSeconds = [int](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('timeout-seconds') -Default 120 -ThrowOnMissingValue:$false)
+    $copySmokeScope = [string](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('scope') -Default 'wsl' -ThrowOnMissingValue:$false)
 
     if ($copySmoke) {
       $doctorRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -413,45 +589,87 @@ switch ($cmd) {
       break
     }
 
+    $doctorRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    $agentContractScript = Join-Path $doctorRoot '.Rayman\scripts\agents\check_agent_contract.ps1'
+    if (Test-Path -LiteralPath $agentContractScript -PathType Leaf) {
+      if (Test-Path variable:LASTEXITCODE) {
+        $global:LASTEXITCODE = 0
+      }
+      & $agentContractScript -WorkspaceRoot $doctorRoot
+      $doctorAgentExitCode = 0
+      if (Test-Path variable:LASTEXITCODE) {
+        $doctorAgentExitCode = [int]$LASTEXITCODE
+      } elseif (-not $?) {
+        $doctorAgentExitCode = 1
+      }
+      if ($doctorAgentExitCode -ne 0) {
+        Write-Host '提示：agent-contract 已失败；无需手动输入内容。请直接查看上面的 FAIL 项，或重跑：.\.Rayman\rayman.ps1 agent-contract' -ForegroundColor Yellow
+        Exit-RaymanCli -ExitCode $doctorAgentExitCode -CommandName $cmd -InputArgs $CliArgs
+      }
+    }
+
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     if ($null -ne $wsl) {
-      $repo = (Resolve-Path (Join-Path $PSScriptRoot ".."))
-      & wsl.exe -e bash -lc "cd \"$repo\" && bash ./.Rayman/run/rules.sh doctor" | Out-Host
+      $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+      if ($repoWin -match '^[A-Za-z]:\\') {
+        $drive = $repoWin.Substring(0,1).ToLowerInvariant()
+        $rest = $repoWin.Substring(2).Replace('\', '/')
+        $repoWsl = "/mnt/$drive$rest"
+      } else {
+        $repoWsl = $repoWin.Replace('\', '/')
+      }
+      & wsl.exe -e bash -lc "cd '$repoWsl' && bash ./.Rayman/run/rules.sh doctor" | Out-Host
+      if (Test-Path variable:LASTEXITCODE) {
+        $doctorExitCode = [int]$LASTEXITCODE
+        if ($doctorExitCode -ne 0) {
+          Write-Host '提示：doctor 失败通常不是让你“输入内容”，而是下游严格校验未通过。' -ForegroundColor Yellow
+          Show-RaymanDoctorCopySmokeHint
+          Write-Host '下一步建议 1：先单独运行 .\.Rayman\rayman.ps1 release-gate -Mode project，确认主链路是否正常。' -ForegroundColor Yellow
+          Write-Host '下一步建议 2：若是当前主机的 Windows Sandbox 权限问题，可显式设置 RAYMAN_ALLOW_COPY_SMOKE_SANDBOX_FAIL=1 和 RAYMAN_BYPASS_REASON 后再运行 doctor。' -ForegroundColor Yellow
+        }
+      }
     } else {
       & "$PSScriptRoot\win-check.ps1"; 
     }
     break
   }
   "copy-self-check" {
-    & $PSCommandPath doctor --copy-smoke @Args
+    & $PSCommandPath doctor --copy-smoke @CliArgs
     break
   }
   "self-check" {
-    & $PSCommandPath doctor --copy-smoke @Args
+    & $PSCommandPath doctor --copy-smoke @CliArgs
     break
   }
   "copy-check" {
-    & $PSCommandPath doctor --copy-smoke @Args
+    & $PSCommandPath doctor --copy-smoke @CliArgs
     break
   }
   "check" { & "$PSScriptRoot\win-check.ps1"; break }
+  "fast-gate" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    & "$PSScriptRoot\scripts\project\run_project_gate.ps1" -WorkspaceRoot $workspaceArg -Lane fast
+    break
+  }
+  "browser-gate" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    & "$PSScriptRoot\scripts\project\run_project_gate.ps1" -WorkspaceRoot $workspaceArg -Lane browser
+    break
+  }
+  "full-gate" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    & "$PSScriptRoot\scripts\project\run_project_gate.ps1" -WorkspaceRoot $workspaceArg -Lane full
+    break
+  }
   "ensure-test-deps" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $autoInstall = $true
-    $require = $true
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(AutoInstall|auto-install)$' { if ($i + 1 -lt $Args.Count) { $autoInstall = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(Require|require)$' { if ($i + 1 -lt $Args.Count) { $require = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-      }
-    }
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $autoInstall = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('AutoInstall', 'auto-install') -Default $true
+    $require = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $true
     & "$PSScriptRoot\scripts\utils\ensure_project_test_deps.ps1" -WorkspaceRoot $workspaceArg -AutoInstall:$autoInstall -Require:$require
     break
   }
   "ensure-playwright" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
     $scopeArg = [string][Environment]::GetEnvironmentVariable('RAYMAN_PLAYWRIGHT_SETUP_SCOPE')
     if ([string]::IsNullOrWhiteSpace($scopeArg)) { $scopeArg = 'wsl' }
     $browserArg = [string][Environment]::GetEnvironmentVariable('RAYMAN_PLAYWRIGHT_BROWSER')
@@ -466,16 +684,10 @@ switch ($cmd) {
       $require = ($requireEnv -ne '0' -and $requireEnv -ne 'false' -and $requireEnv -ne 'False')
     }
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(Scope|scope)$' { if ($i + 1 -lt $Args.Count) { $scopeArg = [string]$Args[++$i] }; continue }
-        '^--?(Browser|browser)$' { if ($i + 1 -lt $Args.Count) { $browserArg = [string]$Args[++$i] }; continue }
-        '^--?(Require|require)$' { if ($i + 1 -lt $Args.Count) { $require = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(TimeoutSeconds|timeout-seconds)$' { if ($i + 1 -lt $Args.Count) { $timeoutArg = [int][string]$Args[++$i] }; continue }
-      }
-    }
+    $scopeArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('Scope', 'scope') -Default $scopeArg)
+    $browserArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('Browser', 'browser') -Default $browserArg)
+    $require = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $require
+    $timeoutArg = [int](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('TimeoutSeconds', 'timeout-seconds') -Default $timeoutArg)
 
     if ($IsWindows) {
       & "$PSScriptRoot\scripts\pwa\ensure_playwright_ready.ps1" -WorkspaceRoot $workspaceArg -Scope $scopeArg -Browser $browserArg -Require:$require -TimeoutSeconds $timeoutArg
@@ -489,84 +701,59 @@ switch ($cmd) {
     }
     break
   }
-  "pwa-test" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $flowArg = '.Rayman/pwa.flow.sample.json'
-    $browserArg = 'chromium'
-    $headlessArg = $true
-    $timeoutArg = 30000
-    $requireArg = $true
-    $preferSandboxArg = $true
+  "ensure-winapp" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $requireArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $false
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(FlowFile|flow-file)$' { if ($i + 1 -lt $Args.Count) { $flowArg = [string]$Args[++$i] }; continue }
-        '^--?(Browser|browser)$' { if ($i + 1 -lt $Args.Count) { $browserArg = [string]$Args[++$i] }; continue }
-        '^--?(Headless|headless)$' { if ($i + 1 -lt $Args.Count) { $headlessArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(TimeoutMs|timeout-ms)$' { if ($i + 1 -lt $Args.Count) { $timeoutArg = [int][string]$Args[++$i] }; continue }
-        '^--?(Require|require)$' { if ($i + 1 -lt $Args.Count) { $requireArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(PreferSandbox|prefer-sandbox)$' { if ($i + 1 -lt $Args.Count) { $preferSandboxArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-      }
-    }
+    & "$PSScriptRoot\scripts\windows\ensure_winapp.ps1" -WorkspaceRoot $workspaceArg -Require:$requireArg
+    break
+  }
+  "pwa-test" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $flowArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('FlowFile', 'flow-file') -Default '.Rayman/pwa.flow.sample.json')
+    $browserArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('Browser', 'browser') -Default 'chromium')
+    $headlessArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Headless', 'headless') -Default $true
+    $timeoutArg = [int](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('TimeoutMs', 'timeout-ms') -Default 30000)
+    $requireArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $true
+    $preferSandboxArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('PreferSandbox', 'prefer-sandbox') -Default $true
 
     & "$PSScriptRoot\scripts\pwa\run_pwa_flow.ps1" -WorkspaceRoot $workspaceArg -FlowFile $flowArg -Browser $browserArg -Headless:$headlessArg -TimeoutMs $timeoutArg -Require:$requireArg -PreferSandbox:$preferSandboxArg
     break
   }
   "winapp-test" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $flowArg = '.Rayman/winapp.flow.sample.json'
-    $requireArg = $true
-    $timeoutArg = 15000
-
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(FlowFile|flow-file)$' { if ($i + 1 -lt $Args.Count) { $flowArg = [string]$Args[++$i] }; continue }
-        '^--?(Require|require)$' { if ($i + 1 -lt $Args.Count) { $requireArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(DefaultTimeoutMs|default-timeout-ms)$' { if ($i + 1 -lt $Args.Count) { $timeoutArg = [int][string]$Args[++$i] }; continue }
-      }
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $flowArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('FlowFile', 'flow-file') -Default '.Rayman/winapp.flow.sample.json')
+    $winAppRequireDefault = $true
+    $winAppRequireEnv = [string][Environment]::GetEnvironmentVariable('RAYMAN_WINAPP_REQUIRE')
+    if (-not [string]::IsNullOrWhiteSpace($winAppRequireEnv)) {
+      $winAppRequireDefault = ($winAppRequireEnv -ne '0' -and $winAppRequireEnv -ne 'false' -and $winAppRequireEnv -ne 'False')
     }
+    $timeoutDefault = 15000
+    $timeoutEnv = [string][Environment]::GetEnvironmentVariable('RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS')
+    $timeoutEnvParsed = 0
+    if (-not [string]::IsNullOrWhiteSpace($timeoutEnv) -and [int]::TryParse($timeoutEnv, [ref]$timeoutEnvParsed)) {
+      $timeoutDefault = $timeoutEnvParsed
+    }
+    $requireArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $winAppRequireDefault
+    $timeoutArg = [int](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('DefaultTimeoutMs', 'default-timeout-ms') -Default $timeoutDefault)
 
     & "$PSScriptRoot\scripts\windows\run_winapp_flow.ps1" -WorkspaceRoot $workspaceArg -FlowFile $flowArg -Require:$requireArg -DefaultTimeoutMs $timeoutArg
     break
   }
   "winapp-inspect" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $titleRegexArg = '.*'
-    $outFileArg = '.Rayman/runtime/winapp-tests/control_tree.txt'
-    $timeoutArg = 20
-
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(WindowTitleRegex|window-title-regex|TitleRegex|title-regex)$' { if ($i + 1 -lt $Args.Count) { $titleRegexArg = [string]$Args[++$i] }; continue }
-        '^--?(OutFile|out-file)$' { if ($i + 1 -lt $Args.Count) { $outFileArg = [string]$Args[++$i] }; continue }
-        '^--?(TimeoutSeconds|timeout-seconds)$' { if ($i + 1 -lt $Args.Count) { $timeoutArg = [int][string]$Args[++$i] }; continue }
-      }
-    }
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $titleRegexArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WindowTitleRegex', 'window-title-regex', 'TitleRegex', 'title-regex') -Default '.*')
+    $outFileArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('OutFile', 'out-file') -Default '.Rayman/runtime/winapp-tests/control_tree.json')
+    $timeoutArg = [int](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('TimeoutSeconds', 'timeout-seconds') -Default 20)
 
     & "$PSScriptRoot\scripts\windows\inspect_winapp.ps1" -WorkspaceRoot $workspaceArg -WindowTitleRegex $titleRegexArg -OutFile $outFileArg -TimeoutSeconds $timeoutArg
     break
   }
   "linux-test" {
-    $workspaceArg = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $commandArg = ''
-    $autoInstallArg = $true
-    $requireArg = $true
-
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
-      switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(TestCommand|test-command|Cmd|cmd)$' { if ($i + 1 -lt $Args.Count) { $commandArg = [string]$Args[++$i] }; continue }
-        '^--?(AutoInstall|auto-install)$' { if ($i + 1 -lt $Args.Count) { $autoInstallArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-        '^--?(Require|require)$' { if ($i + 1 -lt $Args.Count) { $requireArg = ([string]$Args[++$i] -ne '0' -and [string]$Args[$i] -ne 'false') }; continue }
-      }
-    }
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default ((Resolve-Path (Join-Path $PSScriptRoot "..")).Path))
+    $commandArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('TestCommand', 'test-command', 'Cmd', 'cmd') -Default '')
+    $autoInstallArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('AutoInstall', 'auto-install') -Default $true
+    $requireArg = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $true
 
     & "$PSScriptRoot\scripts\linux\run_wsl_auto_test.ps1" -WorkspaceRoot $workspaceArg -Command $commandArg -AutoInstall:$autoInstallArg -Require:$requireArg
     break
@@ -578,14 +765,14 @@ switch ($cmd) {
     $aggressiveArg = $null
     $copySmokeArtifactsArg = $null
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(KeepDays|keep-days)$' { if ($i + 1 -lt $Args.Count) { $keepDaysArg = [string]$Args[++$i] }; continue }
-        '^--?(DryRun|dry-run)$' { if ($i + 1 -lt $Args.Count) { $dryRunArg = [string]$Args[++$i] }; continue }
-        '^--?(Aggressive|aggressive)$' { if ($i + 1 -lt $Args.Count) { $aggressiveArg = [string]$Args[++$i] }; continue }
-        '^--?(CopySmokeArtifacts|copy-smoke-artifacts)$' { if ($i + 1 -lt $Args.Count) { $copySmokeArtifactsArg = [string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $workspaceArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(KeepDays|keep-days)$' { if ($i + 1 -lt $CliArgs.Count) { $keepDaysArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(DryRun|dry-run)$' { if ($i + 1 -lt $CliArgs.Count) { $dryRunArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(Aggressive|aggressive)$' { if ($i + 1 -lt $CliArgs.Count) { $aggressiveArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(CopySmokeArtifacts|copy-smoke-artifacts)$' { if ($i + 1 -lt $CliArgs.Count) { $copySmokeArtifactsArg = [string]$CliArgs[++$i] }; continue }
       }
     }
 
@@ -603,12 +790,12 @@ switch ($cmd) {
     $reasonArg = $null
     $keepArg = $null
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $workspaceArg = [string]$Args[++$i] }; continue }
-        '^--?(Reason|reason)$' { if ($i + 1 -lt $Args.Count) { $reasonArg = [string]$Args[++$i] }; continue }
-        '^--?(Keep|keep)$' { if ($i + 1 -lt $Args.Count) { $keepArg = [string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $workspaceArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(Reason|reason)$' { if ($i + 1 -lt $CliArgs.Count) { $reasonArg = [string]$CliArgs[++$i] }; continue }
+        '^--?(Keep|keep)$' { if ($i + 1 -lt $CliArgs.Count) { $keepArg = [string]$CliArgs[++$i] }; continue }
         default {
           if ([string]::IsNullOrWhiteSpace($reasonArg)) { $reasonArg = $token; continue }
           if ([string]::IsNullOrWhiteSpace($keepArg)) { $keepArg = $token; continue }
@@ -626,7 +813,7 @@ switch ($cmd) {
   "metrics" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $metricsArgLine = ""
-    if ($Args) { $metricsArgLine = ($Args -join " ") }
+    if ($CliArgs) { $metricsArgLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -642,7 +829,7 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\rules_metrics.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\rules_metrics.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[metrics] neither wsl.exe nor bash found."
       }
@@ -652,7 +839,7 @@ switch ($cmd) {
   "trend" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $trendArgLine = ""
-    if ($Args) { $trendArgLine = ($Args -join " ") }
+    if ($CliArgs) { $trendArgLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -668,7 +855,7 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\daily_trend.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\daily_trend.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[trend] neither wsl.exe nor bash found."
       }
@@ -678,7 +865,7 @@ switch ($cmd) {
   "baseline-guard" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $argLine = ""
-    if ($Args) { $argLine = ($Args -join " ") }
+    if ($CliArgs) { $argLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -694,7 +881,7 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\baseline_guard.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\baseline_guard.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[baseline-guard] neither wsl.exe nor bash found."
       }
@@ -704,7 +891,7 @@ switch ($cmd) {
   "telemetry-export" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $argLine = ""
-    if ($Args) { $argLine = ($Args -join " ") }
+    if ($CliArgs) { $argLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -720,7 +907,7 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\export_artifacts.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\export_artifacts.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[telemetry-export] neither wsl.exe nor bash found."
       }
@@ -730,7 +917,7 @@ switch ($cmd) {
   "telemetry-index" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $argLine = ""
-    if ($Args) { $argLine = ($Args -join " ") }
+    if ($CliArgs) { $argLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -746,7 +933,7 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\index_artifacts.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\index_artifacts.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[telemetry-index] neither wsl.exe nor bash found."
       }
@@ -756,7 +943,7 @@ switch ($cmd) {
   "telemetry-prune" {
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
     $argLine = ""
-    if ($Args) { $argLine = ($Args -join " ") }
+    if ($CliArgs) { $argLine = ($CliArgs -join " ") }
     if ($null -ne $wsl) {
       $repoWin = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
       if ($repoWin -match '^[A-Za-z]:\\') {
@@ -772,29 +959,29 @@ switch ($cmd) {
     } else {
       $bash = Get-Command bash -ErrorAction SilentlyContinue
       if ($null -ne $bash) {
-        & bash ".\.Rayman\scripts\telemetry\prune_artifacts.sh" @Args | Out-Host
+        & bash ".\.Rayman\scripts\telemetry\prune_artifacts.sh" @CliArgs | Out-Host
       } else {
         Write-Host "[telemetry-prune] neither wsl.exe nor bash found."
       }
     }
     break
   }
-  "deploy" { & "$PSScriptRoot\scripts\deploy\deploy.ps1" @Args; break }
-  "cache-clear" { & "$PSScriptRoot\scripts\utils\clear_cache.ps1" @Args; break }
-  "state-save" { & "$PSScriptRoot\scripts\state\save_state.ps1" @Args; break }
-  "state-resume" { & "$PSScriptRoot\scripts\state\resume_state.ps1" @Args; break }
-  "test-fix" { & "$PSScriptRoot\scripts\repair\run_tests_and_fix.ps1" @Args; break }
-  "req-ts-backfill" { & "$PSScriptRoot\scripts\requirements\backfill_requirements_timestamps.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
+  "deploy" { & "$PSScriptRoot\scripts\deploy\deploy.ps1" @CliArgs; break }
+  "cache-clear" { & "$PSScriptRoot\scripts\utils\clear_cache.ps1" @CliArgs; break }
+  "state-save" { & "$PSScriptRoot\scripts\state\save_state.ps1" @CliArgs; break }
+  "state-resume" { & "$PSScriptRoot\scripts\state\resume_state.ps1" @CliArgs; break }
+  "test-fix" { & "$PSScriptRoot\scripts\repair\run_tests_and_fix.ps1" @CliArgs; break }
+  "req-ts-backfill" { & "$PSScriptRoot\scripts\requirements\backfill_requirements_timestamps.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "dist-sync" { & "$PSScriptRoot\scripts\release\sync_dist_from_src.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Validate; break }
-  "diagnostics-residual" { & "$PSScriptRoot\scripts\utils\diagnose_residual_diagnostics.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
+  "diagnostics-residual" { & "$PSScriptRoot\scripts\utils\diagnose_residual_diagnostics.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "release-gate" {
     $releaseParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['WorkspaceRoot'] = [string]$Args[++$i] }; continue }
-        '^--?(ReportPath|report-path)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['ReportPath'] = [string]$Args[++$i] }; continue }
-        '^--?(Mode|mode)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['Mode'] = [string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['WorkspaceRoot'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(ReportPath|report-path)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['ReportPath'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Mode|mode)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['Mode'] = [string]$CliArgs[++$i] }; continue }
         '^--?(SkipAutoDistSync|skip-auto-dist-sync)$' { $releaseParams['SkipAutoDistSync'] = $true; continue }
         '^--?(AllowNoGit|allow-no-git)$' { $releaseParams['AllowNoGit'] = $true; continue }
         '^--?(Json|json)$' { $releaseParams['Json'] = $true; continue }
@@ -808,16 +995,16 @@ switch ($cmd) {
     } elseif (-not $?) {
       $releaseExitCode = 1
     }
-    exit $releaseExitCode
+    Exit-RaymanCli -ExitCode $releaseExitCode -CommandName $cmd -InputArgs $CliArgs
   }
   "release" {
     $releaseParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['WorkspaceRoot'] = [string]$Args[++$i] }; continue }
-        '^--?(ReportPath|report-path)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['ReportPath'] = [string]$Args[++$i] }; continue }
-        '^--?(Mode|mode)$' { if ($i + 1 -lt $Args.Count) { $releaseParams['Mode'] = [string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['WorkspaceRoot'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(ReportPath|report-path)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['ReportPath'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Mode|mode)$' { if ($i + 1 -lt $CliArgs.Count) { $releaseParams['Mode'] = [string]$CliArgs[++$i] }; continue }
         '^--?(SkipAutoDistSync|skip-auto-dist-sync)$' { $releaseParams['SkipAutoDistSync'] = $true; continue }
         '^--?(AllowNoGit|allow-no-git)$' { $releaseParams['AllowNoGit'] = $true; continue }
         '^--?(Json|json)$' { $releaseParams['Json'] = $true; continue }
@@ -831,65 +1018,93 @@ switch ($cmd) {
     } elseif (-not $?) {
       $releaseExitCode = 1
     }
-    exit $releaseExitCode
+    Exit-RaymanCli -ExitCode $releaseExitCode -CommandName $cmd -InputArgs $CliArgs
   }
-  "package-dist" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
-  "package" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
-  "context-update" { & "$PSScriptRoot\scripts\utils\generate_context.ps1" @Args; break }
-  "health-check" { & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" @Args; break }
-  "proxy-health" {
-    $proxyArgs = @()
-    foreach ($a in $Args) {
-      if ([string]::IsNullOrWhiteSpace([string]$a)) { $proxyArgs += $a; continue }
-      if ([string]$a -match '^--(.+)$') {
-        $proxyArgs += ('-' + $Matches[1])
-      } else {
-        $proxyArgs += $a
+  "package-dist" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "package" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "context-update" { & "$PSScriptRoot\scripts\utils\generate_context.ps1" @CliArgs; break }
+  "agent-contract" {
+    if (Test-Path variable:LASTEXITCODE) {
+      $global:LASTEXITCODE = 0
+    }
+    & "$PSScriptRoot\scripts\agents\check_agent_contract.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs
+    if ($?) {
+      $global:LASTEXITCODE = 0
+      break
+    }
+    if (Test-Path variable:LASTEXITCODE) {
+      Exit-RaymanCli -ExitCode ([int]$LASTEXITCODE) -CommandName $cmd -InputArgs $CliArgs
+    }
+    Exit-RaymanCli -ExitCode 1 -CommandName $cmd -InputArgs $CliArgs
+  }
+  "agent-capabilities" {
+    $capabilityParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+    $syncRequested = $false
+    $jsonRequested = $false
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
+      switch -Regex ($token) {
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $capabilityParams['WorkspaceRoot'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Action|action)$' { if ($i + 1 -lt $CliArgs.Count) { $capabilityParams['Action'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Sync|sync)$' { $syncRequested = $true; continue }
+        '^--?(Json|json)$' { $jsonRequested = $true; continue }
       }
     }
-    $forward = Normalize-RaymanForwardArgs -InputArgs $proxyArgs -KnownParamNames @('WorkspaceRoot', 'Refresh', 'AsJson')
-    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @forward
+    if ($syncRequested -and -not $capabilityParams.ContainsKey('Action')) {
+      $capabilityParams['Action'] = 'sync'
+    }
+    if (-not $capabilityParams.ContainsKey('Action')) {
+      $capabilityParams['Action'] = 'status'
+    }
+    if ($jsonRequested) {
+      $capabilityParams['Json'] = $true
+    }
+    & "$PSScriptRoot\scripts\agents\ensure_agent_capabilities.ps1" @capabilityParams
+    if (Test-Path variable:LASTEXITCODE) {
+      Exit-RaymanCli -ExitCode ([int]$LASTEXITCODE) -CommandName $cmd -InputArgs $CliArgs
+    }
+    Exit-RaymanCli -ExitCode $(if ($?) { 0 } else { 1 }) -CommandName $cmd -InputArgs $CliArgs
+  }
+  "health-check" { & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" @CliArgs; break }
+  "proxy-health" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
+    $refreshArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Refresh', 'refresh')
+    $jsonArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Json', 'json', 'AsJson', 'as-json', 'asjson')
+    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot $workspaceArg -Refresh:$refreshArg -AsJson:$jsonArg
     break
   }
   "proxy-check" {
-    $proxyArgs = @()
-    foreach ($a in $Args) {
-      if ([string]::IsNullOrWhiteSpace([string]$a)) { $proxyArgs += $a; continue }
-      if ([string]$a -match '^--(.+)$') {
-        $proxyArgs += ('-' + $Matches[1])
-      } else {
-        $proxyArgs += $a
-      }
-    }
-    $forward = Normalize-RaymanForwardArgs -InputArgs $proxyArgs -KnownParamNames @('WorkspaceRoot', 'Refresh', 'AsJson')
-    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @forward
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
+    $refreshArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Refresh', 'refresh')
+    $jsonArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Json', 'json', 'AsJson', 'as-json', 'asjson')
+    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot $workspaceArg -Refresh:$refreshArg -AsJson:$jsonArg
     break
   }
-  "ensure-wsl-deps" { & "$PSScriptRoot\scripts\utils\ensure_wsl_deps.ps1" @Args; break }
-  "ensure-win-deps" { & "$PSScriptRoot\scripts\utils\ensure_win_deps.ps1" @Args; break }
-  "dispatch" { & "$PSScriptRoot\scripts\agents\dispatch.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
-  "review-loop" { & "$PSScriptRoot\scripts\agents\review_loop.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
-  "first-pass-report" { & "$PSScriptRoot\scripts\agents\first_pass_report.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
+  "ensure-wsl-deps" { & "$PSScriptRoot\scripts\utils\ensure_wsl_deps.ps1" @CliArgs; break }
+  "ensure-win-deps" { & "$PSScriptRoot\scripts\utils\ensure_win_deps.ps1" @CliArgs; break }
+  "dispatch" { & "$PSScriptRoot\scripts\agents\dispatch.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "review-loop" { & "$PSScriptRoot\scripts\agents\review_loop.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "first-pass-report" { & "$PSScriptRoot\scripts\agents\first_pass_report.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "single-repo-upgrade" {
     $upgradeParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['WorkspaceRoot'] = [string]$Args[++$i] }; continue }
-        '^--?(Task|task)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['Task'] = [string]$Args[++$i] }; continue }
-        '^--?(TaskKind|task-kind)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['TaskKind'] = [string]$Args[++$i] }; continue }
-        '^--?(PreferredBackend|preferred-backend)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['PreferredBackend'] = [string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['WorkspaceRoot'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Task|task)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['Task'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(TaskKind|task-kind)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['TaskKind'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(PreferredBackend|preferred-backend)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['PreferredBackend'] = [string]$CliArgs[++$i] }; continue }
         '^--?(AutoResetCircuit|auto-reset-circuit)$' {
-          if ($i + 1 -lt $Args.Count -and -not ([string]$Args[$i + 1]).StartsWith('-')) {
-            $upgradeParams['AutoResetCircuit'] = [string]$Args[++$i]
+          if ($i + 1 -lt $CliArgs.Count -and -not ([string]$CliArgs[$i + 1]).StartsWith('-')) {
+            $upgradeParams['AutoResetCircuit'] = [string]$CliArgs[++$i]
           } else {
             $upgradeParams['AutoResetCircuit'] = '1'
           }
           continue
         }
         '^--?(NoAutoResetCircuit|no-auto-reset-circuit)$' { $upgradeParams['AutoResetCircuit'] = '0'; continue }
-        '^--?(RiskMode|risk-mode)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['RiskMode'] = [string]$Args[++$i] }; continue }
-        '^--?(BypassReason|bypass-reason)$' { if ($i + 1 -lt $Args.Count) { $upgradeParams['BypassReason'] = [string]$Args[++$i] }; continue }
+        '^--?(RiskMode|risk-mode)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['RiskMode'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(BypassReason|bypass-reason)$' { if ($i + 1 -lt $CliArgs.Count) { $upgradeParams['BypassReason'] = [string]$CliArgs[++$i] }; continue }
         '^--?(ApproveHighRisk|approve-high-risk)$' { $upgradeParams['ApproveHighRisk'] = $true; continue }
         '^--?(SkipReleaseGate|skip-release-gate)$' { $upgradeParams['SkipReleaseGate'] = $true; continue }
         '^--?(PolicyBypass|policy-bypass)$' { $upgradeParams['PolicyBypass'] = $true; continue }
@@ -900,17 +1115,19 @@ switch ($cmd) {
   }
   "single-repo-kpi" {
     $kpiParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-      $token = [string]$Args[$i]
+    for ($i = 0; $i -lt $CliArgs.Count; $i++) {
+      $token = [string]$CliArgs[$i]
       switch -Regex ($token) {
-        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $Args.Count) { $kpiParams['WorkspaceRoot'] = [string]$Args[++$i] }; continue }
-        '^--?(Window|window)$' { if ($i + 1 -lt $Args.Count) { $kpiParams['Window'] = [int][string]$Args[++$i] }; continue }
+        '^--?(WorkspaceRoot|workspace-root)$' { if ($i + 1 -lt $CliArgs.Count) { $kpiParams['WorkspaceRoot'] = [string]$CliArgs[++$i] }; continue }
+        '^--?(Window|window)$' { if ($i + 1 -lt $CliArgs.Count) { $kpiParams['Window'] = [int][string]$CliArgs[++$i] }; continue }
         '^--?(Json|json)$' { $kpiParams['Json'] = $true; continue }
       }
     }
     & "$PSScriptRoot\scripts\telemetry\single_repo_kpi.ps1" @kpiParams
     break
   }
-  "prompts" { & "$PSScriptRoot\scripts\agents\prompts_catalog.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @Args; break }
-  default { Write-Error "Unknown command: $Command"; exit 2 }
+  "prompts" { & "$PSScriptRoot\scripts\agents\prompts_catalog.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  default { Write-Error "Unknown command: $Command"; Exit-RaymanCli -ExitCode 2 -CommandName $Command -InputArgs $CliArgs }
 }
+
+Exit-RaymanCli -ExitCode (Resolve-RaymanCommandExitCode -Default 0) -CommandName $cmd -InputArgs $CliArgs

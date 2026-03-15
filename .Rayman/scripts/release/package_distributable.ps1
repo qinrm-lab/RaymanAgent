@@ -121,7 +121,7 @@ if ([string]::IsNullOrWhiteSpace($PackageName)) {
 
 $packageVersion = Get-PackageVersionToken -Name $PackageName
 if ([string]::IsNullOrWhiteSpace($packageVersion)) {
-  Fail ("package name must include version token (e.g. v159): {0}" -f $PackageName)
+  Fail ("package name must include version token (e.g. v161): {0}" -f $PackageName)
 }
 if ($packageVersion -ne $version.ToLowerInvariant()) {
   Fail ("package version mismatch: package={0}, expected={1}" -f $packageVersion, $version)

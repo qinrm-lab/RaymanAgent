@@ -198,6 +198,31 @@ function ConvertTo-JsonString([object]$Obj) {
   return ($Obj | ConvertTo-Json -Depth 64)
 }
 
+function Remove-RunOnFolderOpen([object]$Task) {
+  if ($null -eq $Task) { return $Task }
+
+  $runOptions = Get-JsonProperty -Obj $Task -Name 'runOptions'
+  if ($null -eq $runOptions) { return $Task }
+
+  $runOn = [string](Get-JsonProperty -Obj $runOptions -Name 'runOn')
+  if ($runOn -ne 'folderOpen') { return $Task }
+
+  $clone = [ordered]@{}
+  if ($Task -is [System.Collections.IDictionary]) {
+    foreach ($key in $Task.Keys) {
+      if ([string]$key -eq 'runOptions') { continue }
+      $clone[[string]$key] = $Task[$key]
+    }
+    return $clone
+  }
+
+  foreach ($prop in $Task.PSObject.Properties) {
+    if ([string]$prop.Name -eq 'runOptions') { continue }
+    $clone[[string]$prop.Name] = $prop.Value
+  }
+  return $clone
+}
+
 $settingsDoc = Read-JsonDoc -Path $settingsPath
 if ($settingsDoc.ParseFailed) {
   Write-Warn ("[vscode-auto] skipped settings update due parse error: {0}" -f $settingsPath)
@@ -229,11 +254,15 @@ if ($tasksDoc.ParseFailed) {
     $currentTasks = @()
   }
 
-  $taskLabel = 'Rayman: Auto Start Watchers'
+  $taskLabel = 'Rayman: Folder Open Bootstrap'
+  $capabilityTaskLabel = 'Rayman: Ensure Agent Capabilities'
+  $winAppTaskLabel = 'Rayman: Ensure WinApp Automation'
+  $readyTaskLabel = 'Rayman: Common - Ready for Agent Work'
   $desiredTask = [ordered]@{
     label = $taskLabel
-    type = 'shell'
+    type = 'process'
     command = 'powershell'
+    detail = '文件夹打开时统一执行 Rayman 后台启动与轻量检查。'
     linux = [ordered]@{
       command = 'pwsh'
     }
@@ -242,12 +271,11 @@ if ($tasksDoc.ParseFailed) {
       '-ExecutionPolicy',
       'Bypass',
       '-File',
-      '${workspaceFolder}\\.Rayman\\scripts\\watch\\start_background_watchers.ps1',
+      '${workspaceFolder}\\.Rayman\\scripts\\watch\\vscode_folder_open_bootstrap.ps1',
       '-WorkspaceRoot',
       '${workspaceFolder}',
       '-VscodeOwnerPid',
-      '${env:VSCODE_PID}',
-      '-FromVscodeAuto'
+      '${env:VSCODE_PID}'
     )
     runOptions = [ordered]@{
       runOn = 'folderOpen'
@@ -259,21 +287,111 @@ if ($tasksDoc.ParseFailed) {
     }
     problemMatcher = @()
   }
+  $desiredCapabilityTask = [ordered]@{
+    label = $capabilityTaskLabel
+    type = 'shell'
+    command = 'powershell'
+    detail = '同步 Codex Agent capabilities 到 .codex/config.toml，并补齐 OpenAI Docs / Playwright / WinApp MCP。'
+    linux = [ordered]@{
+      command = 'pwsh'
+    }
+    args = @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      '${workspaceFolder}\\.Rayman\\scripts\\agents\\ensure_agent_capabilities.ps1',
+      '-Action',
+      'sync',
+      '-WorkspaceRoot',
+      '${workspaceFolder}'
+    )
+    presentation = [ordered]@{
+      reveal = 'always'
+      panel = 'shared'
+      clear = $false
+    }
+    problemMatcher = @()
+  }
+  $desiredWinAppTask = [ordered]@{
+    label = $winAppTaskLabel
+    type = 'shell'
+    command = 'powershell'
+    detail = '确保 Windows 桌面 UI Automation 能力可用于 WinForms / MAUI(Windows) 自动化。'
+    linux = [ordered]@{
+      command = 'pwsh'
+    }
+    args = @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      '${workspaceFolder}\\.Rayman\\scripts\\windows\\ensure_winapp.ps1',
+      '-WorkspaceRoot',
+      '${workspaceFolder}'
+    )
+    presentation = [ordered]@{
+      reveal = 'always'
+      panel = 'shared'
+      clear = $false
+    }
+    problemMatcher = @()
+  }
 
   $taskList = @($currentTasks)
   $newList = New-Object 'System.Collections.Generic.List[object]'
   $replaced = $false
+  $capabilityTaskReplaced = $false
+  $winAppTaskReplaced = $false
+  $manualOnlyLabels = @(
+    'Rayman: Auto Start Watchers'
+    'Rayman: Check Pending Task'
+    'Rayman: Daily Health Check'
+    'Rayman: Check Win Deps'
+    'Rayman: Check WSL Deps'
+  )
   foreach ($t in $taskList) {
     $label = [string](Get-JsonProperty -Obj $t -Name 'label')
+    if ($manualOnlyLabels -contains $label) {
+      $t = Remove-RunOnFolderOpen -Task $t
+    }
+    if (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $readyTaskLabel) {
+      $dependsOn = @(Get-JsonProperty -Obj $t -Name 'dependsOn')
+      if ($dependsOn.Count -eq 0) {
+        $dependsOn = @('Rayman: Ensure Win Deps', $capabilityTaskLabel, 'Rayman: Ensure Playwright', 'Rayman: Update Context')
+      } elseif ($dependsOn -notcontains $capabilityTaskLabel) {
+        $updatedDependsOn = New-Object 'System.Collections.Generic.List[object]'
+        $updatedDependsOn.Add($dependsOn[0]) | Out-Null
+        $updatedDependsOn.Add($capabilityTaskLabel) | Out-Null
+        for ($dependsIdx = 1; $dependsIdx -lt $dependsOn.Count; $dependsIdx++) {
+          $updatedDependsOn.Add($dependsOn[$dependsIdx]) | Out-Null
+        }
+        $dependsOn = $updatedDependsOn.ToArray()
+      }
+      Set-JsonProperty -Obj $t -Name 'dependsOn' -Value $dependsOn
+      Set-JsonProperty -Obj $t -Name 'detail' -Value '常用组合：确保 Windows 依赖、Agent capabilities、Playwright 能力和上下文都处于可工作状态。'
+    }
     if (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $taskLabel) {
       $newList.Add($desiredTask) | Out-Null
       $replaced = $true
+    } elseif (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $capabilityTaskLabel) {
+      $newList.Add($desiredCapabilityTask) | Out-Null
+      $capabilityTaskReplaced = $true
+    } elseif (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $winAppTaskLabel) {
+      $newList.Add($desiredWinAppTask) | Out-Null
+      $winAppTaskReplaced = $true
     } else {
       $newList.Add($t) | Out-Null
     }
   }
   if (-not $replaced) {
     $newList.Add($desiredTask) | Out-Null
+  }
+  if (-not $capabilityTaskReplaced) {
+    $newList.Add($desiredCapabilityTask) | Out-Null
+  }
+  if (-not $winAppTaskReplaced) {
+    $newList.Add($desiredWinAppTask) | Out-Null
   }
   Set-JsonProperty -Obj $tasksObj -Name 'tasks' -Value ($newList.ToArray())
 

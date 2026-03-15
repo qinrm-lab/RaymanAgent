@@ -12,6 +12,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
+  throw "common.ps1 not found: $commonPath"
+}
+. $commonPath
+
 function Ensure-Dir([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
@@ -290,6 +296,15 @@ Ensure-Dir -Path $telemetryDir
 Ensure-Dir -Path $stateDir
 Ensure-Dir -Path $logsDir
 
+$runId = [Guid]::NewGuid().ToString('n')
+$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$detailLogPath = Join-Path $logsDir ("review.loop.{0}.log" -f $timestamp)
+$summaryPath = Join-Path $runtimeDir 'review_loop.last.json'
+$diffReportPath = Join-Path $runtimeDir 'review_loop.last.diff.md'
+$firstPassTsv = Join-Path $telemetryDir 'first_pass_runs.tsv'
+$dispatchLastPath = Join-Path $runtimeDir 'agent_runs\last.json'
+$startedAt = Get-Date
+
 $dispatchScript = Join-Path $raymanDir 'scripts\agents\dispatch.ps1'
 $testFixScript = Join-Path $raymanDir 'scripts\repair\run_tests_and_fix.ps1'
 $reviewConfigPath = Join-Path $raymanDir 'config\review_loop.json'
@@ -324,6 +339,53 @@ if ([string]::IsNullOrWhiteSpace($effectiveBypassReason)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($effectiveBypassReason)) {
   $effectiveBypassReason = $effectiveBypassReason.Trim()
+}
+
+$requiredAssetAnalysis = Get-RaymanRequiredAssetAnalysis -WorkspaceRoot $WorkspaceRoot -Label 'review-loop-preflight' -RequiredRelPaths @(
+  '.Rayman/scripts/agents/dispatch.ps1',
+  '.Rayman/scripts/repair/run_tests_and_fix.ps1',
+  '.Rayman/scripts/utils/request_attention.ps1',
+  '.Rayman/scripts/utils/generate_context.ps1',
+  '.Rayman/scripts/agents/prompts_catalog.ps1'
+)
+if (-not [bool]$requiredAssetAnalysis.ok) {
+  Write-RaymanRequiredAssetDiagnostics -Analysis $requiredAssetAnalysis -Scope 'review-loop' -LogPath $detailLogPath
+  $failedAt = Get-Date
+  $preflightDurationMs = [int][Math]::Max(0, [Math]::Round(($failedAt - $startedAt).TotalMilliseconds))
+  $preflightSummary = @{
+    schema = 'rayman.review_loop.v1'
+    run_id = $runId
+    workspace_root = $WorkspaceRoot
+    task_kind = $TaskKind
+    task = $Task
+    prompt_key = $PromptKey
+    preferred_backend = $PreferredBackend
+    policy_bypass_requested = $policyBypassRequested
+    policy_bypass_reason = $effectiveBypassReason
+    max_rounds = $MaxRounds
+    started_at = $startedAt.ToString('o')
+    finished_at = $failedAt.ToString('o')
+    duration_ms = $preflightDurationMs
+    success = $false
+    first_pass = $false
+    final_exit_code = 11
+    final_error_kind = 'missing_required_assets'
+    blocked_before_round1 = $true
+    required_assets = $requiredAssetAnalysis
+    rounds = @()
+    diff_summary_enabled = $false
+    diff_max_files = 0
+    diff_ignore_dirs = @()
+    diff_report = $diffReportPath
+    detail_log = $detailLogPath
+    first_pass_telemetry = $firstPassTsv
+  }
+  ($preflightSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+  try {
+    Write-RaymanRulesTelemetryRecord -WorkspaceRoot $WorkspaceRoot -RunId $runId -Profile 'review-loop' -Stage 'preflight' -Scope $TaskKind -Status 'FAIL' -ExitCode 11 -DurationMs $preflightDurationMs -Command 'review-loop' | Out-Null
+  } catch {}
+  Write-Host ("❌ [review-loop] preflight failed: {0}" -f (Format-RaymanRequiredAssetSummary -Analysis $requiredAssetAnalysis)) -ForegroundColor Red
+  exit 11
 }
 
 $requiredLogsOnFailure = @('.Rayman/state/last_error.log')
@@ -369,15 +431,6 @@ if ($null -ne $reviewConfig -and $null -ne $reviewConfig.PSObject.Properties['di
     if ($tmpIgnore.Count -gt 0) { $diffIgnorePrefixes = @($diffIgnorePrefixes + $tmpIgnore | Select-Object -Unique) }
   }
 }
-
-$runId = [Guid]::NewGuid().ToString('n')
-$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$detailLogPath = Join-Path $logsDir ("review.loop.{0}.log" -f $timestamp)
-$summaryPath = Join-Path $runtimeDir 'review_loop.last.json'
-$diffReportPath = Join-Path $runtimeDir 'review_loop.last.diff.md'
-$firstPassTsv = Join-Path $telemetryDir 'first_pass_runs.tsv'
-$dispatchLastPath = Join-Path $runtimeDir 'agent_runs\last.json'
-$startedAt = Get-Date
 
 Write-LoopLog -Path $detailLogPath -Message ("review-loop start run_id={0} task_kind={1} max_rounds={2}" -f $runId, $TaskKind, $MaxRounds)
 if ($diffSummaryEnabled) {
@@ -720,6 +773,9 @@ $fpErrorKind = ([string]$fpErrorKindRaw -replace "[`r`n`t]+", ' ').Trim()
 if ([string]::IsNullOrWhiteSpace($fpErrorKind)) { $fpErrorKind = 'unknown' }
 $fpLine = "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}`t{8}`t{9}`t{10}`t{11}`t{12}`t{13}`t{14}" -f $finishedAt.ToString('o'), $runId, 'first-pass', $TaskKind, $round1Backend, $fpStatus, $fpErrorKind, $durationMs, 'review-loop', $round1Touched, $round1NetLineDelta, $round1Modified, $round1Added, $round1Deleted, $round1NetSizeDeltaBytes
 Add-Content -LiteralPath $firstPassTsv -Encoding UTF8 -Value $fpLine
+try {
+  Write-RaymanRulesTelemetryRecord -WorkspaceRoot $WorkspaceRoot -RunId $runId -Profile 'review-loop' -Stage 'final' -Scope $TaskKind -Status $(if ($success) { 'OK' } else { 'FAIL' }) -ExitCode $finalExitCode -DurationMs $durationMs -Command 'review-loop' | Out-Null
+} catch {}
 
 Write-Host ("🧾 [review-loop] summary: {0}" -f $summaryPath) -ForegroundColor DarkCyan
 Write-Host ("🧾 [review-loop] first-pass telemetry: {0}" -f $firstPassTsv) -ForegroundColor DarkCyan

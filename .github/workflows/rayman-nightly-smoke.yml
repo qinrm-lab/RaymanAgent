@@ -1,0 +1,79 @@
+name: rayman-nightly-smoke
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  hosted-windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install nightly dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip jsonschema
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run hosted Windows smoke
+        shell: pwsh
+        run: ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD" -IncludeWsl
+
+      - name: Run distributable consumer contract
+        shell: pwsh
+        run: ./.Rayman/scripts/release/copy_smoke.ps1 -WorkspaceRoot "$PWD" -Strict -Scope host -TimeoutSeconds 180
+
+      - name: Upload hosted nightly artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayman-nightly-hosted-windows
+          path: |
+            .Rayman/runtime/project_gates/**
+            .Rayman/runtime/test_lanes/**
+            .Rayman/runtime/*.json
+            .Rayman/runtime/winapp-tests/**
+            .Rayman/logs/**
+
+  self-hosted-windows-deep-smoke:
+    runs-on:
+      - self-hosted
+      - windows
+      - rayman
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install nightly dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip jsonschema
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run self-hosted deep smoke
+        shell: pwsh
+        run: ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD" -IncludeWsl -IncludeSandbox -RequireEnvironment
+
+      - name: Upload self-hosted nightly artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayman-nightly-self-hosted
+          path: |
+            .Rayman/runtime/project_gates/**
+            .Rayman/runtime/test_lanes/**
+            .Rayman/runtime/*.json
+            .Rayman/runtime/winapp-tests/**
+            .Rayman/logs/**

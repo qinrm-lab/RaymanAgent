@@ -149,6 +149,26 @@ def load_json(path):
     except Exception:
         return None
 
+def detect_telemetry_source_missing(metrics_obj, trend_obj):
+    metrics_message = ""
+    trend_reason = ""
+    if isinstance(metrics_obj, dict):
+        metrics_message = str(metrics_obj.get("message", "") or "").lower()
+    if isinstance(trend_obj, dict):
+        trend_reason = str(trend_obj.get("reason", "") or "").lower()
+
+    missing_tokens = (
+        "telemetry file missing",
+        "no telemetry file",
+        "no valid telemetry rows",
+        "no telemetry data",
+        "no records",
+    )
+    for token in missing_tokens:
+        if token in metrics_message or token in trend_reason:
+            return True
+    return False
+
 items = []
 for manifest_path in manifest_paths:
     manifest = load_json(manifest_path)
@@ -174,7 +194,15 @@ for manifest_path in manifest_paths:
         path = entry.get("path")
         if not isinstance(name, str) or not isinstance(path, str):
             continue
-        file_map[name] = path if os.path.isabs(path) else os.path.join(bundle_fs_dir, path)
+        if os.path.isabs(path):
+            resolved_path = path
+        else:
+            resolved_path = os.path.join(bundle_fs_dir, path)
+            if not os.path.exists(resolved_path):
+                workspace_relative = os.path.normpath(os.path.join(os.getcwd(), path))
+                if os.path.exists(workspace_relative):
+                    resolved_path = workspace_relative
+        file_map[name] = resolved_path
 
     metrics = load_json(file_map.get("metrics.json", ""))
     trend = load_json(file_map.get("daily_trend.json", ""))
@@ -192,6 +220,8 @@ for manifest_path in manifest_paths:
     if not isinstance(baseline_rc, int):
         baseline_rc = 0
 
+    telemetry_source_missing = detect_telemetry_source_missing(metrics, trend)
+
     item = {
         "bundle_id": bundle_id,
         "generated_at": item_generated_at,
@@ -199,6 +229,7 @@ for manifest_path in manifest_paths:
         "manifest_path": manifest_path,
         "baseline_status": baseline_status,
         "baseline_rc": baseline_rc,
+        "telemetry_source_missing": telemetry_source_missing,
         "metrics": {
             "has_data": bool(metrics.get("has_data")) if isinstance(metrics, dict) else False,
             "total": to_int(metrics_summary.get("total"), 0),
@@ -268,6 +299,7 @@ if items:
         "generated_at": str(latest.get("generated_at", "")),
         "age_hours": latest_age_hours,
         "baseline_status": str(latest.get("baseline_status", "UNKNOWN")),
+        "telemetry_source_missing": bool(latest.get("telemetry_source_missing", False)),
         "metrics_has_data": bool(latest.get("metrics", {}).get("has_data", False)),
         "metrics_fail_rate": to_float(latest.get("metrics", {}).get("fail_rate"), 0.0),
         "metrics_avg_ms": to_float(latest.get("metrics", {}).get("avg_ms"), 0.0),
@@ -282,6 +314,7 @@ else:
         "generated_at": "",
         "age_hours": -1.0,
         "baseline_status": "NONE",
+        "telemetry_source_missing": False,
         "metrics_has_data": False,
         "metrics_fail_rate": 0.0,
         "metrics_avg_ms": 0.0,
@@ -310,6 +343,8 @@ else:
         anomaly_flags.append("LATEST_METRICS_NO_DATA")
     if not latest_bundle["trend_has_data"]:
         anomaly_flags.append("LATEST_TREND_NO_DATA")
+    if latest_bundle["telemetry_source_missing"]:
+        anomaly_flags.append("LATEST_TELEMETRY_SOURCE_MISSING")
 
     if latest_bundle["metrics_fail_rate"] >= thresholds["block_fail_rate"]:
         anomaly_flags.append("LATEST_METRICS_FAIL_RATE_BLOCK")
@@ -352,6 +387,7 @@ else:
         "LATEST_BUNDLE_STALE",
         "LATEST_METRICS_NO_DATA",
         "LATEST_TREND_NO_DATA",
+        "LATEST_TELEMETRY_SOURCE_MISSING",
     )
     if any(flag.startswith(red_prefixes) for flag in anomaly_flags):
         risk_level = "RED"

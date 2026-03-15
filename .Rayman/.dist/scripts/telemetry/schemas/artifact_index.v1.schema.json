@@ -19,6 +19,7 @@
           "manifest_path",
           "baseline_status",
           "baseline_rc",
+          "telemetry_source_missing",
           "metrics",
           "trend"
         ],
@@ -29,6 +30,7 @@
           "manifest_path": { "type": "string", "minLength": 1 },
           "baseline_status": { "type": "string" },
           "baseline_rc": { "type": "integer", "minimum": 0 },
+          "telemetry_source_missing": { "type": "boolean" },
           "metrics": {
             "type": "object",
             "required": ["has_data", "total", "fail_rate", "avg_ms"],
@@ -111,6 +113,7 @@
             "generated_at",
             "age_hours",
             "baseline_status",
+            "telemetry_source_missing",
             "metrics_has_data",
             "metrics_fail_rate",
             "metrics_avg_ms",
@@ -124,6 +127,7 @@
             "generated_at": { "type": "string" },
             "age_hours": { "type": "number", "minimum": -1 },
             "baseline_status": { "type": "string" },
+            "telemetry_source_missing": { "type": "boolean" },
             "metrics_has_data": { "type": "boolean" },
             "metrics_fail_rate": { "type": "number", "minimum": 0 },
             "metrics_avg_ms": { "type": "number", "minimum": 0 },

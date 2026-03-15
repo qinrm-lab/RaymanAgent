@@ -12,7 +12,6 @@ REQUIRE_DEPS="${RAYMAN_REQUIRE_TEST_DEPS:-1}"
 mkdir -p "$SANDBOX"
 {
   echo "[sandbox] WorkspaceRoot=$ROOT"
-  echo "[sandbox] Command=$CMD"
 } > "$LOG"
 
 if [[ -f "$DEPS_SCRIPT" ]]; then
@@ -28,6 +27,8 @@ if [[ -f "$DEPS_SCRIPT" ]]; then
     exit "$deps_rc"
   fi
 fi
+
+echo "[sandbox] Command=$CMD" | tee -a "$LOG"
 
 pushd "$SANDBOX" >/dev/null
 set +e

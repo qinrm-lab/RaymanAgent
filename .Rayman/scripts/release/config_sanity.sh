@@ -15,6 +15,14 @@ dispatch_file=".Rayman/scripts/agents/dispatch.ps1"
 review_loop_file=".Rayman/scripts/agents/review_loop.ps1"
 first_pass_file=".Rayman/scripts/agents/first_pass_report.ps1"
 prompts_file=".Rayman/scripts/agents/prompts_catalog.ps1"
+agent_caps_cfg=".Rayman/config/agent_capabilities.json"
+agent_caps_script=".Rayman/scripts/agents/ensure_agent_capabilities.ps1"
+winapp_ensure_script=".Rayman/scripts/windows/ensure_winapp.ps1"
+winapp_core_script=".Rayman/scripts/windows/winapp_core.ps1"
+winapp_flow_script=".Rayman/scripts/windows/run_winapp_flow.ps1"
+winapp_inspect_script=".Rayman/scripts/windows/inspect_winapp.ps1"
+winapp_mcp_script=".Rayman/scripts/windows/winapp_mcp_server.ps1"
+winapp_sample_flow=".Rayman/winapp.flow.sample.json"
 router_cfg=".Rayman/config/agent_router.json"
 policy_cfg=".Rayman/config/agent_policy.json"
 review_cfg=".Rayman/config/review_loop.json"
@@ -29,6 +37,14 @@ review_cfg=".Rayman/config/review_loop.json"
 [[ -f "${review_loop_file}" ]] || fail "missing: ${review_loop_file}"
 [[ -f "${first_pass_file}" ]] || fail "missing: ${first_pass_file}"
 [[ -f "${prompts_file}" ]] || fail "missing: ${prompts_file}"
+[[ -f "${agent_caps_cfg}" ]] || fail "missing: ${agent_caps_cfg}"
+[[ -f "${agent_caps_script}" ]] || fail "missing: ${agent_caps_script}"
+[[ -f "${winapp_ensure_script}" ]] || fail "missing: ${winapp_ensure_script}"
+[[ -f "${winapp_core_script}" ]] || fail "missing: ${winapp_core_script}"
+[[ -f "${winapp_flow_script}" ]] || fail "missing: ${winapp_flow_script}"
+[[ -f "${winapp_inspect_script}" ]] || fail "missing: ${winapp_inspect_script}"
+[[ -f "${winapp_mcp_script}" ]] || fail "missing: ${winapp_mcp_script}"
+[[ -f "${winapp_sample_flow}" ]] || fail "missing: ${winapp_sample_flow}"
 [[ -f "${router_cfg}" ]] || fail "missing: ${router_cfg}"
 [[ -f "${policy_cfg}" ]] || fail "missing: ${policy_cfg}"
 [[ -f "${review_cfg}" ]] || fail "missing: ${review_cfg}"
@@ -68,7 +84,7 @@ def load_with_case_insensitive_dup_check(pairs: List[Tuple[str, Any]]) -> dict:
         out[k] = v
     return out
 
-with open(path, "r", encoding="utf-8") as f:
+with open(path, "r", encoding="utf-8-sig") as f:
     try:
         data = json.load(f, object_pairs_hook=load_with_case_insensitive_dup_check)
     except Exception as e:
@@ -97,7 +113,7 @@ mcp_path = sys.argv[1]
 workspace_root = sys.argv[2]
 workspace_norm = os.path.abspath(workspace_root).replace("\\", "/").rstrip("/").lower()
 
-with open(mcp_path, "r", encoding="utf-8") as f:
+with open(mcp_path, "r", encoding="utf-8-sig") as f:
     data = json.load(f)
 
 servers = data.get("mcpServers", {})
@@ -148,6 +164,11 @@ required_env_defaults=(
   "RAYMAN_SELF_HEAL_AUTO_DEP_INSTALL"
   "RAYMAN_PLAYWRIGHT_REQUIRE"
   "RAYMAN_PLAYWRIGHT_AUTO_INSTALL"
+  "RAYMAN_SETUP_GIT_INIT"
+  "RAYMAN_SETUP_GITHUB_LOGIN"
+  "RAYMAN_SETUP_GITHUB_LOGIN_STRICT"
+  "RAYMAN_GITHUB_HOST"
+  "RAYMAN_GITHUB_GIT_PROTOCOL"
   "RAYMAN_DOTNET_WINDOWS_PREFERRED"
   "RAYMAN_DOTNET_WINDOWS_STRICT"
   "RAYMAN_DOTNET_WINDOWS_TIMEOUT_SECONDS"
@@ -156,8 +177,15 @@ required_env_defaults=(
   "RAYMAN_AGENT_CLOUD_ENABLED"
   "RAYMAN_AGENT_POLICY_BYPASS"
   "RAYMAN_AGENT_CLOUD_WHITELIST"
+  "RAYMAN_AGENT_CAPABILITIES_ENABLED"
+  "RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED"
+  "RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED"
+  "RAYMAN_AGENT_CAP_WINAPP_AUTO_TEST_ENABLED"
+  "RAYMAN_WINAPP_REQUIRE"
+  "RAYMAN_WINAPP_DEFAULT_TIMEOUT_MS"
   "RAYMAN_FIRST_PASS_WINDOW"
   "RAYMAN_REVIEW_LOOP_MAX_ROUNDS"
+  "RAYMAN_VSCODE_BOOTSTRAP_PROFILE"
 )
 for key in "${required_env_defaults[@]}"; do
   if ! grep -Fq "${key}" "${setup_file}"; then
@@ -166,6 +194,14 @@ for key in "${required_env_defaults[@]}"; do
 done
 
 required_cli_tokens=(
+  "\"copy-self-check\""
+  "\"fast-gate\""
+  "\"browser-gate\""
+  "\"full-gate\""
+  "\"agent-capabilities\""
+  "\"ensure-winapp\""
+  "\"winapp-test\""
+  "\"winapp-inspect\""
   "\"dispatch\""
   "\"review-loop\""
   "\"first-pass-report\""
@@ -186,6 +222,21 @@ required_dispatch_policy_tokens=(
 for token in "${required_dispatch_policy_tokens[@]}"; do
   if ! grep -Fq "${token}" "${dispatch_file}"; then
     fail "dispatch.ps1 missing policy bypass audit token: ${token}"
+  fi
+done
+
+required_agent_cap_tokens=(
+  "rayman.agent_capabilities.v1"
+  "\"openai_docs\""
+  "\"web_auto_test\""
+  "\"winapp_auto_test\""
+  "\"openaiDeveloperDocs\""
+  "\"@playwright/mcp\""
+  "\"raymanWinApp\""
+)
+for token in "${required_agent_cap_tokens[@]}"; do
+  if ! grep -Fq "${token}" "${agent_caps_cfg}"; then
+    fail "agent_capabilities.json missing token: ${token}"
   fi
 done
 
@@ -230,5 +281,76 @@ for token in "${required_dotnet_summary_tokens[@]}"; do
     fail "run_tests_and_fix.ps1 missing dotnet summary token: ${token}"
   fi
 done
+
+ps_runner=()
+if command -v pwsh >/dev/null 2>&1; then
+  ps_runner=(pwsh -NoProfile -File)
+elif command -v powershell >/dev/null 2>&1; then
+  ps_runner=(powershell -NoProfile -ExecutionPolicy Bypass -File)
+else
+  fail "pwsh/powershell not found; cannot validate agent capability sync"
+fi
+
+RAYMAN_AGENT_CAPABILITIES_SKIP_PREPARE=1 "${ps_runner[@]}" "${agent_caps_script}" -Action sync -WorkspaceRoot "$(pwd)" >/dev/null || fail "agent capability sync failed (first run)"
+[[ -f ".Rayman/runtime/agent_capabilities.report.json" ]] || fail "agent capability sync did not emit runtime report"
+
+"${pybin}" - <<'PY' ".Rayman/runtime/agent_capabilities.report.json" ".codex/config.toml"
+import json
+import os
+import sys
+
+report_path = sys.argv[1]
+config_path = sys.argv[2]
+
+with open(report_path, "r", encoding="utf-8") as f:
+    report = json.load(f)
+
+if not report.get("registry_valid"):
+    raise SystemExit("agent capability report says registry_valid=false")
+
+active = set(report.get("active_capabilities") or [])
+global_enabled = bool(report.get("global_enabled", True))
+config_exists = os.path.isfile(config_path)
+raw = ""
+if config_exists:
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+managed_start = "# >>> Rayman managed capabilities >>>"
+managed_end = "# <<< Rayman managed capabilities <<<"
+managed_present = managed_start in raw and managed_end in raw
+
+if report.get("managed_block_present", False) != managed_present:
+    raise SystemExit("managed block presence mismatch between report and .codex/config.toml")
+
+if not global_enabled or not active:
+    if managed_present and not config_exists:
+        raise SystemExit("managed block marked present but .codex/config.toml is missing")
+else:
+    if not config_exists:
+        raise SystemExit("active capabilities exist but .codex/config.toml is missing")
+    if not managed_present:
+        raise SystemExit(".codex/config.toml missing managed block markers")
+    if "openai_docs" in active:
+        if "mcp_servers.openaiDeveloperDocs" not in raw or "https://developers.openai.com/mcp" not in raw:
+            raise SystemExit(".codex/config.toml missing OpenAI Docs MCP block for active openai_docs capability")
+    if "web_auto_test" in active:
+        if "mcp_servers.playwright" not in raw or "@playwright/mcp" not in raw:
+            raise SystemExit(".codex/config.toml missing Playwright MCP block for active web_auto_test capability")
+    if "winapp_auto_test" in active:
+        if "mcp_servers.raymanWinApp" not in raw or "winapp_mcp_server.ps1" not in raw:
+            raise SystemExit(".codex/config.toml missing WinApp MCP block for active winapp_auto_test capability")
+PY
+
+hash_before="missing"
+if [[ -f ".codex/config.toml" ]]; then
+  hash_before="$(sha1sum .codex/config.toml | awk '{print $1}')"
+fi
+RAYMAN_AGENT_CAPABILITIES_SKIP_PREPARE=1 "${ps_runner[@]}" "${agent_caps_script}" -Action sync -WorkspaceRoot "$(pwd)" >/dev/null || fail "agent capability sync failed (second run)"
+hash_after="missing"
+if [[ -f ".codex/config.toml" ]]; then
+  hash_after="$(sha1sum .codex/config.toml | awk '{print $1}')"
+fi
+[[ "${hash_before}" == "${hash_after}" ]] || fail ".codex/config.toml changed after second sync (not idempotent)"
 
 ok

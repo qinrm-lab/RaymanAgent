@@ -5,6 +5,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$commonPath = Join-Path $WorkspaceRoot '.Rayman\common.ps1'
+if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+  . $commonPath
+}
+
 function Ensure-ParentDir([string]$Path) {
   $parent = Split-Path -Parent $Path
   if ([string]::IsNullOrWhiteSpace($parent)) { return }
@@ -15,7 +20,17 @@ function Ensure-ParentDir([string]$Path) {
 
 function Ensure-FileIfMissing([string]$Path, [string]$Content, [switch]$AlwaysUpdate) {
   Ensure-ParentDir -Path $Path
-  if ($AlwaysUpdate -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+  $needsBootstrap = $false
+  if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    try {
+      $existing = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+      $needsBootstrap = [string]::IsNullOrWhiteSpace($existing)
+    } catch {
+      $needsBootstrap = $true
+    }
+  }
+
+  if ($AlwaysUpdate -or $needsBootstrap -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
     return $true
   }
@@ -202,7 +217,13 @@ $modelRoutingJson = @'
   "schema": "rayman.model_routing.v1",
   "defaults": {
     "route": "ui_selected",
-    "fallback_behavior": "preserve_current_flow"
+    "fallback_behavior": "next_route_then_manual",
+    "route_fallback_order": [
+      "gemini_latest_pro",
+      "claude_latest_opus",
+      "gpt_latest"
+    ],
+    "manual_fallback_route": "ui_selected"
   },
   "task_aliases": {
     "bugfix": "fix",
@@ -286,28 +307,49 @@ $backendInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\backen
 $frontendInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\frontend.instructions.md'
 
 $generalInstructions = @'
+---
+description: "Use when working on Rayman governance files, AGENTS.md, copilot-instructions.md, prompts, config JSON, context generation, release rules, or repository automation docs."
+---
+
 # Rayman General Instructions
 
-- Prefer `rayman dispatch` before high-cost or cloud-intended tasks.
-- For any failed build/test run, use `rayman review-loop` to execute structured retries.
-- Keep outputs reproducible: include command, logs, and rollback note.
-- Respect policy hooks from `.Rayman/config/agent_policy.json`.
+- Treat Rayman as an agent platform: preserve deterministic flows, auditable decisions, and rollback guidance.
+- Keep source and `.Rayman/.dist` mirrors aligned for shared runtime and agent assets whenever copied distributions depend on the same behavior.
+- Prefer small, verifiable contracts over broad prose; when adding a rule, also add a report, script check, or validation note when practical.
+- If you touch `.github/`, `.Rayman/config/`, `AGENTS.md`, or governance docs, call out which downstream files must stay in sync.
+- Agent capabilities are declared in `.Rayman/config/agent_capabilities.json`; `.codex/config.toml` is a generated workspace artifact and must stay consistent with that registry.
+- OpenAI/API/model/docs tasks should prefer OpenAI Docs MCP; browser/web/e2e tasks should prefer Playwright MCP and document the Rayman fallback path when MCP is unavailable.
+- Do not silently weaken requirements-reading, full-auto, release-gate, or rollback guarantees.
 '@
 
 $backendInstructions = @'
+---
+applyTo: "**/*.ps1"
+description: "Use when editing Rayman PowerShell automation, setup/init scripts, watchers, dispatch, repair, release, or other backend orchestration scripts."
+---
+
 # Rayman Backend Instructions
 
-- Prioritize correctness and deterministic tests over speculative refactors.
-- When modifying APIs, update contract tests and changelog snippets together.
-- Use `rayman test-fix` after each non-trivial backend change.
+- Keep scripts idempotent and safe to re-run; prefer guards over duplicate side effects.
+- Use strict mode, explicit error handling, and user-visible diagnostics for degraded behavior.
+- Preserve non-interactive defaults; when manual action is required, route through `request_attention.ps1` instead of spawning intrusive UI.
+- When changing watcher, dispatch, setup, repair, or runtime behavior, update both source and `.Rayman/.dist` copies in the same change.
+- After non-trivial backend changes, validate the affected command path and summarize what was exercised.
 '@
 
 $frontendInstructions = @'
+---
+applyTo: "**/*.{ts,tsx,js,jsx,css,scss,html}"
+description: "Use when editing frontend, prompt UI, browser-facing assets, Playwright-visible flows, or web application code in Rayman-managed workspaces."
+---
+
 # Rayman Frontend Instructions
 
-- Prioritize accessibility, responsive behavior, and visual regression safety.
-- Include explicit test notes for Playwright/manual validation when UI flows change.
-- Keep design-system primitives aligned; avoid one-off style drift.
+- Optimize for accessibility, keyboard safety, and low-friction automation.
+- Favor deterministic selectors and stable UI copy for Playwright and agent-driven flows.
+- Keep confirmation flows explicit; avoid surprise popups, window spawning, or modal spam.
+- When UI text changes affect automation, update related Playwright or manual verification notes.
+- Minimize one-off style drift; prefer shared primitives and consistent component states.
 '@
 
 [void](Ensure-FileIfMissing -Path $generalInstructionsPath -Content $generalInstructions)
@@ -407,8 +449,40 @@ jobs:
           ls -la .github/prompts || true
       - name: Validate Rayman release gate in project mode
         run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/release/release_gate.ps1 -WorkspaceRoot "$PWD" -Mode project -SkipAutoDistSync
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/rayman.ps1 full-gate
 '@
 [void](Ensure-FileIfMissing -Path $workflowPath -Content $workflowContent)
 
-Write-Host "✅ [agent-assets] ensured router/policy/review config + GitHub instructions/prompts/workflow" -ForegroundColor Green
+$workspaceKind = 'external'
+if (Get-Command Get-RaymanWorkspaceKind -ErrorAction SilentlyContinue) {
+  $workspaceKind = Get-RaymanWorkspaceKind -WorkspaceRoot $WorkspaceRoot
+}
+
+if ($workspaceKind -eq 'external') {
+  $ensureAgentsScript = Join-Path $WorkspaceRoot '.Rayman\scripts\agents\ensure_agents.sh'
+  if (Test-Path -LiteralPath $ensureAgentsScript -PathType Leaf) {
+    try {
+      Push-Location $WorkspaceRoot
+      try {
+        & bash ./.Rayman/scripts/agents/ensure_agents.sh
+      } finally {
+        Pop-Location
+      }
+    } catch {
+      Write-Host ("⚠️ [agent-assets] ensure_agents failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+  }
+
+  $workflowGenerator = Join-Path $WorkspaceRoot '.Rayman\scripts\project\generate_project_workflows.ps1'
+  if (Test-Path -LiteralPath $workflowGenerator -PathType Leaf) {
+    try {
+      & $workflowGenerator -WorkspaceRoot $WorkspaceRoot
+    } catch {
+      Write-Host ("⚠️ [agent-assets] project workflow generation failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host ("⚠️ [agent-assets] missing project workflow generator: {0}" -f $workflowGenerator) -ForegroundColor Yellow
+  }
+}
+
+Write-Host ("✅ [agent-assets] ensured router/policy/review config + GitHub instructions/prompts/workflow (workspace_kind={0})" -f $workspaceKind) -ForegroundColor Green

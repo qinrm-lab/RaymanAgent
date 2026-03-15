@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $RulesFile = Join-Path $Root ".Rayman\skills\rules.json"
 $OutMd     = Join-Path $Root ".Rayman\context\skills.auto.md"
 $OutEnv    = Join-Path $Root ".Rayman\runtime\skills.env.ps1"
+$CapReport = Join-Path $Root ".Rayman\runtime\agent_capabilities.report.json"
 
 New-Item -ItemType Directory -Force -Path (Split-Path $OutMd)  | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path $OutEnv) | Out-Null
@@ -15,6 +16,7 @@ if ($env:RAYMAN_SKILLS_OFF -eq "1") {
   @(
     "# Skills（自动）— 已关闭"
     ""
+    '> Artifact: local-generated'
     '> 你设置了 `RAYMAN_SKILLS_OFF=1`，因此未生成自动 skills。'
     ""
   ) | Set-Content -Path $OutMd -Encoding UTF8
@@ -119,11 +121,10 @@ foreach ($s in ($detected | Sort-Object)) {
   if (-not $ordered.Contains($s)) { $ordered.Add($s) }
 }
 
-$ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add("# Skills（自动）")
 $lines.Add("")
-$lines.Add("> 生成时间：$ts")
+$lines.Add("> Artifact: local-generated")
 $lines.Add("> 选择结果：" + ($(if ($ordered.Count -gt 0) { ($ordered -join ", ") } else { "(none)" } )))
 $lines.Add("")
 if ($env:RAYMAN_SKILLS_FORCE) {
@@ -146,6 +147,25 @@ $lines.Add("## 覆盖/关闭")
 $lines.Add("")
 $lines.Add('- 关闭自动：`RAYMAN_SKILLS_OFF=1`')
 $lines.Add('- 强制指定：`RAYMAN_SKILLS_FORCE=pdfs,docs,spreadsheets`')
+$lines.Add("")
+
+$capSummary = '(report unavailable)'
+if (Test-Path -LiteralPath $CapReport -PathType Leaf) {
+  try {
+    $capObj = Get-Content -LiteralPath $CapReport -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $activeCaps = @($capObj.active_capabilities | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($activeCaps.Count -gt 0) {
+      $capSummary = ($activeCaps -join ", ")
+    } elseif ($null -ne $capObj.PSObject.Properties['degraded_reasons'] -and @($capObj.degraded_reasons).Count -gt 0) {
+      $capSummary = ("(none; degraded: {0})" -f ((@($capObj.degraded_reasons) | ForEach-Object { [string]$_ }) -join "; "))
+    } else {
+      $capSummary = '(none)'
+    }
+  } catch {
+    $capSummary = ("(parse failed: {0})" -f $_.Exception.Message)
+  }
+}
+$lines.Add("> Agent capabilities：" + $capSummary)
 $lines.Add("")
 
 $lines | Set-Content -Path $OutMd -Encoding UTF8

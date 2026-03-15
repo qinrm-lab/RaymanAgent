@@ -17,6 +17,12 @@ if ($raw -notmatch "\[ValidateSet\('standard','project'\)\]") {
 if ($raw -notmatch "Git工作区检测") {
   throw "missing git workspace gate"
 }
+if ($raw -notmatch "Rayman资产Git跟踪噪声") {
+  throw "missing tracked Rayman assets gate"
+}
+if ($raw -notmatch "非Rayman产物Git跟踪噪声") {
+  throw "missing tracked noisy dirs advisory gate"
+}
 if ($raw -notmatch "project 模式初始化豁免，按 PASS 处理") {
   throw "missing project-mode pass waiver marker for non-git allowNoGit"
 }

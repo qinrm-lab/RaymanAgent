@@ -16,6 +16,13 @@ if [[ -f "${repair_script}" ]]; then
   bash "${repair_script}"
 fi
 
+workspace_state_guard="${RAYMAN_DIR}/scripts/utils/workspace_state_guard.sh"
+if [[ -f "${workspace_state_guard}" ]]; then
+  bash "${workspace_state_guard}" --workspace-root "${WORKSPACE_ROOT}"
+else
+  warn "workspace state guard missing: ${workspace_state_guard}"
+fi
+
 find "${RAYMAN_DIR}" -type f -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
 
 if [[ ! -f "${RAYMAN_DIR}/codex_fix_prompt.txt" && -f "${RAYMAN_DIR}/templates/codex_fix_prompt.base.txt" ]]; then

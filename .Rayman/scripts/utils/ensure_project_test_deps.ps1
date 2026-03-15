@@ -2,6 +2,7 @@ param(
     [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
     [object]$AutoInstall = $true,
     [object]$Require = $true,
+    [switch]$NoMain,
     [string]$OnlyKinds = '',
     [string]$Caller = '',
     [string]$CallerHostType = '',
@@ -13,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 
 function Info([string]$m){ Write-Host ("ℹ️  [test-deps] {0}" -f $m) -ForegroundColor Cyan }
 function Warn([string]$m){ Write-Host ("⚠️  [test-deps] {0}" -f $m) -ForegroundColor Yellow }
-function Fail([string]$m){ Write-Host ("❌ [test-deps] {0}" -f $m) -ForegroundColor Red; exit 2 }
+function Fail([string]$m){ Write-Host ("❌ [test-deps] {0}" -f $m) -ForegroundColor Red }
 
 function Convert-ToBoolCompat([object]$Value, [bool]$Default) {
     if ($null -eq $Value) { return $Default }
@@ -171,7 +172,256 @@ function Ensure-WindowsAppsInPathBestEffort {
     } catch {}
 }
 
+function Get-RaymanDotNetTargetFrameworksFromText {
+    param([string]$ProjectText)
+
+    $frameworks = New-Object 'System.Collections.Generic.List[string]'
+    if ([string]::IsNullOrWhiteSpace($ProjectText)) {
+        return @()
+    }
+
+    foreach ($match in [regex]::Matches($ProjectText, '<TargetFrameworks?\b[^>]*>\s*([^<]+?)\s*</TargetFrameworks?>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        $raw = [string]$match.Groups[1].Value
+        foreach ($part in ($raw -split ';')) {
+            $token = [string]$part
+            if ([string]::IsNullOrWhiteSpace($token)) { continue }
+            $token = $token.Trim()
+            if ($token -match '\$\(') { continue }
+            if (-not $frameworks.Contains($token)) {
+                $frameworks.Add($token) | Out-Null
+            }
+        }
+    }
+
+    return @($frameworks.ToArray())
+}
+
+function Get-RaymanDotNetSdkMajorFromFrameworks {
+    param([string[]]$Frameworks)
+
+    $highest = 0
+    foreach ($framework in @($Frameworks)) {
+        if ([string]::IsNullOrWhiteSpace($framework)) { continue }
+        $match = [regex]::Match([string]$framework, 'net(?<major>\d+)\.\d+', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $match.Success) { continue }
+        $candidate = 0
+        if ([int]::TryParse([string]$match.Groups['major'].Value, [ref]$candidate)) {
+            if ($candidate -gt $highest) {
+                $highest = $candidate
+            }
+        }
+    }
+    return $highest
+}
+
+function Get-RaymanDotNetSdkMajorFromGlobalJson {
+    param([string]$WorkspaceRoot)
+
+    $globalJsonPath = Join-Path $WorkspaceRoot 'global.json'
+    if (-not (Test-Path -LiteralPath $globalJsonPath -PathType Leaf)) {
+        return 0
+    }
+
+    try {
+        $json = Get-Content -LiteralPath $globalJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        $sdkNode = $json.PSObject.Properties['sdk']
+        if ($null -eq $sdkNode -or $null -eq $sdkNode.Value) { return 0 }
+        $versionProp = $sdkNode.Value.PSObject.Properties['version']
+        if ($null -eq $versionProp -or [string]::IsNullOrWhiteSpace([string]$versionProp.Value)) { return 0 }
+        $match = [regex]::Match([string]$versionProp.Value, '^(?<major>\d+)\.')
+        if (-not $match.Success) { return 0 }
+        return [int]$match.Groups['major'].Value
+    } catch {
+        return 0
+    }
+}
+
+function Resolve-RaymanDotNetInstallChannel {
+    param([int]$SdkMajor = 0)
+
+    if ($SdkMajor -gt 0) {
+        return ("{0}.0" -f $SdkMajor)
+    }
+
+    $channel = [string][Environment]::GetEnvironmentVariable('RAYMAN_DOTNET_CHANNEL')
+    if ([string]::IsNullOrWhiteSpace($channel)) {
+        return 'LTS'
+    }
+    return $channel.Trim()
+}
+
+function Resolve-RaymanDotNetWingetPackageId {
+    param([int]$SdkMajor = 0)
+
+    if ($SdkMajor -gt 0) {
+        return ("Microsoft.DotNet.SDK.{0}" -f $SdkMajor)
+    }
+
+    $channel = [string][Environment]::GetEnvironmentVariable('RAYMAN_DOTNET_CHANNEL')
+    if (-not [string]::IsNullOrWhiteSpace($channel)) {
+        $match = [regex]::Match($channel.Trim(), '^(?<major>\d+)(?:\.\d+)?$')
+        if ($match.Success) {
+            return ("Microsoft.DotNet.SDK.{0}" -f [int]$match.Groups['major'].Value)
+        }
+    }
+
+    return ''
+}
+
+function Get-RaymanInstalledDotNetSdkMajors {
+    $majors = New-Object 'System.Collections.Generic.List[int]'
+    if (-not (Test-Cmd 'dotnet')) {
+        return @()
+    }
+
+    try {
+        $lines = & dotnet --list-sdks 2>$null
+    } catch {
+        $lines = @()
+    }
+
+    foreach ($line in @($lines)) {
+        $match = [regex]::Match([string]$line, '^\s*(?<major>\d+)\.')
+        if (-not $match.Success) { continue }
+        $major = 0
+        if ([int]::TryParse([string]$match.Groups['major'].Value, [ref]$major)) {
+            if (-not $majors.Contains($major)) {
+                $majors.Add($major) | Out-Null
+            }
+        }
+    }
+
+    return @($majors.ToArray() | Sort-Object)
+}
+
+function Test-RaymanDotNetSdkReady {
+    param([int]$RequiredSdkMajor = 0)
+
+    if (-not (Test-Cmd 'dotnet')) { return $false }
+    if ($RequiredSdkMajor -le 0) { return $true }
+    return (@(Get-RaymanInstalledDotNetSdkMajors) -contains $RequiredSdkMajor)
+}
+
+function Get-RaymanWorkspaceDependencyProfile {
+    param(
+        [string]$WorkspaceRoot,
+        [string]$OnlyKindsText = ''
+    )
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $onlyKindsConfig = Resolve-OnlyKinds -OnlyKindsText $OnlyKindsText
+
+    $excludeSegs = @('\.git\', '\.Rayman\', '\.venv\', '\node_modules\', '\bin\', '\obj\')
+    function Is-ExcludedPath([string]$FullPath) {
+        $p = $FullPath.Replace('/', '\')
+        foreach ($seg in $excludeSegs) {
+            if ($p -like ('*' + $seg + '*')) { return $true }
+        }
+        return $false
+    }
+
+    $projectFiles = Get-ChildItem -LiteralPath $resolvedRoot -Recurse -File -Include *.sln,*.slnx,*.csproj,*.fsproj,*.vbproj,package.json,pyproject.toml,requirements.txt -ErrorAction SilentlyContinue |
+        Where-Object { -not (Is-ExcludedPath -FullPath $_.FullName) }
+
+    $needsDotNet = $false
+    $needsNode = $false
+    $needsPython = $false
+    $needWindowsDesktop = $false
+    $allFrameworks = New-Object 'System.Collections.Generic.List[string]'
+    $mauiProjects = New-Object 'System.Collections.Generic.List[object]'
+    $dotNetProjectPaths = New-Object 'System.Collections.Generic.List[string]'
+
+    foreach ($f in $projectFiles) {
+        switch -Regex ($f.Name) {
+            '\.(sln|slnx|csproj|fsproj|vbproj)$' {
+                $needsDotNet = $true
+                if (-not $dotNetProjectPaths.Contains($f.FullName)) {
+                    $dotNetProjectPaths.Add($f.FullName) | Out-Null
+                }
+                if ($f.Extension -eq '.csproj') {
+                    try {
+                        $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
+                        $frameworks = @(Get-RaymanDotNetTargetFrameworksFromText -ProjectText $raw)
+                        foreach ($framework in $frameworks) {
+                            if (-not $allFrameworks.Contains($framework)) {
+                                $allFrameworks.Add($framework) | Out-Null
+                            }
+                        }
+                        $isMaui = $raw -match '<UseMaui>\s*true\s*</UseMaui>'
+                        if ($raw -match '<UseWPF>\s*true\s*</UseWPF>' -or $raw -match '<UseWindowsForms>\s*true\s*</UseWindowsForms>') {
+                            $needWindowsDesktop = $true
+                        }
+                        if ($isMaui) {
+                            $mauiProjects.Add([pscustomobject]@{
+                                Path = $f.FullName
+                                TargetFrameworks = @($frameworks)
+                            }) | Out-Null
+                        }
+                    } catch {}
+                }
+            }
+            '^package\.json$' { $needsNode = $true }
+            '^(pyproject\.toml|requirements\.txt)$' { $needsPython = $true }
+        }
+    }
+
+    if (-not $onlyKindsConfig.DotNet) { $needsDotNet = $false }
+    if (-not $onlyKindsConfig.Node) { $needsNode = $false }
+    if (-not $onlyKindsConfig.Python) { $needsPython = $false }
+
+    $requiredSdkMajor = Get-RaymanDotNetSdkMajorFromGlobalJson -WorkspaceRoot $resolvedRoot
+    if ($requiredSdkMajor -le 0) {
+        $requiredSdkMajor = Get-RaymanDotNetSdkMajorFromFrameworks -Frameworks @($allFrameworks.ToArray())
+    }
+
+    $preferredMauiProject = $null
+    if ($mauiProjects.Count -gt 0) {
+        $preferredMauiProject = $mauiProjects[0]
+    }
+
+    return [pscustomobject]@{
+        WorkspaceRoot = $resolvedRoot
+        NeedsDotNet = $needsDotNet
+        NeedsNode = $needsNode
+        NeedsPython = $needsPython
+        NeedWindowsDesktop = $needWindowsDesktop
+        IsMaui = ($mauiProjects.Count -gt 0)
+        MauiProjects = @($mauiProjects.ToArray())
+        PreferredMauiProject = $preferredMauiProject
+        DotNetProjectPaths = @($dotNetProjectPaths.ToArray())
+        TargetFrameworks = @($allFrameworks.ToArray())
+        RequiredSdkMajor = $requiredSdkMajor
+        DotNetInstallChannel = Resolve-RaymanDotNetInstallChannel -SdkMajor $requiredSdkMajor
+        DotNetWingetPackageId = Resolve-RaymanDotNetWingetPackageId -SdkMajor $requiredSdkMajor
+        OnlyKinds = $onlyKindsConfig
+    }
+}
+
+function Select-RaymanMauiTargetFramework {
+    param(
+        [string[]]$Frameworks,
+        [ValidateSet('windows', 'maccatalyst', 'android')]
+        [string]$PreferredPlatform = 'windows'
+    )
+
+    $frameworkList = @($Frameworks | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($frameworkList.Count -eq 0) {
+        return ''
+    }
+
+    foreach ($framework in $frameworkList) {
+        if ($framework -match ('-{0}' -f [regex]::Escape($PreferredPlatform))) {
+            return $framework
+        }
+    }
+
+    return [string]$frameworkList[0]
+}
+
 function Install-WithWinget([string]$Id) {
+    if ([string]::IsNullOrWhiteSpace($Id)) {
+        return $false
+    }
     if (-not (Test-Cmd 'winget')) {
         Ensure-WindowsAppsInPathBestEffort
     }
@@ -187,9 +437,8 @@ function Install-WithWinget([string]$Id) {
     return ($LASTEXITCODE -eq 0)
 }
 
-function Install-DotNetLocal([bool]$NeedWindowsDesktop) {
-    $channel = [string][Environment]::GetEnvironmentVariable('RAYMAN_DOTNET_CHANNEL')
-    if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'LTS' }
+function Install-DotNetLocal([bool]$NeedWindowsDesktop, [int]$SdkMajor = 0) {
+    $channel = Resolve-RaymanDotNetInstallChannel -SdkMajor $SdkMajor
 
     $baseDir = [string]$env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($baseDir)) {
@@ -227,101 +476,149 @@ function Install-DotNetLocal([bool]$NeedWindowsDesktop) {
     } catch {}
 }
 
-$WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-$AutoInstall = Convert-ToBoolCompat -Value $AutoInstall -Default $true
-$Require = Convert-ToBoolCompat -Value $Require -Default $true
-$onlyKindsConfig = Resolve-OnlyKinds -OnlyKindsText $OnlyKinds
-Set-Location $WorkspaceRoot
-Refresh-ProcessPathFromRegistryBestEffort
-Ensure-WindowsAppsInPathBestEffort
-Add-ToolPathHintsBestEffort
+function Invoke-RaymanDotNetWorkloadRestore {
+    param(
+        [object[]]$MauiProjects,
+        [bool]$Require
+    )
 
-$hostType = Get-HostTypeLabel
-$callerLabel = if ([string]::IsNullOrWhiteSpace($Caller)) { 'direct' } else { $Caller }
-$callerHostLabel = if ([string]::IsNullOrWhiteSpace($CallerHostType)) { 'unknown' } else { $CallerHostType }
-$callerWorkspaceLabel = if ([string]::IsNullOrWhiteSpace($CallerWorkspaceRoot)) { '(not provided)' } else { $CallerWorkspaceRoot }
-Info ("context caller={0}, callerHost={1}, scriptHost={2}, workspace={3}, callerWorkspace={4}, onlyKinds={5}" -f $callerLabel, $callerHostLabel, $hostType, $WorkspaceRoot, $callerWorkspaceLabel, [string]$onlyKindsConfig.Raw)
-
-$excludeSegs = @('\.git\', '\.Rayman\', '\.venv\', '\node_modules\', '\bin\', '\obj\')
-function Is-ExcludedPath([string]$FullPath) {
-    $p = $FullPath.Replace('/', '\')
-    foreach ($seg in $excludeSegs) {
-        if ($p -like ('*' + $seg + '*')) { return $true }
+    if ($null -eq $MauiProjects -or @($MauiProjects).Count -eq 0) {
+        return $true
     }
-    return $false
-}
-
-$projectFiles = Get-ChildItem -LiteralPath $WorkspaceRoot -Recurse -File -Include *.sln,*.slnx,*.csproj,*.fsproj,*.vbproj,package.json,pyproject.toml,requirements.txt -ErrorAction SilentlyContinue |
-    Where-Object { -not (Is-ExcludedPath -FullPath $_.FullName) }
-
-$needsDotNet = $false
-$needsNode = $false
-$needsPython = $false
-$needWindowsDesktop = $false
-
-foreach ($f in $projectFiles) {
-    switch -Regex ($f.Name) {
-        '\.(sln|slnx|csproj|fsproj|vbproj)$' {
-            $needsDotNet = $true
-            if ($f.Extension -eq '.csproj') {
-                try {
-                    $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
-                    if ($raw -match '<UseWPF>\s*true\s*</UseWPF>' -or $raw -match '<UseWindowsForms>\s*true\s*</UseWindowsForms>') {
-                        $needWindowsDesktop = $true
-                    }
-                } catch {}
-            }
-        }
-        '^package\.json$' { $needsNode = $true }
-        '^(pyproject\.toml|requirements\.txt)$' { $needsPython = $true }
+    if (-not (Test-Cmd 'dotnet')) {
+        return $false
     }
-}
 
-if (-not $onlyKindsConfig.DotNet) { $needsDotNet = $false }
-if (-not $onlyKindsConfig.Node) { $needsNode = $false }
-if (-not $onlyKindsConfig.Python) { $needsPython = $false }
+    $failures = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($project in @($MauiProjects)) {
+        if ($null -eq $project) { continue }
+        $projectPath = [string]$project.Path
+        if ([string]::IsNullOrWhiteSpace($projectPath)) { continue }
 
-Info ("detected deps: dotnet={0}, node={1}, python={2}, windowsDesktop={3}" -f $needsDotNet, $needsNode, $needsPython, $needWindowsDesktop)
-
-$missing = New-Object System.Collections.Generic.List[string]
-
-if ($needsDotNet -and -not (Test-Cmd 'dotnet')) {
-    if ($AutoInstall) {
-        Warn "dotnet missing; trying auto install"
-        $null = Install-WithWinget -Id 'Microsoft.DotNet.SDK.8'
-        if (-not (Test-Cmd 'dotnet')) {
-            Warn 'winget install dotnet failed/unavailable; fallback to dotnet-install.ps1'
-            try { Install-DotNetLocal -NeedWindowsDesktop:$needWindowsDesktop } catch { Warn ("dotnet-install fallback failed: {0}" -f $_.Exception.Message) }
+        Info ("restoring MAUI workloads for {0}" -f $projectPath)
+        & dotnet workload restore $projectPath | Out-Host
+        $exitCode = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($?) { 0 } else { 1 }
+        if ($exitCode -ne 0) {
+            $failures.Add($projectPath) | Out-Null
         }
     }
-    if (-not (Test-Cmd 'dotnet')) { [void]$missing.Add('dotnet') }
-}
 
-if ($needsNode -and -not (Test-Cmd 'node')) {
-    if ($AutoInstall) {
-        Warn "node missing; trying auto install via winget"
-        $null = Install-WithWinget -Id 'OpenJS.NodeJS.LTS'
+    if ($failures.Count -eq 0) {
+        return $true
     }
-    if (-not (Test-Cmd 'node')) { [void]$missing.Add('node') }
-}
 
-if ($needsPython -and -not (Test-PythonCmd)) {
-    if ($AutoInstall) {
-        Warn "python missing; trying auto install via winget"
-        $null = Install-WithWinget -Id 'Python.Python.3.12'
-    }
-    if (-not (Test-PythonCmd)) { [void]$missing.Add('python') }
-}
-
-if ($missing.Count -gt 0) {
-    $msg = "missing required test dependencies: {0}" -f ($missing -join ', ')
+    $msg = "failed to restore MAUI workloads: {0}" -f ($failures -join ', ')
     if ($Require) {
         Fail $msg
     } else {
         Warn $msg
     }
-} else {
-    Info 'test dependencies ready'
+    return $false
 }
 
-exit 0
+function Invoke-RaymanEnsureProjectTestDeps {
+    param(
+        [string]$WorkspaceRoot,
+        [object]$AutoInstall,
+        [object]$Require,
+        [string]$OnlyKinds,
+        [string]$Caller,
+        [string]$CallerHostType,
+        [string]$CallerWorkspaceRoot
+    )
+
+    $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $autoInstallEnabled = Convert-ToBoolCompat -Value $AutoInstall -Default $true
+    $requireEnabled = Convert-ToBoolCompat -Value $Require -Default $true
+    $onlyKindsConfig = Resolve-OnlyKinds -OnlyKindsText $OnlyKinds
+
+    Set-Location $resolvedWorkspaceRoot
+    Refresh-ProcessPathFromRegistryBestEffort
+    Ensure-WindowsAppsInPathBestEffort
+    Add-ToolPathHintsBestEffort
+
+    $hostType = Get-HostTypeLabel
+    $callerLabel = if ([string]::IsNullOrWhiteSpace($Caller)) { 'direct' } else { $Caller }
+    $callerHostLabel = if ([string]::IsNullOrWhiteSpace($CallerHostType)) { 'unknown' } else { $CallerHostType }
+    $callerWorkspaceLabel = if ([string]::IsNullOrWhiteSpace($CallerWorkspaceRoot)) { '(not provided)' } else { $CallerWorkspaceRoot }
+    Info ("context caller={0}, callerHost={1}, scriptHost={2}, workspace={3}, callerWorkspace={4}, onlyKinds={5}" -f $callerLabel, $callerHostLabel, $hostType, $resolvedWorkspaceRoot, $callerWorkspaceLabel, [string]$onlyKindsConfig.Raw)
+
+    $profile = Get-RaymanWorkspaceDependencyProfile -WorkspaceRoot $resolvedWorkspaceRoot -OnlyKindsText $OnlyKinds
+    Info ("detected deps: dotnet={0}, node={1}, python={2}, windowsDesktop={3}, maui={4}, sdkMajor={5}" -f $profile.NeedsDotNet, $profile.NeedsNode, $profile.NeedsPython, $profile.NeedWindowsDesktop, $profile.IsMaui, $profile.RequiredSdkMajor)
+
+    $missing = New-Object System.Collections.Generic.List[string]
+
+    if ($profile.NeedsDotNet) {
+        $dotnetReady = Test-RaymanDotNetSdkReady -RequiredSdkMajor $profile.RequiredSdkMajor
+        if (-not $dotnetReady -and (Test-Cmd 'dotnet') -and $profile.RequiredSdkMajor -gt 0) {
+            Warn ("dotnet is present but SDK {0} is missing; installed majors={1}" -f $profile.RequiredSdkMajor, ((@(Get-RaymanInstalledDotNetSdkMajors) | ForEach-Object { [string]$_ }) -join ','))
+        }
+
+        if (-not $dotnetReady) {
+            if ($autoInstallEnabled) {
+                Warn "dotnet missing or required SDK unavailable; trying auto install"
+                $wingetPackageId = [string]$profile.DotNetWingetPackageId
+                if (-not [string]::IsNullOrWhiteSpace($wingetPackageId)) {
+                    $null = Install-WithWinget -Id $wingetPackageId
+                }
+                if (-not (Test-RaymanDotNetSdkReady -RequiredSdkMajor $profile.RequiredSdkMajor)) {
+                    Warn 'winget install dotnet failed/unavailable; fallback to dotnet-install.ps1'
+                    try { Install-DotNetLocal -NeedWindowsDesktop:$profile.NeedWindowsDesktop -SdkMajor $profile.RequiredSdkMajor } catch { Warn ("dotnet-install fallback failed: {0}" -f $_.Exception.Message) }
+                }
+            }
+            if (-not (Test-RaymanDotNetSdkReady -RequiredSdkMajor $profile.RequiredSdkMajor)) {
+                $missingLabel = if ($profile.RequiredSdkMajor -gt 0) { "dotnet-sdk-$($profile.RequiredSdkMajor)" } else { 'dotnet' }
+                [void]$missing.Add($missingLabel)
+            }
+        }
+    }
+
+    if ($profile.NeedsNode -and -not (Test-Cmd 'node')) {
+        if ($autoInstallEnabled) {
+            Warn "node missing; trying auto install via winget"
+            $null = Install-WithWinget -Id 'OpenJS.NodeJS.LTS'
+        }
+        if (-not (Test-Cmd 'node')) { [void]$missing.Add('node') }
+    }
+
+    if ($profile.NeedsPython -and -not (Test-PythonCmd)) {
+        if ($autoInstallEnabled) {
+            Warn "python missing; trying auto install via winget"
+            $null = Install-WithWinget -Id 'Python.Python.3.12'
+        }
+        if (-not (Test-PythonCmd)) { [void]$missing.Add('python') }
+    }
+
+    if ($missing.Count -gt 0) {
+        $msg = "missing required test dependencies: {0}" -f ($missing -join ', ')
+        if ($requireEnabled) {
+            Fail $msg
+            return 2
+        }
+
+        Warn $msg
+        return 0
+    }
+
+    if ($profile.NeedsDotNet -and $profile.IsMaui -and $autoInstallEnabled) {
+        $workloadRestoreOk = Invoke-RaymanDotNetWorkloadRestore -MauiProjects $profile.MauiProjects -Require $requireEnabled
+        if (-not $workloadRestoreOk -and $requireEnabled) {
+            return 2
+        }
+    }
+
+    Info 'test dependencies ready'
+    return 0
+}
+
+if (-not $NoMain) {
+    $exitCode = Invoke-RaymanEnsureProjectTestDeps `
+        -WorkspaceRoot $WorkspaceRoot `
+        -AutoInstall $AutoInstall `
+        -Require $Require `
+        -OnlyKinds $OnlyKinds `
+        -Caller $Caller `
+        -CallerHostType $CallerHostType `
+        -CallerWorkspaceRoot $CallerWorkspaceRoot
+    exit $exitCode
+}

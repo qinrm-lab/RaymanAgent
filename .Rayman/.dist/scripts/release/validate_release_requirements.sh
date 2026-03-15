@@ -5,6 +5,12 @@ fail(){ echo "❌ [rayman-release] $*" >&2; exit 2; }
 info(){ echo "✅ [rayman-release] $*"; }
 warn(){ echo "⚠️  [rayman-release] $*" >&2; }
 
+emit_copy_smoke_guidance(){
+  warn "这不是在等待你输入内容；这里是 strict sandbox copy smoke 校验失败。"
+  warn "建议先单独运行：.\\.Rayman\\rayman.ps1 release-gate -Mode project"
+  warn "若确认是当前主机的 Windows Sandbox / 权限限制，可显式放行：先设置 RAYMAN_ALLOW_COPY_SMOKE_SANDBOX_FAIL=1，再设置 RAYMAN_BYPASS_REASON。"
+}
+
 RUNTIME_DIR=".Rayman/runtime"
 DECISION_LOG="${RUNTIME_DIR}/decision.log"
 DECISION_SUMMARY="${RUNTIME_DIR}/decision.summary.tsv"
@@ -73,6 +79,7 @@ need_scripts=(
   "./.Rayman/scripts/release/regression_guard.sh"
   "./.Rayman/scripts/release/spotcheck_release.sh"
   "./.Rayman/scripts/release/contract_git_safe.sh"
+  "./.Rayman/scripts/release/contract_scm_tracked_noise.sh"
   "./.Rayman/scripts/release/contract_nested_repair.sh"
   "./.Rayman/scripts/release/maintain_decision_log.sh"
   "./.Rayman/scripts/release/maintain_decision_log.ps1"
@@ -151,6 +158,7 @@ bash ./.Rayman/scripts/release/contract_update_from_prompt.sh >/dev/null || fail
 bash ./.Rayman/scripts/release/contract_release_gate.sh >/dev/null || fail "release_gate 契约测试失败"
 bash ./.Rayman/scripts/release/contract_playwright_fallback.sh >/dev/null || fail "playwright fallback 契约测试失败"
 bash ./.Rayman/scripts/release/contract_git_safe.sh >/dev/null || fail "git safe 契约测试失败"
+bash ./.Rayman/scripts/release/contract_scm_tracked_noise.sh >/dev/null || fail "scm tracked noise 契约测试失败"
 bash ./.Rayman/scripts/release/contract_nested_repair.sh >/dev/null || fail "nested repair 契约测试失败"
 
 # issues must be fully closed
@@ -177,6 +185,7 @@ if [[ -n "${sandbox_smoke_cmd}" ]]; then
       record_bypass "copy-smoke-sandbox" "${reason}"
       warn "copy smoke sandbox strict failed（按显式决策放行）"
     else
+      emit_copy_smoke_guidance
       fail "copy smoke sandbox strict 失败（可显式设置 RAYMAN_ALLOW_COPY_SMOKE_SANDBOX_FAIL=1 + RAYMAN_BYPASS_REASON 放行）"
     fi
   fi
@@ -186,6 +195,7 @@ else
     record_bypass "copy-smoke-sandbox" "${reason}"
     warn "copy smoke sandbox strict skipped: no powershell host（按显式决策放行）"
   else
+    emit_copy_smoke_guidance
     fail "copy smoke sandbox strict 需要 powershell.exe/pwsh；可显式设置 RAYMAN_ALLOW_COPY_SMOKE_SANDBOX_FAIL=1 + RAYMAN_BYPASS_REASON 放行"
   fi
 fi

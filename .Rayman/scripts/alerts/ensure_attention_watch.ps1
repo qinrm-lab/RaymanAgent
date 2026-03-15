@@ -43,6 +43,19 @@ if (-not (Test-Path -LiteralPath $watchScript -PathType Leaf)) {
   exit 0
 }
 
+$watchNames = @(Get-RaymanAttentionWatchProcessNames)
+if (-not (Get-RaymanEnvBool -Name 'RAYMAN_ALERT_WATCH_ALL_PROCESSES' -Default $false)) {
+  if ($watchNames.Count -eq 0) {
+    Write-EnsureInfo '[alert-watch] no configured target processes; skip start.'
+    exit 0
+  }
+
+  if (-not (Test-RaymanAttentionWatchTargetsAvailable -WatchAll:$false -ProcessNames $watchNames)) {
+    Write-EnsureInfo ("[alert-watch] no target process detected ({0}); skip start." -f (($watchNames | Select-Object -Unique) -join ','))
+    exit 0
+  }
+}
+
 if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
   $pidVal = Get-RaymanPidFromFile -PidFilePath $pidFile
   if ($pidVal -gt 0 -and (Test-RaymanPidFileProcess -PidFilePath $pidFile -AllowedProcessNames @('powershell', 'pwsh'))) {

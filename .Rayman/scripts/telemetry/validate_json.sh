@@ -465,6 +465,7 @@ elif kind == "index":
             require_str(item, "manifest_path", where)
             require_str(item, "baseline_status", where)
             require_nonneg_int(item, "baseline_rc", where)
+            require_bool(item, "telemetry_source_missing", where)
 
             metrics = require_key(item, "metrics", where)
             if isinstance(metrics, dict):
@@ -537,6 +538,7 @@ elif kind == "index":
                 err("root.summary.latest_bundle.age_hours must be >= -1")
 
             require_str(latest, "baseline_status", "root.summary.latest_bundle")
+            require_bool(latest, "telemetry_source_missing", "root.summary.latest_bundle")
             require_bool(latest, "metrics_has_data", "root.summary.latest_bundle")
             mf = require_num(latest, "metrics_fail_rate", "root.summary.latest_bundle")
             if is_number(mf) and not (0 <= float(mf) <= 100):

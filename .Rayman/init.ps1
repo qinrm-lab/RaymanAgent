@@ -24,6 +24,23 @@ if (-not (Test-Path -LiteralPath $commonScriptPath -PathType Leaf)) {
 & "$PSScriptRoot\scripts\repair\ensure_complete_rayman.ps1" -Root (Resolve-Path "$PSScriptRoot\..").Path | Out-Host
 
 $ErrorActionPreference = 'Stop'
+$workspaceStateGuardResult = $null
+$workspaceStateGuardError = ''
+$workspaceStateGuardScript = Join-Path $PSScriptRoot 'scripts\utils\workspace_state_guard.ps1'
+$workspaceRootForGuard = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+if (Test-Path -LiteralPath $workspaceStateGuardScript -PathType Leaf) {
+  try {
+    $workspaceStateGuardJson = & $workspaceStateGuardScript -WorkspaceRoot $workspaceRootForGuard -Json
+    if (-not [string]::IsNullOrWhiteSpace([string]$workspaceStateGuardJson)) {
+      $workspaceStateGuardResult = $workspaceStateGuardJson | ConvertFrom-Json -ErrorAction Stop
+    }
+  } catch {
+    $workspaceStateGuardError = $_.Exception.Message
+  }
+} else {
+  $workspaceStateGuardError = ("missing: {0}" -f $workspaceStateGuardScript)
+}
 
 function Ensure-RaymanSolutionNameEncoding([string]$WorkspaceRoot) {
   try {
@@ -236,6 +253,15 @@ $LogPath = Join-Path $LogDir ("init.win.{0}.log" -f $Ts)
 Start-Transcript -Path $LogPath -Append | Out-Null
 
 Write-Host ("[init] log: {0}" -f $LogPath)
+if ($null -ne $workspaceStateGuardResult) {
+  if ([bool]$workspaceStateGuardResult.scrubbed) {
+    Write-Host ("[workspace-state] detected cross-workspace copy; removed={0}; source={1}" -f [int]$workspaceStateGuardResult.removed_count, [string]$workspaceStateGuardResult.foreign_workspace_root) -ForegroundColor Yellow
+  } else {
+    Write-Host ("[workspace-state] marker refreshed: {0}" -f [string]$workspaceStateGuardResult.marker_path) -ForegroundColor DarkCyan
+  }
+} elseif (-not [string]::IsNullOrWhiteSpace($workspaceStateGuardError)) {
+  Write-Warn ("[workspace-state] pre-init guard failed: {0}" -f $workspaceStateGuardError)
+}
 
 
 
@@ -766,6 +792,17 @@ try {
 
   & "$PSScriptRoot\scripts\pwa\prepare_windows_sandbox.ps1"
 
+  $agentCapabilitiesScript = Join-Path $PSScriptRoot 'scripts\agents\ensure_agent_capabilities.ps1'
+  if (Test-Path -LiteralPath $agentCapabilitiesScript -PathType Leaf) {
+    try {
+      & $agentCapabilitiesScript -Action sync -WorkspaceRoot $WorkspaceRoot | Out-Host
+    } catch {
+      Write-Warn ("[agent-cap] sync failed: {0}" -f $_.Exception.Message)
+    }
+  } else {
+    Write-Warn ("[agent-cap] missing script: {0}" -f $agentCapabilitiesScript)
+  }
+
 
 
   $WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')) | Select-Object -ExpandProperty Path
@@ -857,6 +894,210 @@ try {
     }
   }
 
+  function ConvertTo-RaymanStableHash([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 'none' }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+      $hashBytes = $sha.ComputeHash($bytes)
+    } finally {
+      $sha.Dispose()
+    }
+    return ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
+  }
+
+  function Get-RaymanSandboxOwnerRegistryPath {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) 'rayman'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    return (Join-Path $dir 'sandbox-owner-registry.json')
+  }
+
+  function Get-RaymanSandboxOwnerStatePath([string]$SandboxRoot) {
+    return (Join-Path $SandboxRoot 'owner.state.json')
+  }
+
+  function Get-RaymanSandboxOwnerContext([string]$WorkspaceRoot) {
+    $resolvedWorkspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $workspaceHash = ConvertTo-RaymanStableHash -Value ($resolvedWorkspace.ToLowerInvariant())
+    $tokenSource = 'workspace-root'
+    $tokenValue = $resolvedWorkspace
+    foreach ($name in @('RAYMAN_VSCODE_WINDOW_OWNER', 'VSCODE_IPC_HOOK_CLI', 'VSCODE_IPC_HOOK', 'VSCODE_PID')) {
+      $candidate = [string][Environment]::GetEnvironmentVariable($name)
+      if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+        $tokenSource = $name
+        $tokenValue = $candidate.Trim()
+        break
+      }
+    }
+
+    $ownerHash = ConvertTo-RaymanStableHash -Value $tokenValue
+    $ownerDisplay = if ($tokenSource -eq 'VSCODE_PID') {
+      ('{0}#{1}' -f $tokenSource, $tokenValue)
+    } elseif ($tokenSource -eq 'workspace-root') {
+      ('workspace#{0}' -f $workspaceHash.Substring(0, [Math]::Min(12, $workspaceHash.Length)))
+    } else {
+      ('{0}#{1}' -f $tokenSource, $ownerHash.Substring(0, [Math]::Min(12, $ownerHash.Length)))
+    }
+
+    return [pscustomobject]@{
+      WorkspaceRoot = $resolvedWorkspace
+      WorkspaceHash = $workspaceHash
+      OwnerSource   = $tokenSource
+      OwnerToken    = $tokenValue
+      OwnerHash     = $ownerHash
+      OwnerKey      = ('{0}:{1}:{2}' -f $tokenSource, $ownerHash, $workspaceHash)
+      OwnerDisplay  = $ownerDisplay
+    }
+  }
+
+  function Get-RaymanSandboxOwnerRegistryEntries {
+    $path = Get-RaymanSandboxOwnerRegistryPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+    try {
+      $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+      if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+      $data = @($raw | ConvertFrom-Json -ErrorAction Stop)
+      return @($data | Where-Object { $null -ne $_ -and $_.PSObject.Properties['pid'] -and [int]$_.pid -gt 0 })
+    } catch {
+      Write-Warn ("[sandbox] 读取 owner registry 失败：{0}" -f $_.Exception.Message)
+      return @()
+    }
+  }
+
+  function Save-RaymanSandboxOwnerRegistry([object[]]$Entries) {
+    $path = Get-RaymanSandboxOwnerRegistryPath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $payload = @($Entries | Where-Object { $null -ne $_ })
+    $json = $payload | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($path, $json, $utf8NoBom)
+  }
+
+  function Sync-RaymanSandboxOwnerRegistry {
+    $entries = @(Get-RaymanSandboxOwnerRegistryEntries)
+    $live = @()
+    try {
+      $live = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient' -ErrorAction SilentlyContinue)
+    } catch {}
+    $livePidSet = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($proc in $live) {
+      [void]$livePidSet.Add([int]$proc.Id)
+    }
+
+    $filtered = @()
+    foreach ($entry in $entries) {
+      $pidValue = 0
+      try { $pidValue = [int]$entry.pid } catch { $pidValue = 0 }
+      if ($pidValue -le 0) { continue }
+      if (-not $livePidSet.Contains($pidValue)) { continue }
+      $filtered += $entry
+    }
+
+    Save-RaymanSandboxOwnerRegistry -Entries $filtered
+    return $filtered
+  }
+
+  function Register-RaymanSandboxOwner([int]$Pid, [object]$OwnerContext, [string]$WsbPath, [string]$StatePath) {
+    if ($Pid -le 0 -or $null -eq $OwnerContext) { return }
+    $entries = @(Sync-RaymanSandboxOwnerRegistry)
+    $remaining = @($entries | Where-Object { [int]$_.pid -ne $Pid })
+    $record = [pscustomobject]@{
+      pid           = $Pid
+      workspaceRoot = [string]$OwnerContext.WorkspaceRoot
+      workspaceHash = [string]$OwnerContext.WorkspaceHash
+      ownerSource   = [string]$OwnerContext.OwnerSource
+      ownerKey      = [string]$OwnerContext.OwnerKey
+      ownerDisplay  = [string]$OwnerContext.OwnerDisplay
+      launchedAt    = (Get-Date).ToString('o')
+      wsbPath       = $WsbPath
+    }
+    $remaining += $record
+    Save-RaymanSandboxOwnerRegistry -Entries $remaining
+
+    if (-not [string]::IsNullOrWhiteSpace($StatePath)) {
+      try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($StatePath, ($record | ConvertTo-Json -Depth 6), $utf8NoBom)
+      } catch {
+        Write-Warn ("[sandbox] 写入 owner state 失败：{0}" -f $_.Exception.Message)
+      }
+    }
+  }
+
+  function Unregister-RaymanSandboxOwner([int[]]$Pids, [string]$StatePath = '') {
+    $pidSet = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($pidValue in @($Pids)) {
+      if ([int]$pidValue -gt 0) { [void]$pidSet.Add([int]$pidValue) }
+    }
+    if ($pidSet.Count -eq 0) { return }
+
+    $entries = @(Sync-RaymanSandboxOwnerRegistry)
+    $remaining = @($entries | Where-Object { -not $pidSet.Contains([int]$_.pid) })
+    Save-RaymanSandboxOwnerRegistry -Entries $remaining
+
+    if (-not [string]::IsNullOrWhiteSpace($StatePath) -and (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
+      try { Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue } catch {}
+    }
+  }
+
+  function Get-RaymanSandboxExistingSnapshot([object]$OwnerContext) {
+    $live = @()
+    try { $live = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient' -ErrorAction SilentlyContinue) } catch {}
+    $entries = @(Sync-RaymanSandboxOwnerRegistry)
+    $entryMap = @{}
+    foreach ($entry in $entries) {
+      $entryMap[[int]$entry.pid] = $entry
+    }
+
+    $owned = @()
+    $foreign = @()
+    $unknown = @()
+
+    foreach ($proc in $live) {
+      $entry = $null
+      if ($entryMap.ContainsKey([int]$proc.Id)) {
+        $entry = $entryMap[[int]$proc.Id]
+      }
+
+      if ($null -eq $entry) {
+        $unknown += $proc
+        continue
+      }
+
+      if ([string]$entry.ownerKey -eq [string]$OwnerContext.OwnerKey) {
+        $owned += $proc
+      } else {
+        $foreign += $proc
+      }
+    }
+
+    return [pscustomobject]@{
+      LiveProcesses    = @($live)
+      OwnedProcesses   = @($owned)
+      ForeignProcesses = @($foreign)
+      UnknownProcesses = @($unknown)
+      Entries          = @($entries)
+    }
+  }
+
+  function Format-RaymanSandboxProcessList([object[]]$Processes) {
+    if ($null -eq $Processes -or $Processes.Count -eq 0) { return '(none)' }
+    return (($Processes | ForEach-Object { "$($_.ProcessName)#$($_.Id)" }) -join ', ')
+  }
+
+  function Write-RaymanSandboxSnapshot([string]$Stage, [object]$OwnerContext, [object]$Snapshot) {
+    if ($null -eq $OwnerContext -or $null -eq $Snapshot) { return }
+    Write-Info ("[sandbox] {0}: owner={1} | owned={2} | foreign={3} | unknown={4}" -f $Stage, $OwnerContext.OwnerDisplay, (Format-RaymanSandboxProcessList $Snapshot.OwnedProcesses), (Format-RaymanSandboxProcessList $Snapshot.ForeignProcesses), (Format-RaymanSandboxProcessList $Snapshot.UnknownProcesses))
+  }
+
+  $SandboxOwnerContext = Get-RaymanSandboxOwnerContext -WorkspaceRoot $WorkspaceRoot
+  $SandboxOwnerStatePath = Get-RaymanSandboxOwnerStatePath -SandboxRoot $SandboxDir
+
 
 
   function Start-RaymanSandbox([string]$wsbPath) {
@@ -904,20 +1145,32 @@ try {
       Write-Warn "[sandbox] 继续尝试启动；如需遇到 ACL 风险时立即跳过，可设置 RAYMAN_SANDBOX_SKIP_ON_ACL_RISK=1。"
     }
 
-    $existing = Get-Process -Name 'WindowsSandbox','WindowsSandboxClient' -ErrorAction SilentlyContinue
-    if ($existing) {
-      $existingList = ($existing | ForEach-Object { "$($_.ProcessName)#$($_.Id)" }) -join ', '
+    $snapshot = Get-RaymanSandboxExistingSnapshot -OwnerContext $SandboxOwnerContext
+    Write-RaymanSandboxSnapshot -Stage 'pre-start' -OwnerContext $SandboxOwnerContext -Snapshot $snapshot
+    if ($snapshot.LiveProcesses.Count -gt 0) {
       $killExisting = Get-RaymanBoolEnv -Name 'RAYMAN_SANDBOX_KILL_EXISTING' -Default $false
-      if (-not $killExisting) {
-        Write-Warn ("[sandbox] 检测到已有运行中的 Sandbox 实例：{0}。默认不主动关闭，已跳过本次启动。可先手工关闭后重试，或设置 RAYMAN_SANDBOX_KILL_EXISTING=1 允许自动关闭旧实例。" -f $existingList)
-        Invoke-RaymanManualAlert -Reason "检测到已有 Sandbox 实例且未自动关闭，请手工关闭后重试，或设置 RAYMAN_SANDBOX_KILL_EXISTING=1。"
+      if ($snapshot.ForeignProcesses.Count -gt 0 -or $snapshot.UnknownProcesses.Count -gt 0) {
+        $foreignText = Format-RaymanSandboxProcessList @($snapshot.ForeignProcesses + $snapshot.UnknownProcesses)
+        Write-Warn ("[sandbox] 检测到非当前 VS Code 窗口/工作区 owner 的 Sandbox 实例：{0}。为避免误伤，不会自动关闭；请在对应窗口关闭后重试。当前 owner={1}" -f $foreignText, $SandboxOwnerContext.OwnerDisplay)
+        Invoke-RaymanManualAlert -Reason "检测到其他 VS Code 窗口或未知来源的 Sandbox 实例；为避免误伤，本次不会自动关闭。请在对应窗口关闭后重试。"
         return $false
       }
-      Write-Info ("[sandbox] 检测到已有运行中的 Sandbox 实例：{0}，已根据 RAYMAN_SANDBOX_KILL_EXISTING=1 自动关闭后再启动。" -f $existingList)
-      foreach ($p in $existing) {
-        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
+
+      if ($snapshot.OwnedProcesses.Count -gt 0) {
+        $ownedText = Format-RaymanSandboxProcessList $snapshot.OwnedProcesses
+        if (-not $killExisting) {
+          Write-Warn ("[sandbox] 检测到当前 owner 已有 Sandbox 实例：{0}。默认不主动关闭，已跳过本次启动。可先手工关闭后重试，或设置 RAYMAN_SANDBOX_KILL_EXISTING=1 允许自动关闭本窗口旧实例。" -f $ownedText)
+          Invoke-RaymanManualAlert -Reason "检测到当前 VS Code 窗口已有 Sandbox 实例且未自动关闭；请手工关闭后重试，或设置 RAYMAN_SANDBOX_KILL_EXISTING=1。"
+          return $false
+        }
+
+        Write-Info ("[sandbox] 检测到当前 owner 已有 Sandbox 实例：{0}，已根据 RAYMAN_SANDBOX_KILL_EXISTING=1 自动关闭后再启动。owner={1}" -f $ownedText, $SandboxOwnerContext.OwnerDisplay)
+        foreach ($p in $snapshot.LiveProcesses) {
+          try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
+        }
+        Unregister-RaymanSandboxOwner -Pids @($snapshot.LiveProcesses | ForEach-Object { [int]$_.Id }) -StatePath $SandboxOwnerStatePath
+        Start-Sleep -Seconds 2
       }
-      Start-Sleep -Seconds 2
     }
 
     # Clear previous status to avoid false positives.
@@ -928,6 +1181,8 @@ try {
 
     $proc = Start-Process -FilePath $exe -ArgumentList @($wsbPath) -PassThru
     Write-Info ("[sandbox] WindowsSandbox PID={0}" -f $proc.Id)
+    Register-RaymanSandboxOwner -Pid $proc.Id -OwnerContext $SandboxOwnerContext -WsbPath $wsbPath -StatePath $SandboxOwnerStatePath
+    Write-Info ("[sandbox] owner registered: {0}" -f $SandboxOwnerContext.OwnerDisplay)
 
     return $proc
 
@@ -1115,13 +1370,15 @@ try {
     )
 
     $targets = New-Object System.Collections.Generic.List[object]
+    $snapshot = Get-RaymanSandboxExistingSnapshot -OwnerContext $SandboxOwnerContext
+    Write-RaymanSandboxSnapshot -Stage 'pre-close' -OwnerContext $SandboxOwnerContext -Snapshot $snapshot
 
     if ($PrimaryPid -gt 0) {
       $p = Get-Process -Id $PrimaryPid -ErrorAction SilentlyContinue
       if ($p) { $targets.Add($p) | Out-Null }
     }
 
-    $others = Get-Process -Name 'WindowsSandbox','WindowsSandboxClient' -ErrorAction SilentlyContinue
+    $others = if ($snapshot.ForeignProcesses.Count -eq 0 -and $snapshot.UnknownProcesses.Count -eq 0) { $snapshot.LiveProcesses } else { $snapshot.OwnedProcesses }
     foreach ($p in $others) {
       $exists = $false
       foreach ($t in $targets) {
@@ -1139,6 +1396,7 @@ try {
     foreach ($p in $targets) {
       try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {}
     }
+    Unregister-RaymanSandboxOwner -Pids @($targets | ForEach-Object { [int]$_.Id }) -StatePath $SandboxOwnerStatePath
   }
 
 

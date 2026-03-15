@@ -111,12 +111,8 @@ function Get-ActivePidInfo([string]$PidFile) {
 
     $running = $false
     if ($pidValue -gt 0) {
-        try {
-            [void](Get-Process -Id $pidValue -ErrorAction Stop)
-            $running = $true
-        } catch {
-            $running = $false
-        }
+        $proc = Get-Process -Id $pidValue -ErrorAction SilentlyContinue | Select-Object -First 1
+        $running = ($null -ne $proc)
     }
 
     return [pscustomobject]@{

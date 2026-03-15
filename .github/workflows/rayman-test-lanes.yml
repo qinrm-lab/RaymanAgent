@@ -1,0 +1,85 @@
+name: rayman-test-lanes
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+jobs:
+  fast-contract-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install test dependencies
+        run: |
+          python3 -m pip install --upgrade pip jsonschema
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
+          pwsh -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser"
+
+      - name: Run fast contract lane
+        run: bash ./.Rayman/scripts/testing/run_fast_contract.sh
+
+      - name: Run Pester logic unit lane
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_pester_tests.ps1 -WorkspaceRoot "$PWD"
+
+      - name: Run Bats logic unit lane
+        run: bash ./.Rayman/scripts/testing/run_bats_tests.sh
+
+      - name: Upload Linux test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayman-test-lanes-linux
+          path: |
+            .Rayman/runtime/project_gates/**
+            .Rayman/runtime/test_lanes/**
+            .Rayman/logs/**
+
+  fast-contract-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip jsonschema
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run fast contract lane
+        shell: bash
+        run: bash ./.Rayman/scripts/testing/run_fast_contract.sh
+
+      - name: Run Pester logic unit lane
+        shell: pwsh
+        run: ./.Rayman/scripts/testing/run_pester_tests.ps1 -WorkspaceRoot "$PWD"
+
+      - name: Run host smoke lane
+        shell: pwsh
+        run: ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD"
+
+      - name: Upload Windows test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayman-test-lanes-windows
+          path: |
+            .Rayman/runtime/project_gates/**
+            .Rayman/runtime/test_lanes/**
+            .Rayman/runtime/*.json
+            .Rayman/runtime/winapp-tests/**
+            .Rayman/logs/**

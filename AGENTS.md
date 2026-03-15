@@ -11,7 +11,7 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 - 你在开始任何产物生成/调试前，**必须先阅读** `./.Rayman/context/skills.auto.md` 并按其建议选择合适的工具（例如 pdfs/docs/spreadsheets/slides 等）。
 - 如需覆盖自动选择：使用环境变量 `RAYMAN_SKILLS_FORCE=pdfs,docs,...`；关闭自动选择：`RAYMAN_SKILLS_OFF=1`。
 
-<!-- RAYMAN:MANDATORY_REQUIREMENTS_V159 -->
+<!-- RAYMAN:MANDATORY_REQUIREMENTS_V161 -->
 ## 强制 Requirements 规则（必须遵守）
 
 1. 你 **必须** 先阅读并严格遵守 `.<SolutionName>/.<SolutionName>.requirements.md`。
@@ -20,7 +20,7 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 4. 若 requirements 存在冲突或不清晰之处，你必须停止并报告冲突点，等待指示后再继续。
 
 专有名词保留英文：Agent / Codex / Copilot / Solution / Project。
-<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V159 -->
+<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V161 -->
 
 ## 审批模式（full-auto）
 

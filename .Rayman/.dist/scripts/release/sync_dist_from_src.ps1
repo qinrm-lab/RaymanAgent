@@ -32,7 +32,7 @@ $rels = New-Object System.Collections.Generic.List[string]
 foreach ($m in $matches) {
   $val = $m.Groups[1].Value
   if ([string]::IsNullOrWhiteSpace($val)) { continue }
-  if ($val -like 'scripts/*' -or $val -like 'templates/*' -or $val -like 'skills/*' -or $val -like 'rules/*' -or $val -like 'RELEASE_REQUIREMENTS.md' -or $val -like 'VERSION') {
+  if ($val -like 'scripts/*' -or $val -like 'templates/*' -or $val -like 'skills/*' -or $val -like 'rules/*' -or $val -like 'config/*' -or $val -like 'agents/*' -or $val -like 'winapp.flow.sample.json' -or $val -like 'RELEASE_REQUIREMENTS.md' -or $val -like 'VERSION') {
     [void]$rels.Add($val)
   }
 }
@@ -69,12 +69,17 @@ Info ("copied={0} missing={1}" -f $copied, $missing)
 
 if ($Validate) {
   Info 'validating dist sync...'
+  if (Test-Path variable:LASTEXITCODE) { $global:LASTEXITCODE = 0 }
   & $assertScript -WorkspaceRoot $WorkspaceRoot
   $assertExitCode = 0
-  if (Test-Path variable:LASTEXITCODE) {
+  if (-not $?) {
+    if (Test-Path variable:LASTEXITCODE) {
+      $assertExitCode = [int]$LASTEXITCODE
+    } else {
+      $assertExitCode = 1
+    }
+  } elseif (Test-Path variable:LASTEXITCODE) {
     $assertExitCode = [int]$LASTEXITCODE
-  } elseif (-not $?) {
-    $assertExitCode = 1
   }
   if ($assertExitCode -ne 0) { Fail 'validation failed after sync' }
   Info 'validation OK'

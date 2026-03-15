@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bash ./.Rayman/scripts/release/validate_release_requirements.sh >/dev/null
+if [[ "${RAYMAN_VALIDATE_REQUIREMENTS_SKIP_RELEASE:-0}" != "1" ]]; then
+  bash ./.Rayman/scripts/release/validate_release_requirements.sh >/dev/null
+fi
 
 fail(){ echo "❌ [rayman-ci] $*" >&2; exit 1; }
 warn(){ echo "⚠️  [rayman-ci] $*" >&2; }
@@ -112,7 +114,7 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 0
 fi
 
-git fetch --all --prune >/dev/null 2>&1 || true
+GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=Never git fetch --all --prune >/dev/null 2>&1 || true
 BASE="${RAYMAN_BASE_REF:-origin/main}"
 
 if ! git rev-parse --verify --quiet "${BASE}" >/dev/null 2>&1; then

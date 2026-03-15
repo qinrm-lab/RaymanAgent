@@ -4,4 +4,4 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
-bash ./.Rayman/scripts/release/validate_release_requirements.sh "$@"
+bash ./.Rayman/scripts/testing/run_fast_contract.sh "$@"
