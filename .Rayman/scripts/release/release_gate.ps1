@@ -443,9 +443,14 @@ $scanIgnoreRules = @(
   '/\.venv/',
   '/\.git/',
   '/\.rayman/context\.md$',
-  '/\.rayman/state/.*\.md$',
-  '/\.rayman/state/release_gate_report\.md$',
-  '/\.rayman/state/release_gate_report\.json$',
+  '/\.rayman/logs/',
+  '/\.rayman/state/',
+  '/\.rayman/runtime/',
+  '/\.rayman/cache/',
+  '/\.rayman/\.dist/logs/',
+  '/\.rayman/\.dist/state/',
+  '/\.rayman/\.dist/runtime/',
+  '/\.rayman/\.dist/cache/',
   '/\.rayman/scripts/release/release_gate\.ps1$',
   '/\.rayman/\.dist/scripts/release/release_gate\.ps1$'
 )
