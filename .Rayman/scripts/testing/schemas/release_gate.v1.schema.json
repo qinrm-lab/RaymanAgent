@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/release_gate.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_root",
+    "mode",
+    "report_path",
+    "overall",
+    "counts",
+    "options",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.release_gate.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "report_path": {
+      "type": "string"
+    },
+    "overall": {
+      "enum": [
+        "PASS",
+        "WARN",
+        "FAIL"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "required": [
+        "pass",
+        "warn",
+        "fail"
+      ],
+      "properties": {
+        "pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warn": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fail": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "options": {
+      "type": "object",
+      "required": [
+        "allow_no_git",
+        "skip_auto_dist_sync",
+        "include_residual_diagnostics"
+      ],
+      "properties": {
+        "allow_no_git": {
+          "type": "boolean"
+        },
+        "skip_auto_dist_sync": {
+          "type": "boolean"
+        },
+        "include_residual_diagnostics": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "status",
+          "detail",
+          "action"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARN",
+              "FAIL"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

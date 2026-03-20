@@ -9,12 +9,25 @@ if (Test-Path -LiteralPath $commandCatalogScript -PathType Leaf) {
   . $commandCatalogScript
 }
 
+$stateScript = Join-Path $PSScriptRoot 'lib\state.ps1'
+if (Test-Path -LiteralPath $stateScript -PathType Leaf) {
+  . $stateScript
+}
+
 $cmd = $Command.ToLowerInvariant()
 $commandProvided = $PSBoundParameters.ContainsKey('Command')
 $script:RaymanCliWorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$script:RaymanCliInvokedFromMenu = $false
+if ($null -eq $CliArgs) {
+  $CliArgs = @()
+} else {
+  $CliArgs = @($CliArgs)
+}
 
 function Get-RaymanMenuStatePath {
-  $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  $workspaceRoot = $WorkspaceRoot
   $runtimeDir = Join-Path $workspaceRoot '.Rayman\runtime'
   if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
@@ -23,7 +36,9 @@ function Get-RaymanMenuStatePath {
 }
 
 function Get-RaymanLastMenuChoice {
-  $statePath = Get-RaymanMenuStatePath
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  $statePath = Get-RaymanMenuStatePath -WorkspaceRoot $WorkspaceRoot
   if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $null }
   try {
     $obj = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
@@ -33,9 +48,16 @@ function Get-RaymanLastMenuChoice {
   }
 }
 
-function Set-RaymanLastMenuChoice([int]$Index, [string]$CommandName, [string[]]$CommandArgs) {
+function Set-RaymanLastMenuChoice {
+  param(
+    [int]$Index,
+    [string]$CommandName,
+    [string[]]$CommandArgs,
+    [string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot
+  )
+
   try {
-    $statePath = Get-RaymanMenuStatePath
+    $statePath = Get-RaymanMenuStatePath -WorkspaceRoot $WorkspaceRoot
     $payload = [ordered]@{
       index = $Index
       command = $CommandName
@@ -50,49 +72,151 @@ function Set-RaymanLastMenuChoice([int]$Index, [string]$CommandName, [string[]]$
   }
 }
 
-function Show-RaymanInteractiveMenu {
-  $menu = @(
-    @{ Index = 1;  Command = 'init';              Desc = '初始化环境';              DefaultArgs = @() },
-    @{ Index = 2;  Command = 'ensure-win-deps';   Desc = 'Windows 依赖检查';        DefaultArgs = @() },
-    @{ Index = 3;  Command = 'ensure-wsl-deps';   Desc = 'WSL 依赖检查/安装';       DefaultArgs = @() },
-    @{ Index = 4;  Command = 'proxy-health';      Desc = '代理健康检查（自动 refresh）'; DefaultArgs = @('--refresh') },
-    @{ Index = 5;  Command = 'ensure-playwright'; Desc = 'Playwright 就绪检查';     DefaultArgs = @() },
-    @{ Index = 6;  Command = 'test-fix';          Desc = '测试并修复（自愈）';      DefaultArgs = @() },
-    @{ Index = 7;  Command = 'release-gate';      Desc = '发布闸门检查';            DefaultArgs = @() },
-    @{ Index = 8;  Command = 'context-update';    Desc = '更新上下文';              DefaultArgs = @() },
-    @{ Index = 9;  Command = 'cache-clear';       Desc = '清理缓存';                DefaultArgs = @() },
-    @{ Index = 10; Command = 'state-save';        Desc = '保存状态';                DefaultArgs = @() },
-    @{ Index = 11; Command = 'state-resume';      Desc = '恢复状态';                DefaultArgs = @() },
-    @{ Index = 12; Command = 'watch-auto';        Desc = '启动后台监听';            DefaultArgs = @() },
-    @{ Index = 13; Command = 'watch-stop';        Desc = '停止后台监听';            DefaultArgs = @() },
-    @{ Index = 14; Command = 'prompts';           Desc = 'Prompt 模板管理';         DefaultArgs = @('-Action', 'list') },
-    @{ Index = 15; Command = 'copy-self-check';   Desc = '拷贝后初始化自检';        DefaultArgs = @() },
-    @{ Index = 16; Command = 'pwa-test';          Desc = 'PWA 自动化测试（本机兜底）'; DefaultArgs = @() },
-    @{ Index = 17; Command = 'ensure-winapp';     Desc = 'Windows桌面自动化就绪检查'; DefaultArgs = @() },
-    @{ Index = 18; Command = 'winapp-test';       Desc = 'Windows桌面自动化（WinForms/MAUI）'; DefaultArgs = @() },
-    @{ Index = 19; Command = 'winapp-inspect';    Desc = 'Windows控件树探查';       DefaultArgs = @() },
-    @{ Index = 20; Command = 'linux-test';        Desc = 'WSL Linux 自动化自测';   DefaultArgs = @() },
-    @{ Index = 21; Command = 'single-repo-upgrade'; Desc = '单仓库深度增强（质量优先）'; DefaultArgs = @() },
-    @{ Index = 22; Command = 'single-repo-kpi';   Desc = '单仓库KPI看板生成';        DefaultArgs = @() },
-    @{ Index = 23; Command = 'agent-contract';    Desc = 'Agent 契约自检';           DefaultArgs = @() },
-    @{ Index = 24; Command = 'agent-capabilities'; Desc = 'Agent 能力同步/状态';      DefaultArgs = @() },
-    @{ Index = 25; Command = 'fast-gate';         Desc = '项目快速门禁';              DefaultArgs = @() },
-    @{ Index = 26; Command = 'browser-gate';      Desc = '项目浏览器门禁';            DefaultArgs = @() },
-    @{ Index = 27; Command = 'full-gate';         Desc = '项目完整门禁';              DefaultArgs = @() }
+function Get-RaymanInteractiveMenuDefaultArgs {
+  param([string]$CommandName)
+
+  switch ([string]$CommandName) {
+    'codex' { return @('menu') }
+    'prompts' { return @('-Action', 'list') }
+    'proxy-health' { return @('--refresh') }
+    default { return @() }
+  }
+}
+
+function Get-RaymanInteractiveMenuEntries {
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  if (-not (Get-Command Import-RaymanCommandCatalog -ErrorAction SilentlyContinue)) {
+    throw 'command catalog helpers are unavailable.'
+  }
+
+  $menu = New-Object System.Collections.Generic.List[object]
+  $displayIndex = 0
+  foreach ($entry in @(Import-RaymanCommandCatalog -WorkspaceRoot $WorkspaceRoot)) {
+    $name = [string]$entry.name
+    if ($name -in @('help', 'menu', 'interactive', 'self-check', 'copy-check', 'package', 'health', '一键健康检查', 'proxy-check')) {
+      continue
+    }
+
+    $platform = [string]$entry.platform
+    if ($platform -eq 'windows-only') {
+      $isWindowsHost = $false
+      try {
+        $isWindowsHost = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+      } catch {
+        $isWindowsHost = $false
+      }
+      if (-not $isWindowsHost) {
+        continue
+      }
+    }
+
+    $displayIndex++
+    $menu.Add([ordered]@{
+        Index = $displayIndex
+        Command = $name
+        Desc = [string]$entry.summary
+        DefaultArgs = @(Get-RaymanInteractiveMenuDefaultArgs -CommandName $name)
+        Recommended = [bool]$entry.recommended
+        Platform = $platform
+        Group = [string]$entry.group
+      }) | Out-Null
+  }
+
+  return @($menu.ToArray())
+}
+
+function Resolve-RaymanDefaultMenuItem {
+  param(
+    [object[]]$MenuEntries,
+    [string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot
   )
 
-  $last = Get-RaymanLastMenuChoice
-  $defaultIndex = 0
-  if ($last -and $last.PSObject.Properties['index']) {
-    $parsed = 0
-    if ([int]::TryParse([string]$last.index, [ref]$parsed)) {
-      if ($menu | Where-Object { $_.Index -eq $parsed }) {
-        $defaultIndex = $parsed
+  $menu = @($MenuEntries)
+  if ($menu.Count -eq 0) { return $null }
+
+  $last = Get-RaymanLastMenuChoice -WorkspaceRoot $WorkspaceRoot
+  if ($null -ne $last) {
+    if ($last.PSObject.Properties['command'] -and -not [string]::IsNullOrWhiteSpace([string]$last.command)) {
+      $matchedByCommand = $menu | Where-Object { [string]$_.Command -ieq [string]$last.command } | Select-Object -First 1
+      if ($matchedByCommand) {
+        return $matchedByCommand
+      }
+    }
+
+    if ($last.PSObject.Properties['index']) {
+      $parsedIndex = 0
+      if ([int]::TryParse([string]$last.index, [ref]$parsedIndex)) {
+        $matchedByIndex = $menu | Where-Object { [int]$_.Index -eq $parsedIndex } | Select-Object -First 1
+        if ($matchedByIndex) {
+          return $matchedByIndex
+        }
       }
     }
   }
 
-@"
+  return $null
+}
+
+function Resolve-RaymanInteractiveMenuSelection {
+  param([object]$Selection)
+
+  if ($null -eq $Selection) {
+    return $null
+  }
+
+  $commandName = ''
+  $args = @()
+  $hasCommand = $false
+  $hasCliArgs = $false
+
+  if ($Selection -is [System.Collections.IDictionary]) {
+    $dict = [System.Collections.IDictionary]$Selection
+    foreach ($key in $dict.Keys) {
+      if (-not $hasCommand -and [string]$key -ieq 'Command') {
+        $commandName = [string]$dict[$key]
+        $hasCommand = $true
+      }
+      if (-not $hasCliArgs -and [string]$key -ieq 'CliArgs') {
+        $args = @($dict[$key])
+        $hasCliArgs = $true
+      }
+    }
+  } else {
+    if ($Selection.PSObject.Properties['Command']) {
+      $commandName = [string]$Selection.Command
+      $hasCommand = $true
+    }
+    if ($Selection.PSObject.Properties['CliArgs']) {
+      $args = @($Selection.CliArgs)
+      $hasCliArgs = $true
+    }
+  }
+
+  if (-not $hasCommand -or [string]::IsNullOrWhiteSpace($commandName)) {
+    throw 'Interactive menu returned an invalid selection object.'
+  }
+  if (-not $hasCliArgs) {
+    $args = @()
+  }
+
+  return @{
+    Command = $commandName
+    CliArgs = [string[]]@($args | ForEach-Object { [string]$_ })
+  }
+}
+
+function Show-RaymanInteractiveMenu {
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  $menu = @(Get-RaymanInteractiveMenuEntries -WorkspaceRoot $WorkspaceRoot)
+  $defaultItem = Resolve-RaymanDefaultMenuItem -MenuEntries $menu -WorkspaceRoot $WorkspaceRoot
+  $defaultIndex = 0
+  if ($defaultItem) {
+    $defaultIndex = [int]$defaultItem.Index
+  }
+
+  Write-Host @"
 =======================================================
 🤖 Rayman 交互菜单（输入编号即可）
 =======================================================
@@ -100,8 +224,14 @@ function Show-RaymanInteractiveMenu {
 
   foreach ($item in $menu) {
     $marker = ' '
-    if ($defaultIndex -gt 0 -and $item.Index -eq $defaultIndex) { $marker = '★' }
-    Write-Host ("{0} {1,2}) {2,-17} {3}" -f $marker, $item.Index, $item.Command, $item.Desc)
+    if ($defaultIndex -gt 0 -and [int]$item.Index -eq $defaultIndex) {
+      $marker = '★'
+    }
+    $desc = [string]$item.Desc
+    if ([bool]$item.Recommended) {
+      $desc = ('{0} [推荐]' -f $desc)
+    }
+    Write-Host ("{0} {1,2}) {2,-17} {3}" -f $marker, [int]$item.Index, [string]$item.Command, $desc)
   }
 
   Write-Host @"
@@ -110,7 +240,7 @@ function Show-RaymanInteractiveMenu {
  - 编号（如 6）
  - 回车（默认执行上次选择）
  - 命令名（如 test-fix）
- - q / quit 退出
+ - q / quit / exit 退出
 =======================================================
 "@
 
@@ -121,66 +251,117 @@ function Show-RaymanInteractiveMenu {
   }
 
   if ([string]::IsNullOrWhiteSpace($choice)) {
-    if ($defaultIndex -gt 0) {
-      $pickedDefault = $menu | Where-Object { $_.Index -eq $defaultIndex } | Select-Object -First 1
-      if ($pickedDefault) {
-        Set-RaymanLastMenuChoice -Index $pickedDefault.Index -CommandName $pickedDefault.Command -CommandArgs $pickedDefault.DefaultArgs
-        return @{ Command = $pickedDefault.Command; CliArgs = @($pickedDefault.DefaultArgs) }
+    if ($defaultItem) {
+      Set-RaymanLastMenuChoice -Index ([int]$defaultItem.Index) -CommandName ([string]$defaultItem.Command) -CommandArgs @($defaultItem.DefaultArgs) -WorkspaceRoot $WorkspaceRoot
+      return @{
+        Command = [string]$defaultItem.Command
+        CliArgs = [string[]]@($defaultItem.DefaultArgs)
       }
     }
-    return @{ Command = 'help'; CliArgs = @() }
+    return @{
+      Command = 'help'
+      CliArgs = @()
+    }
   }
 
   $token = $choice.Trim()
-  $pickedByIndex = $null
+  switch -Regex ($token.ToLowerInvariant()) {
+    '^(q|quit|exit)$' { return $null }
+  }
+
   $parsedIndex = 0
   if ([int]::TryParse($token, [ref]$parsedIndex)) {
-    $pickedByIndex = $menu | Where-Object { $_.Index -eq $parsedIndex } | Select-Object -First 1
+    $pickedByIndex = $menu | Where-Object { [int]$_.Index -eq $parsedIndex } | Select-Object -First 1
     if ($pickedByIndex) {
-      Set-RaymanLastMenuChoice -Index $pickedByIndex.Index -CommandName $pickedByIndex.Command -CommandArgs $pickedByIndex.DefaultArgs
-      return @{ Command = $pickedByIndex.Command; CliArgs = @($pickedByIndex.DefaultArgs) }
+      Set-RaymanLastMenuChoice -Index ([int]$pickedByIndex.Index) -CommandName ([string]$pickedByIndex.Command) -CommandArgs @($pickedByIndex.DefaultArgs) -WorkspaceRoot $WorkspaceRoot
+      return @{
+        Command = [string]$pickedByIndex.Command
+        CliArgs = [string[]]@($pickedByIndex.DefaultArgs)
+      }
     }
   }
 
-  switch -Regex ($token.ToLowerInvariant()) {
-    '^(q|quit|exit)$' { return $null }
-    default {
-      $parts = @($token -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-      if ($parts.Count -eq 0) {
-        return @{ Command = 'help'; CliArgs = @() }
-      }
-
-      $name = $parts[0]
-      $extraArgs = @()
-      if ($parts.Count -gt 1) {
-        $extraArgs = @($parts[1..($parts.Count - 1)])
-      }
-
-      $matched = $menu | Where-Object { $_.Command -ieq $name } | Select-Object -First 1
-      if ($matched) {
-        $finalArgs = @($matched.DefaultArgs) + @($extraArgs)
-        Set-RaymanLastMenuChoice -Index $matched.Index -CommandName $matched.Command -CommandArgs $finalArgs
-        return @{ Command = $matched.Command; CliArgs = $finalArgs }
-      }
-
-      Set-RaymanLastMenuChoice -Index 0 -CommandName $name -CommandArgs $extraArgs
-      return @{ Command = $name; CliArgs = $extraArgs }
+  $parts = @($token -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($parts.Count -eq 0) {
+    return @{
+      Command = 'help'
+      CliArgs = @()
     }
+  }
+
+  $name = [string]$parts[0]
+  $extraArgs = @()
+  if ($parts.Count -gt 1) {
+    $extraArgs = @($parts[1..($parts.Count - 1)])
+  }
+
+  $matched = $menu | Where-Object { [string]$_.Command -ieq $name } | Select-Object -First 1
+  if ($matched) {
+    $finalArgs = @($matched.DefaultArgs) + @($extraArgs)
+    if ([string]$matched.Command -ieq 'codex' -and $extraArgs.Count -gt 0) {
+      $finalArgs = @($extraArgs)
+    }
+    Set-RaymanLastMenuChoice -Index ([int]$matched.Index) -CommandName ([string]$matched.Command) -CommandArgs $finalArgs -WorkspaceRoot $WorkspaceRoot
+    return @{
+      Command = [string]$matched.Command
+      CliArgs = [string[]]$finalArgs
+    }
+  }
+
+  Set-RaymanLastMenuChoice -Index 0 -CommandName $name -CommandArgs $extraArgs -WorkspaceRoot $WorkspaceRoot
+  return @{
+    Command = $name
+    CliArgs = [string[]]$extraArgs
   }
 }
 
 function Show-Help {
+  $helpText = ''
   if (Get-Command Format-RaymanHelpText -ErrorAction SilentlyContinue) {
-    Write-Output (Format-RaymanHelpText -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Surface pwsh)
-    return
-  }
+    $helpText = (Format-RaymanHelpText -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Surface pwsh)
+  } else {
+    $helpVersion = 'v161'
+    if (Get-Command Get-RaymanCatalogVersionToken -ErrorAction SilentlyContinue) {
+      $helpVersion = Get-RaymanCatalogVersionToken -WorkspaceRoot $script:RaymanCliWorkspaceRoot
+    }
 
-  @"
-Rayman CLI (v161)
+    $helpText = @"
+Rayman CLI ($helpVersion)
 
 Usage:
   .\.Rayman\rayman.cmd <command>
 "@
+  }
+
+  Write-Output $helpText
+  Write-Output ''
+  Write-Output '提示：交互式终端里直接运行 `.\.Rayman\rayman.ps1 codex` 会进入 Codex 二级菜单。'
+}
+
+function Test-RaymanInteractiveConsoleAvailable {
+  try {
+    return (-not [Console]::IsInputRedirected)
+  } catch {
+    return $true
+  }
+}
+
+function Test-RaymanShouldEnterCodexMenu {
+  param(
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace($CommandName)) {
+    return $false
+  }
+  if ($CommandName.Trim().ToLowerInvariant() -ne 'codex') {
+    return $false
+  }
+  if (@($InputArgs).Count -gt 0) {
+    return $false
+  }
+  return (Test-RaymanInteractiveConsoleAvailable)
 }
 
 if ((-not $commandProvided) -and $cmd -ne 'menu' -and $cmd -ne 'interactive') {
@@ -191,14 +372,15 @@ if ((-not $commandProvided) -and $cmd -ne 'menu' -and $cmd -ne 'interactive') {
 }
 
 if ($cmd -eq 'menu' -or $cmd -eq 'interactive') {
-  $picked = Show-RaymanInteractiveMenu
+  $picked = Resolve-RaymanInteractiveMenuSelection -Selection (Show-RaymanInteractiveMenu -WorkspaceRoot $script:RaymanCliWorkspaceRoot)
   if ($null -eq $picked) { exit 0 }
+  $script:RaymanCliInvokedFromMenu = $true
   $cmd = ([string]$picked.Command).ToLowerInvariant()
-  if ($picked.ContainsKey('CliArgs')) {
-    $CliArgs = [string[]]$picked['CliArgs']
-  } else {
-    $CliArgs = @()
-  }
+  $CliArgs = [string[]]@($picked['CliArgs'])
+}
+
+if (Test-RaymanShouldEnterCodexMenu -CommandName $cmd -InputArgs $CliArgs) {
+  $CliArgs = @('menu')
 }
 
 function Stop-RaymanWatcherByPidFile([string]$PidFile, [string]$Name) {
@@ -403,6 +585,40 @@ function Exit-RaymanCli {
   exit $ExitCode
 }
 
+function Invoke-RaymanDoctorCopySmoke {
+  param(
+    [string[]]$InputArgs = @(),
+    [string]$CommandName = 'doctor'
+  )
+
+  $doctorArgs = @($InputArgs)
+  $copySmokeStrict = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('strict')
+  $copySmokeKeepTemp = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('keep-temp')
+  $copySmokeTimeoutSeconds = [int](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('timeout-seconds') -Default 120 -ThrowOnMissingValue:$false)
+  $copySmokeScope = [string](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('scope') -Default 'wsl' -ThrowOnMissingValue:$false)
+  $doctorRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+  $smokeParams = @{
+    WorkspaceRoot = $doctorRoot
+    TimeoutSeconds = $copySmokeTimeoutSeconds
+    Scope = $copySmokeScope
+  }
+  if ($copySmokeStrict) { $smokeParams['Strict'] = $true }
+  if ($copySmokeKeepTemp) { $smokeParams['KeepTemp'] = $true }
+
+  if (Test-Path variable:LASTEXITCODE) {
+    $global:LASTEXITCODE = 0
+  }
+  & "$PSScriptRoot\scripts\release\copy_smoke.ps1" @smokeParams
+  $copySmokeExitCode = if (Test-Path variable:LASTEXITCODE) {
+    [int]$LASTEXITCODE
+  } elseif ($?) {
+    0
+  } else {
+    1
+  }
+  Exit-RaymanCli -ExitCode $copySmokeExitCode -CommandName $CommandName -InputArgs $InputArgs
+}
+
 function Get-RaymanLatestCopySmokeDebugBundlePath {
   $tempDir = [System.IO.Path]::GetTempPath()
   try {
@@ -506,7 +722,15 @@ switch ($cmd) {
   }
   "watch-stop" {
     $rootPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    & "$PSScriptRoot\scripts\watch\stop_background_watchers.ps1" -WorkspaceRoot $rootPath -IncludeResidualCleanup:$true
+    $stopParams = @{
+      WorkspaceRoot = $rootPath
+      IncludeResidualCleanup = $true
+    }
+    $ownerPid = [string][Environment]::GetEnvironmentVariable('VSCODE_PID')
+    if (-not [string]::IsNullOrWhiteSpace($ownerPid)) {
+      $stopParams['OwnerPid'] = $ownerPid
+    }
+    & "$PSScriptRoot\scripts\watch\stop_background_watchers.ps1" @stopParams
     break
   }
   "alert-watch" {
@@ -571,22 +795,9 @@ switch ($cmd) {
   "doctor" {
     $doctorArgs = @($CliArgs)
     $copySmoke = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('copy-smoke')
-    $copySmokeStrict = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('strict')
-    $copySmokeKeepTemp = Test-RaymanCliFlagPresent -InputArgs $doctorArgs -Names @('keep-temp')
-    $copySmokeTimeoutSeconds = [int](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('timeout-seconds') -Default 120 -ThrowOnMissingValue:$false)
-    $copySmokeScope = [string](Get-RaymanCliOptionValue -InputArgs $doctorArgs -Names @('scope') -Default 'wsl' -ThrowOnMissingValue:$false)
 
     if ($copySmoke) {
-      $doctorRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-      $smokeParams = @{
-        WorkspaceRoot = $doctorRoot
-        TimeoutSeconds = $copySmokeTimeoutSeconds
-        Scope = $copySmokeScope
-      }
-      if ($copySmokeStrict) { $smokeParams['Strict'] = $true }
-      if ($copySmokeKeepTemp) { $smokeParams['KeepTemp'] = $true }
-      & "$PSScriptRoot\scripts\release\copy_smoke.ps1" @smokeParams
-      break
+      Invoke-RaymanDoctorCopySmoke -InputArgs $doctorArgs -CommandName $cmd
     }
 
     $doctorRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -634,16 +845,13 @@ switch ($cmd) {
     break
   }
   "copy-self-check" {
-    & $PSCommandPath doctor --copy-smoke @CliArgs
-    break
+    Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
   }
   "self-check" {
-    & $PSCommandPath doctor --copy-smoke @CliArgs
-    break
+    Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
   }
   "copy-check" {
-    & $PSCommandPath doctor --copy-smoke @CliArgs
-    break
+    Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
   }
   "check" { & "$PSScriptRoot\win-check.ps1"; break }
   "fast-gate" {
@@ -689,7 +897,7 @@ switch ($cmd) {
     $require = Get-RaymanCliBoolOptionValue -InputArgs $CliArgs -Names @('Require', 'require') -Default $require
     $timeoutArg = [int](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('TimeoutSeconds', 'timeout-seconds') -Default $timeoutArg)
 
-    if ($IsWindows) {
+    if (Test-RaymanWindowsPlatform) {
       & "$PSScriptRoot\scripts\pwa\ensure_playwright_ready.ps1" -WorkspaceRoot $workspaceArg -Scope $scopeArg -Browser $browserArg -Require:$require -TimeoutSeconds $timeoutArg
     } else {
       Push-Location $workspaceArg
@@ -968,6 +1176,14 @@ switch ($cmd) {
   }
   "deploy" { & "$PSScriptRoot\scripts\deploy\deploy.ps1" @CliArgs; break }
   "cache-clear" { & "$PSScriptRoot\scripts\utils\clear_cache.ps1" @CliArgs; break }
+    "transfer-export" { Export-State -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path; break }
+    "transfer-import" {
+      $rootPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+      Import-State -WorkspaceRoot $rootPath
+      Apply-State -WorkspaceRoot $rootPath
+      Restart-Watchers -WorkspaceRoot $rootPath
+      break
+    }
   "state-save" { & "$PSScriptRoot\scripts\state\save_state.ps1" @CliArgs; break }
   "state-resume" { & "$PSScriptRoot\scripts\state\resume_state.ps1" @CliArgs; break }
   "test-fix" { & "$PSScriptRoot\scripts\repair\run_tests_and_fix.ps1" @CliArgs; break }
@@ -1020,6 +1236,33 @@ switch ($cmd) {
     }
     Exit-RaymanCli -ExitCode $releaseExitCode -CommandName $cmd -InputArgs $CliArgs
   }
+  "version" {
+    & "$PSScriptRoot\scripts\release\manage_version.ps1" -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Action show
+    Exit-RaymanCli -ExitCode (Resolve-RaymanCommandExitCode -Default 0) -CommandName $cmd -InputArgs $CliArgs
+  }
+  "newversion" {
+    $newVersionArgs = @($CliArgs)
+    if ($newVersionArgs.Count -eq 0 -and $script:RaymanCliInvokedFromMenu) {
+      $menuVersion = [string](Read-Host '请输入目标版本（如 v162）')
+      if ([string]::IsNullOrWhiteSpace($menuVersion)) {
+        Write-Host '[newversion] 已取消。'
+        Exit-RaymanCli -ExitCode 0 -CommandName $cmd -InputArgs @()
+      }
+      $newVersionArgs = @($menuVersion.Trim())
+    }
+
+    if ($newVersionArgs.Count -eq 0) {
+      Write-Error 'newversion requires an explicit target version like v162.'
+      Exit-RaymanCli -ExitCode 2 -CommandName $cmd -InputArgs $CliArgs
+    }
+    if ($newVersionArgs.Count -gt 1) {
+      Write-Error 'newversion accepts exactly one target version argument.'
+      Exit-RaymanCli -ExitCode 2 -CommandName $cmd -InputArgs $CliArgs
+    }
+
+    & "$PSScriptRoot\scripts\release\manage_version.ps1" -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Action set -Version ([string]$newVersionArgs[0])
+    Exit-RaymanCli -ExitCode (Resolve-RaymanCommandExitCode -Default 0) -CommandName $cmd -InputArgs $newVersionArgs
+  }
   "package-dist" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "package" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "context-update" { & "$PSScriptRoot\scripts\utils\generate_context.ps1" @CliArgs; break }
@@ -1065,7 +1308,29 @@ switch ($cmd) {
     }
     Exit-RaymanCli -ExitCode $(if ($?) { 0 } else { 1 }) -CommandName $cmd -InputArgs $CliArgs
   }
+  "codex" { & "$PSScriptRoot\scripts\codex\manage_accounts.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "health-check" { & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" @CliArgs; break }
+  "one-click-health" {
+    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
+    $jsonArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Json', 'json', 'AsJson', 'as-json', 'asjson')
+
+    & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" -WorkspaceRoot $workspaceArg -Force
+    $dailyExitCode = Resolve-RaymanCommandExitCode -Default 0
+    if ($dailyExitCode -ne 0) {
+      Exit-RaymanCli -ExitCode $dailyExitCode -CommandName $cmd -InputArgs $CliArgs
+    }
+
+    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot $workspaceArg -Refresh:$true -AsJson:$jsonArg
+    break
+  }
+  "health" {
+    & $PSCommandPath one-click-health @CliArgs
+    break
+  }
+  "一键健康检查" {
+    & $PSCommandPath one-click-health @CliArgs
+    break
+  }
   "proxy-health" {
     $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
     $refreshArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Refresh', 'refresh')

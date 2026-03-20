@@ -1,4 +1,4 @@
----
+﻿---
 applyTo: "**/*.{ts,tsx,js,jsx,css,scss,html}"
 description: "Use when editing frontend, prompt UI, browser-facing assets, Playwright-visible flows, or web application code in Rayman-managed workspaces."
 ---

@@ -9,6 +9,7 @@ RUNTIME_DIR=".Rayman/runtime"
 DECISION_LOG="${RUNTIME_DIR}/decision.log"
 DECISION_SUMMARY="${RUNTIME_DIR}/decision.summary.tsv"
 DECISION_MAINTAINER="./.Rayman/scripts/release/maintain_decision_log.sh"
+WORKSPACE_ROOT="$(pwd)"
 mkdir -p "${RUNTIME_DIR}"
 
 now_ts(){ date -Iseconds; }
@@ -36,6 +37,40 @@ hash_file(){
   sha1sum "$1" | awk '{print $1}'
 }
 
+git_path_tracked(){
+  git -C "${WORKSPACE_ROOT}" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+detect_workspace_kind(){
+  local root="$1"
+  local testing_marker="${root}/.Rayman/scripts/testing/run_fast_contract.sh"
+  local has_testing_marker=0
+  local has_source_workflow_marker=0
+  local has_solution_requirement_marker=0
+
+  [[ -f "${testing_marker}" ]] && has_testing_marker=1
+  [[ -f "${root}/.github/workflows/rayman-test-lanes.yml" || -f "${root}/.github/workflows/rayman-nightly-smoke.yml" ]] && has_source_workflow_marker=1
+
+  local dir name
+  shopt -s nullglob dotglob
+  for dir in "${root}"/.*; do
+    [[ -d "${dir}" ]] || continue
+    name="$(basename "${dir}")"
+    if [[ -f "${dir}/${name}.requirements.md" ]]; then
+      has_solution_requirement_marker=1
+      break
+    fi
+  done
+  shopt -u nullglob dotglob
+
+  if [[ "${has_source_workflow_marker}" == "1" && ( "${has_testing_marker}" == "1" || "${has_solution_requirement_marker}" == "1" ) ]]; then
+    printf 'source'
+    return 0
+  fi
+
+  printf 'external'
+}
+
 mirror_rel=(
   "scripts/requirements/update_from_prompt.sh"
   "scripts/requirements/process_prompts.sh"
@@ -49,6 +84,7 @@ mirror_rel=(
   "scripts/skills/detect_skills.ps1"
   "scripts/agents/ensure_agents.sh"
   "scripts/agents/resolve_agents_file.sh"
+  "scripts/agents/agent_asset_manifest.ps1"
   "scripts/agents/ensure_agent_assets.ps1"
   "scripts/agents/check_agent_contract.ps1"
   "scripts/agents/ensure_agent_capabilities.ps1"
@@ -56,6 +92,8 @@ mirror_rel=(
   "scripts/agents/review_loop.ps1"
   "scripts/agents/first_pass_report.ps1"
   "scripts/agents/prompts_catalog.ps1"
+  "scripts/codex/codex_common.ps1"
+  "scripts/codex/manage_accounts.ps1"
   "scripts/windows/winapp_core.ps1"
   "scripts/windows/ensure_winapp.ps1"
   "scripts/windows/inspect_winapp.ps1"
@@ -63,7 +101,9 @@ mirror_rel=(
   "scripts/windows/winapp_mcp_server.ps1"
   "scripts/alerts/attention_watch.ps1"
   "scripts/alerts/ensure_attention_watch.ps1"
+  "scripts/watch/embedded_watchers.lib.ps1"
   "scripts/watch/install_vscode_autostart.ps1"
+  "scripts/watch/watch_lifecycle.lib.ps1"
   "scripts/watch/start_background_watchers.ps1"
   "scripts/watch/vscode_folder_open_bootstrap.ps1"
   "scripts/watch/daily_health_check.ps1"
@@ -97,13 +137,16 @@ mirror_rel=(
   "scripts/utils/clean_workspace.sh"
   "scripts/utils/clean_workspace.ps1"
   "scripts/utils/diagnose_residual_diagnostics.ps1"
+  "scripts/utils/command_catalog.ps1"
   "scripts/utils/generate_context.ps1"
   "scripts/utils/request_attention.ps1"
+  "scripts/utils/update_command_docs.ps1"
   "scripts/utils/workspace_process_ownership.ps1"
   "scripts/utils/ensure_project_test_deps.sh"
   "scripts/utils/ensure_project_test_deps.ps1"
   "scripts/utils/workspace_state_guard.ps1"
   "scripts/utils/workspace_state_guard.sh"
+  "config/command_catalog.tsv"
   "config/agent_capabilities.json"
   "winapp.flow.sample.json"
   "scripts/repair/run_tests_and_fix.ps1"
@@ -127,8 +170,6 @@ mirror_rel=(
   "scripts/telemetry/schemas/artifact_bundle.v1.schema.json"
   "scripts/telemetry/schemas/artifact_index.v1.schema.json"
   "scripts/ci/validate_requirements.sh"
-  "scripts/test_in_sandbox_win.ps1"
-  "scripts/test_in_sandbox_wsl.sh"
   "scripts/pwa/ensure_playwright_ready.ps1"
   "scripts/pwa/playwright_ready.lib.ps1"
   "scripts/pwa/ensure_playwright_wsl.sh"
@@ -140,24 +181,26 @@ mirror_rel=(
   "scripts/testing/run_fast_contract.sh"
   "scripts/testing/run_bats_tests.sh"
   "scripts/testing/run_pester_tests.ps1"
+  "scripts/testing/host_smoke.lib.ps1"
   "scripts/testing/run_host_smoke.ps1"
   "scripts/testing/pester/common.workspace.Tests.ps1"
+  "scripts/testing/pester/codex_accounts.Tests.ps1"
   "scripts/testing/pester/workspace_state_guard.Tests.ps1"
   "scripts/testing/pester/workspace_process_ownership.Tests.ps1"
+  "scripts/testing/pester/watch_lifecycle.Tests.ps1"
   "scripts/testing/pester/dotnet_maui.Tests.ps1"
+  "scripts/testing/pester/host_smoke.lib.Tests.ps1"
   "scripts/testing/pester/release_gate.lib.Tests.ps1"
   "scripts/testing/pester/playwright_ready.lib.Tests.ps1"
   "scripts/testing/pester/winapp_core.Tests.ps1"
-  "scripts/testing/bats/test_in_sandbox_wsl.bats"
   "scripts/testing/bats/ensure_project_test_deps.bats"
-  "scripts/testing/fixtures/bash/sandbox_success/.Rayman/scripts/utils/ensure_project_test_deps.sh"
-  "scripts/testing/fixtures/bash/sandbox_deps_fail/.Rayman/scripts/utils/ensure_project_test_deps.sh"
   "scripts/testing/fixtures/reports/release_gate.sample.json"
   "scripts/testing/fixtures/reports/playwright.ready.windows.sample.json"
   "scripts/testing/fixtures/reports/playwright.ready.wsl.sample.json"
   "scripts/testing/fixtures/reports/winapp.ready.windows.sample.json"
   "scripts/testing/fixtures/reports/winapp.last_result.sample.json"
   "scripts/testing/fixtures/reports/agent_capabilities.report.sample.json"
+  "scripts/testing/fixtures/reports/codex.auth.status.sample.json"
   "scripts/testing/fixtures/reports/project_gate.fast.sample.json"
   "scripts/testing/schemas/release_gate.v1.schema.json"
   "scripts/testing/schemas/playwright_windows.v2.schema.json"
@@ -166,15 +209,42 @@ mirror_rel=(
   "scripts/testing/schemas/winapp_flow.v1.schema.json"
   "scripts/testing/schemas/winapp_flow_result.v1.schema.json"
   "scripts/testing/schemas/agent_capabilities_report.v1.schema.json"
+  "scripts/testing/schemas/codex_auth_status.v1.schema.json"
   "scripts/testing/schemas/project_gate.v1.schema.json"
   "templates/workflows/rayman-project-fast-gate.yml"
   "templates/workflows/rayman-project-browser-gate.yml"
   "templates/workflows/rayman-project-full-gate.yml"
   "scripts/repair/ensure_complete_rayman.ps1"
   "scripts/repair/ensure_complete_rayman.sh"
+  "scripts/testing/pester/governance_docs.Tests.ps1"
+  "common.ps1"
+  "rayman"
+  "rayman.ps1"
+  "win-watch.ps1"
+  "release/FEATURE_INVENTORY.md"
+  "release/ENHANCEMENT_ROADMAP_2026.md"
+  "README.md"
+  "commands.txt"
   "RELEASE_REQUIREMENTS.md"
   "VERSION"
 )
+
+enforce_trackedness=0
+tracked_missing=()
+workspace_kind="$(detect_workspace_kind "${WORKSPACE_ROOT}")"
+if command -v git >/dev/null 2>&1; then
+  if git -C "${WORKSPACE_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ "${workspace_kind}" == "source" ]]; then
+      enforce_trackedness=1
+    else
+      warn "workspace kind is ${workspace_kind}; skip trackedness validation."
+    fi
+  else
+    warn "workspace is not a git worktree; skip trackedness validation: ${WORKSPACE_ROOT}"
+  fi
+else
+  warn "git not found; skip trackedness validation."
+fi
 
 drift=()
 for rel in "${mirror_rel[@]}"; do
@@ -184,12 +254,21 @@ for rel in "${mirror_rel[@]}"; do
   [[ -f "${src}" ]] || fail "source missing: ${src}"
   [[ -f "${dst}" ]] || fail "dist missing: ${dst}"
 
+  if [[ "${enforce_trackedness}" == "1" ]]; then
+    git_path_tracked "${src}" || tracked_missing+=("${src}")
+    git_path_tracked "${dst}" || tracked_missing+=("${dst}")
+  fi
+
   hs="$(hash_file "${src}")"
   hd="$(hash_file "${dst}")"
   if [[ "${hs}" != "${hd}" ]]; then
     drift+=("${rel}")
   fi
 done
+
+if [[ "${#tracked_missing[@]}" -gt 0 ]]; then
+  fail "git index missing mirrored assets: ${tracked_missing[*]}（请先 git add 对应 source/dist 资产）"
+fi
 
 if [[ "${#drift[@]}" -gt 0 ]]; then
   if [[ "${RAYMAN_ALLOW_DIST_DRIFT:-0}" == "1" ]]; then

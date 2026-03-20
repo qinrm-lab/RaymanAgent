@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/playwright_windows.v2.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "scope",
+    "browser",
+    "require",
+    "timeout_seconds",
+    "workspace_root",
+    "started_at",
+    "finished_at",
+    "success",
+    "stage",
+    "detail_log",
+    "host_ps_version",
+    "host_is_windows",
+    "wsl",
+    "host",
+    "sandbox",
+    "proxy",
+    "offline_cache"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.playwright.windows.v2"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "browser": {
+      "type": "string"
+    },
+    "require": {
+      "type": "boolean"
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "error": {
+      "type": "string"
+    },
+    "error_type": {
+      "type": "string"
+    },
+    "error_message": {
+      "type": "string"
+    },
+    "script_stack": {
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    },
+    "detail_log": {
+      "type": "string"
+    },
+    "command_invocation": {
+      "type": "string"
+    },
+    "host_ps_version": {
+      "type": "string"
+    },
+    "host_is_windows": {
+      "type": "boolean"
+    },
+    "wsl": {
+      "$ref": "#/$defs/targetResult"
+    },
+    "host": {
+      "$ref": "#/$defs/targetResult"
+    },
+    "sandbox": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/targetResult"
+        },
+        {
+          "type": "object",
+          "required": [
+            "status_file",
+            "log_file",
+            "marker",
+            "guidance"
+          ],
+          "properties": {
+            "status_file": {
+              "type": "string"
+            },
+            "log_file": {
+              "type": "string"
+            },
+            "marker": {
+              "type": "string"
+            },
+            "guidance": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "proxy": {
+      "type": "object",
+      "required": [
+        "refresh_attempted",
+        "refresh_success",
+        "source",
+        "snapshot",
+        "bridge"
+      ],
+      "properties": {
+        "refresh_attempted": {
+          "type": "boolean"
+        },
+        "refresh_success": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "bridge": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "offline_cache": {
+      "type": "object",
+      "required": [
+        "attempted",
+        "success",
+        "manifest",
+        "detail"
+      ],
+      "properties": {
+        "attempted": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "manifest": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "targetResult": {
+      "type": "object",
+      "required": [
+        "executed",
+        "success",
+        "skipped",
+        "exit_code",
+        "detail",
+        "command",
+        "failure_kind",
+        "action_required"
+      ],
+      "properties": {
+        "executed": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "skipped": {
+          "type": "boolean"
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "failure_kind": {
+          "type": "string"
+        },
+        "action_required": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,16 @@
+{
+  "schema": "rayman.winapp.ready.v1",
+  "generated_at": "2026-03-12T12:00:00+08:00",
+  "workspace_root": "/workspace/RaymanAgent",
+  "host_is_windows": false,
+  "desktop_session_available": false,
+  "desktop_session_reason": "host_not_windows",
+  "desktop_session_name": "",
+  "user_interactive": false,
+  "uia_available": false,
+  "screenshot_available": false,
+  "ready": false,
+  "reason": "host_not_windows",
+  "detail": "Windows UI Automation is only available on Windows hosts.",
+  "error_message": ""
+}

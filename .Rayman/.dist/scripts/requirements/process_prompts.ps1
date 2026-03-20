@@ -13,11 +13,6 @@ $inbox = Join-Path $raymanDir 'context\prompt.inbox.md'
 $codex = Join-Path $raymanDir 'codex_fix_prompt.txt'
 $state = Join-Path $raymanDir 'runtime\prompt.state'
 $updateScript = Join-Path $PSScriptRoot 'update_from_prompt.ps1'
-$ensureAlertWatchScript = Join-Path $PSScriptRoot '..\alerts\ensure_attention_watch.ps1'
-
-if (Test-Path -LiteralPath $ensureAlertWatchScript -PathType Leaf) {
-  try { & $ensureAlertWatchScript -WorkspaceRoot $workspaceRoot -Quiet | Out-Null } catch {}
-}
 
 function Sha1File([string]$p){
   $sha1=[System.Security.Cryptography.SHA1]::Create()

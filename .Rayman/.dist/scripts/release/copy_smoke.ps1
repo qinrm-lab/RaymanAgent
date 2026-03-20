@@ -13,6 +13,10 @@ $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
+$workspaceOwnershipPath = Join-Path $PSScriptRoot '..\utils\workspace_process_ownership.ps1'
+if (Test-Path -LiteralPath $workspaceOwnershipPath -PathType Leaf) {
+  . $workspaceOwnershipPath -NoMain
+}
 
 $script:CopySmokeStartedAt = Get-Date
 $script:CopySmokeRunId = [Guid]::NewGuid().ToString('n')
@@ -59,14 +63,31 @@ function Set-EnvOverride {
   )
 
   if (-not $Backup.ContainsKey($Name)) {
-    $Backup[$Name] = [string][System.Environment]::GetEnvironmentVariable($Name)
+    $Backup[$Name] = [System.Environment]::GetEnvironmentVariable($Name)
   }
   [System.Environment]::SetEnvironmentVariable($Name, $Value)
 }
 
+function Clear-EnvOverride {
+  param(
+    [hashtable]$Backup,
+    [string]$Name
+  )
+
+  if (-not $Backup.ContainsKey($Name)) {
+    $Backup[$Name] = [System.Environment]::GetEnvironmentVariable($Name)
+  }
+  [System.Environment]::SetEnvironmentVariable($Name, $null)
+}
+
 function Restore-EnvOverrides([hashtable]$Backup) {
   foreach ($name in $Backup.Keys) {
-    [System.Environment]::SetEnvironmentVariable($name, [string]$Backup[$name])
+    $previousValue = $Backup[$name]
+    if ($null -eq $previousValue) {
+      [System.Environment]::SetEnvironmentVariable($name, $null)
+    } else {
+      [System.Environment]::SetEnvironmentVariable($name, [string]$previousValue)
+    }
   }
 }
 
@@ -302,7 +323,6 @@ function Reset-PortableRuntimeAndLogs([string]$RaymanRoot) {
 
 function Disable-CopySmokeSlowSetupModules([string]$TempRoot) {
   foreach ($relativePath in @(
-    '.Rayman\scripts\sandbox\run_in_sandbox.ps1',
     '.Rayman\scripts\rag\manage_rag.ps1',
     '.Rayman\scripts\mcp\manage_mcp.ps1',
     '.Rayman\scripts\agents\ensure_agent_capabilities.ps1'
@@ -376,23 +396,126 @@ function Get-CopySmokeLatestSetupLog([string]$TempRayman) {
   return ''
 }
 
+function Get-CopySmokeLatestVsCodeAuditPath([string]$TempRayman) {
+  $auditPath = Join-Path $TempRayman 'runtime\vscode_windows.last.json'
+  if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
+    return $auditPath
+  }
+  return ''
+}
+
+function Convert-CopySmokePassNameToSlug([string]$PassName) {
+  $value = if ([string]::IsNullOrWhiteSpace($PassName)) { 'setup-pass' } else { $PassName.Trim().ToLowerInvariant() }
+  $slug = [regex]::Replace($value, '[^a-z0-9]+', '-').Trim('-')
+  if ([string]::IsNullOrWhiteSpace($slug)) {
+    return 'setup-pass'
+  }
+  return $slug
+}
+
+function Get-CopySmokeSetupRunArchiveDir([string]$TempRoot) {
+  return (Join-Path $TempRoot '.Rayman\runtime\copy_smoke_setup_runs')
+}
+
+function Get-CopySmokeSetupRunAuditPath([string]$TempRoot) {
+  return (Join-Path $TempRoot '.Rayman\runtime\copy_smoke_setup_runs.json')
+}
+
+function Save-CopySmokeArtifactCopy {
+  param(
+    [string]$SourcePath,
+    [string]$DestinationPath
+  )
+
+  if ([string]::IsNullOrWhiteSpace($SourcePath) -or -not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+    return ''
+  }
+  if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
+    return ''
+  }
+
+  try {
+    $dir = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+    return $DestinationPath
+  } catch {
+    return ''
+  }
+}
+
+function Write-CopySmokeSetupRunAuditFile([string]$TempRoot) {
+  if ([string]::IsNullOrWhiteSpace($TempRoot)) { return '' }
+  $auditPath = Get-CopySmokeSetupRunAuditPath -TempRoot $TempRoot
+  try {
+    $dir = Split-Path -Parent $auditPath
+    if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($auditPath, (@($script:CopySmokeSetupRuns.ToArray()) | ConvertTo-Json -Depth 8), $utf8NoBom)
+    return $auditPath
+  } catch {
+    return ''
+  }
+}
+
+function Add-CopySmokeSetupRunAudit {
+  param(
+    [string]$TempRoot,
+    [hashtable]$RunRecord
+  )
+
+  if ($null -eq $RunRecord) { return '' }
+  if ($null -eq $script:CopySmokeSetupRuns) {
+    $script:CopySmokeSetupRuns = New-Object 'System.Collections.Generic.List[object]'
+  }
+  $script:CopySmokeSetupRuns.Add([pscustomobject]$RunRecord) | Out-Null
+  return (Write-CopySmokeSetupRunAuditFile -TempRoot $TempRoot)
+}
+
 function Invoke-CopySmokeSetupRun {
   param(
     [string]$SetupScript,
     [string]$TempRoot,
     [string]$Scope,
     [int]$TimeoutSeconds,
-    [bool]$StrictMode
+    [bool]$StrictMode,
+    [ValidateSet('inherit','block','clear')][string]$TrackedAssetsMode = 'inherit',
+    [string]$PassName = 'setup-pass'
   )
 
+  $tempRayman = Join-Path $TempRoot '.Rayman'
+  $passSlug = Convert-CopySmokePassNameToSlug -PassName $PassName
+  $startedAt = Get-Date
   $run = [ordered]@{
+    PassName = $PassName
+    PassSlug = $passSlug
+    TrackedAssetsMode = $TrackedAssetsMode
+    StartedAt = $startedAt.ToString('o')
+    FinishedAt = ''
     ExitCode = 0
     Exception = ''
     ExceptionLocation = ''
     ExceptionStackTop = ''
+    LatestSetupLog = ''
+    SetupLogArchivePath = ''
+    VsCodeAuditPath = ''
+    VsCodeAuditArchivePath = ''
+    AuditFilePath = ''
   }
+  $runEnvBackup = @{}
 
   try {
+    Info ("setup pass: {0} (tracked_assets_mode={1})" -f $PassName, $TrackedAssetsMode)
+    switch ($TrackedAssetsMode) {
+      'block' { Set-EnvOverride -Backup $runEnvBackup -Name 'RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS' -Value '0' }
+      'clear' { Clear-EnvOverride -Backup $runEnvBackup -Name 'RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS' }
+    }
+    Set-EnvOverride -Backup $runEnvBackup -Name 'RAYMAN_ALERT_DONE_ENABLED' -Value '0'
+    Set-EnvOverride -Backup $runEnvBackup -Name 'RAYMAN_ALERT_TTS_DONE_ENABLED' -Value '0'
     Reset-LastExitCodeCompat
     $hostIsWindows = Test-CopySmokeHostIsWindows
     $powershellExe = Get-Command 'powershell.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -462,6 +585,17 @@ function Invoke-CopySmokeSetupRun {
     } catch {}
     $run.ExitCode = Get-LastExitCodeCompat -Default 1
     if ($run.ExitCode -eq 0) { $run.ExitCode = 1 }
+  } finally {
+    $run.FinishedAt = (Get-Date).ToString('o')
+    $latestSetupLog = Get-CopySmokeLatestSetupLog -TempRayman $tempRayman
+    $latestVsCodeAudit = Get-CopySmokeLatestVsCodeAuditPath -TempRayman $tempRayman
+    $archiveDir = Get-CopySmokeSetupRunArchiveDir -TempRoot $TempRoot
+    $run.LatestSetupLog = $latestSetupLog
+    $run.SetupLogArchivePath = Save-CopySmokeArtifactCopy -SourcePath $latestSetupLog -DestinationPath (Join-Path $archiveDir ("{0}.setup.log" -f $passSlug))
+    $run.VsCodeAuditPath = $latestVsCodeAudit
+    $run.VsCodeAuditArchivePath = Save-CopySmokeArtifactCopy -SourcePath $latestVsCodeAudit -DestinationPath (Join-Path $archiveDir ("{0}.vscode_windows.json" -f $passSlug))
+    Restore-EnvOverrides -Backup $runEnvBackup
+    $run.AuditFilePath = Add-CopySmokeSetupRunAudit -TempRoot $TempRoot -RunRecord $run
   }
 
   return [pscustomobject]$run
@@ -561,8 +695,8 @@ function Invoke-CopySmokeTrackedNoiseContract {
     return [pscustomobject]$result
   }
 
-  $blockedRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true
-  $blockedLog = Get-CopySmokeLatestSetupLog -TempRayman $TempRayman
+  $blockedRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true -TrackedAssetsMode 'block' -PassName '02-tracked-assets-block-pass'
+  $blockedLog = if (-not [string]::IsNullOrWhiteSpace([string]$blockedRun.SetupLogArchivePath)) { [string]$blockedRun.SetupLogArchivePath } else { [string]$blockedRun.LatestSetupLog }
   $result.FailureLog = $blockedLog
   if ($blockedRun.ExitCode -eq 0) {
     $result.Message = 'tracked Rayman assets 已加入 Git 索引后，setup 仍然成功，未按 external workspace 规则阻断'
@@ -600,13 +734,13 @@ function Invoke-CopySmokeTrackedNoiseContract {
     return [pscustomobject]$result
   }
 
-  $allowedRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true
+  $allowedRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true -TrackedAssetsMode 'clear' -PassName '03-explicit-allow-pass'
   if ($allowedRun.ExitCode -ne 0) {
     $result.Message = ("explicit allow persisted, but rerun still failed（exit={0}）" -f $allowedRun.ExitCode)
     return [pscustomobject]$result
   }
 
-  $stableRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true
+  $stableRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true -TrackedAssetsMode 'clear' -PassName '04-stable-rerun-pass'
   if ($stableRun.ExitCode -ne 0) {
     $result.Message = ("explicit allow succeeded once, but stable rerun still failed（exit={0}）" -f $stableRun.ExitCode)
     return [pscustomobject]$result
@@ -637,7 +771,9 @@ function Build-CopySmokeDebugSummary {
     [int]$ExitCode,
     [string]$Scope,
     [bool]$StrictMode,
-    [object]$OwnershipSummary = $null
+    [object]$OwnershipSummary = $null,
+    [object[]]$SetupRuns = @(),
+    [int[]]$VsCodeAuditCleanupPids = @()
   )
 
   $releaseGateReport = Join-Path $TempRoot '.Rayman\state\release_gate_report.md'
@@ -655,6 +791,10 @@ function Build-CopySmokeDebugSummary {
   }
   if (-not [string]::IsNullOrWhiteSpace($PlaywrightSummary) -and (Test-Path -LiteralPath $PlaywrightSummary -PathType Leaf)) {
     $lines.Add(("playwright_summary={0}" -f $PlaywrightSummary)) | Out-Null
+  }
+  $setupRunAuditPath = Get-CopySmokeSetupRunAuditPath -TempRoot $TempRoot
+  if (Test-Path -LiteralPath $setupRunAuditPath -PathType Leaf) {
+    $lines.Add(("setup_runs_audit={0}" -f $setupRunAuditPath)) | Out-Null
   }
   if (-not [string]::IsNullOrWhiteSpace($SetupException)) {
     $lines.Add(("exception={0}" -f $SetupException)) | Out-Null
@@ -680,6 +820,24 @@ function Build-CopySmokeDebugSummary {
     if (-not [string]::IsNullOrWhiteSpace([string]$OwnershipSummary.OwnerStatePath)) {
       $lines.Add(("sandbox_owner_state={0}" -f [string]$OwnershipSummary.OwnerStatePath)) | Out-Null
     }
+  }
+  $runIndex = 0
+  foreach ($setupRun in @($SetupRuns)) {
+    if ($null -eq $setupRun) { continue }
+    $runIndex++
+    $prefix = ("setup_run_{0}" -f $runIndex)
+    if ($setupRun.PSObject.Properties['PassName']) { $lines.Add(("{0}_name={1}" -f $prefix, [string]$setupRun.PassName)) | Out-Null }
+    if ($setupRun.PSObject.Properties['ExitCode']) { $lines.Add(("{0}_exit_code={1}" -f $prefix, [int]$setupRun.ExitCode)) | Out-Null }
+    if ($setupRun.PSObject.Properties['TrackedAssetsMode']) { $lines.Add(("{0}_tracked_assets_mode={1}" -f $prefix, [string]$setupRun.TrackedAssetsMode)) | Out-Null }
+    if ($setupRun.PSObject.Properties['SetupLogArchivePath'] -and -not [string]::IsNullOrWhiteSpace([string]$setupRun.SetupLogArchivePath)) {
+      $lines.Add(("{0}_setup_log={1}" -f $prefix, [string]$setupRun.SetupLogArchivePath)) | Out-Null
+    }
+    if ($setupRun.PSObject.Properties['VsCodeAuditArchivePath'] -and -not [string]::IsNullOrWhiteSpace([string]$setupRun.VsCodeAuditArchivePath)) {
+      $lines.Add(("{0}_vscode_audit={1}" -f $prefix, [string]$setupRun.VsCodeAuditArchivePath)) | Out-Null
+    }
+  }
+  if (@($VsCodeAuditCleanupPids).Count -gt 0) {
+    $lines.Add(("vscode_audit_cleanup_pids={0}" -f (Format-CopySmokePidList $VsCodeAuditCleanupPids))) | Out-Null
   }
 
   return ($lines -join [Environment]::NewLine)
@@ -731,6 +889,140 @@ function Set-CopySmokeDebugClipboard([string]$Text) {
   return $false
 }
 
+function Resolve-CopySmokeVsCodeClientProcessId([object]$ProcessInfo) {
+  if ($null -eq $ProcessInfo) { return 0 }
+  $commandLine = ''
+  if ($ProcessInfo.PSObject.Properties['command_line']) {
+    $commandLine = [string]$ProcessInfo.command_line
+  }
+  if ([string]::IsNullOrWhiteSpace($commandLine)) { return 0 }
+  $match = [regex]::Match($commandLine, '(?:^|\s)--clientProcessId=(\d+)(?:\s|$)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if (-not $match.Success) { return 0 }
+  $parsed = 0
+  if ([int]::TryParse([string]$match.Groups[1].Value, [ref]$parsed) -and $parsed -gt 0) {
+    return $parsed
+  }
+  return 0
+}
+
+function Get-CopySmokeArchivedVsCodeAuditRootPids {
+  param(
+    [string]$WorkspaceRoot,
+    [object[]]$SetupRuns = @()
+  )
+
+  if (-not (Get-Command Get-RaymanVsCodeProcessSnapshot -ErrorAction SilentlyContinue)) {
+    return @()
+  }
+
+  $candidateSet = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($setupRun in @($SetupRuns)) {
+    if ($null -eq $setupRun) { continue }
+    $auditPath = ''
+    if ($setupRun.PSObject.Properties['VsCodeAuditArchivePath']) {
+      $auditPath = [string]$setupRun.VsCodeAuditArchivePath
+    }
+    if ([string]::IsNullOrWhiteSpace($auditPath) -or -not (Test-Path -LiteralPath $auditPath -PathType Leaf)) {
+      continue
+    }
+    try {
+      $audit = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      foreach ($pidValue in @($audit.new_pids)) {
+        $pidInt = 0
+        if ([int]::TryParse([string]$pidValue, [ref]$pidInt) -and $pidInt -gt 0) {
+          [void]$candidateSet.Add($pidInt)
+        }
+      }
+    } catch {}
+  }
+
+  $candidatePids = @($candidateSet | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+  if ($candidatePids.Count -eq 0) {
+    return @()
+  }
+
+  $currentSnapshot = @(Get-RaymanVsCodeProcessSnapshot -WorkspaceRootPath $WorkspaceRoot)
+  $candidateSnapshot = @($currentSnapshot | Where-Object { [int]$_.pid -in $candidatePids })
+  if ($candidateSnapshot.Count -eq 0) {
+    return @()
+  }
+
+  $candidateLookup = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($pidValue in @($candidateSnapshot | ForEach-Object { [int]$_.pid })) {
+    [void]$candidateLookup.Add([int]$pidValue)
+  }
+
+  $rootPids = New-Object 'System.Collections.Generic.List[int]'
+  foreach ($processInfo in $candidateSnapshot) {
+    $pidValue = 0
+    try { $pidValue = [int]$processInfo.pid } catch { $pidValue = 0 }
+    if ($pidValue -le 0) { continue }
+    $parentPid = 0
+    if ($processInfo.PSObject.Properties['parent_pid']) {
+      try { $parentPid = [int]$processInfo.parent_pid } catch { $parentPid = 0 }
+    }
+    $clientPid = Resolve-CopySmokeVsCodeClientProcessId -ProcessInfo $processInfo
+    if ($candidateLookup.Contains($parentPid) -or $candidateLookup.Contains($clientPid)) {
+      continue
+    }
+    $rootPids.Add($pidValue) | Out-Null
+  }
+
+  if ($rootPids.Count -gt 0) {
+    return @($rootPids.ToArray() | Sort-Object -Unique)
+  }
+  return $candidatePids
+}
+
+function Stop-CopySmokeArchivedVsCodeWindows {
+  param(
+    [string]$WorkspaceRoot,
+    [object[]]$SetupRuns = @(),
+    [int[]]$AlreadyCleanedPids = @()
+  )
+
+  $rootPids = @(Get-CopySmokeArchivedVsCodeAuditRootPids -WorkspaceRoot $WorkspaceRoot -SetupRuns $SetupRuns)
+  if ($rootPids.Count -eq 0) {
+    return @()
+  }
+
+  $skipSet = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($pidValue in @($AlreadyCleanedPids)) {
+    if ([int]$pidValue -gt 0) {
+      [void]$skipSet.Add([int]$pidValue)
+    }
+  }
+
+  $cleanupPids = New-Object 'System.Collections.Generic.List[int]'
+  foreach ($rootPid in @($rootPids | Sort-Object -Descending)) {
+    if ($skipSet.Contains([int]$rootPid)) { continue }
+    if (Get-Command Stop-RaymanWorkspaceOwnedProcess -ErrorAction SilentlyContinue) {
+      $record = [pscustomobject]@{
+        owner_key = ''
+        owner_display = 'copy-smoke-archived-audit'
+        kind = 'vscode'
+        launcher = 'copy-smoke-archived-audit'
+        root_pid = [int]$rootPid
+      }
+      $cleanup = Stop-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $WorkspaceRoot -Record $record -Reason 'copy-smoke-archived-audit'
+      if ($null -ne $cleanup -and $cleanup.PSObject.Properties['cleanup_pids']) {
+        foreach ($pidValue in @($cleanup.cleanup_pids)) {
+          $pidInt = 0
+          if ([int]::TryParse([string]$pidValue, [ref]$pidInt) -and $pidInt -gt 0) {
+            $cleanupPids.Add($pidInt) | Out-Null
+          }
+        }
+      }
+      continue
+    }
+
+    try { Stop-Process -Id ([int]$rootPid) -Force -ErrorAction SilentlyContinue } catch {}
+    $cleanupPids.Add([int]$rootPid) | Out-Null
+  }
+
+  return @($cleanupPids.ToArray() | Sort-Object -Unique)
+}
+
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $sourceRayman = Join-Path $WorkspaceRoot '.Rayman'
 if (-not (Test-Path -LiteralPath $sourceRayman -PathType Container)) {
@@ -748,8 +1040,23 @@ $setupExitCode = 0
 $setupException = ''
 $setupExceptionLocation = ''
 $setupExceptionStackTop = ''
+$script:CopySmokeSetupRuns = New-Object 'System.Collections.Generic.List[object]'
 $sandboxBaselinePids = Get-CopySmokeSandboxPidSnapshot
 $ownerToken = Get-CopySmokeOwnerToken
+$vscodeBaseline = @()
+$vscodeOwnerContext = $null
+$vscodeReport = $null
+
+if (Get-Command Get-RaymanVsCodeProcessSnapshot -ErrorAction SilentlyContinue) {
+  try {
+    $vscodeBaseline = @(Get-RaymanVsCodeProcessSnapshot -WorkspaceRootPath $WorkspaceRoot)
+    $vscodeOwnerContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $WorkspaceRoot
+  } catch {
+    Warn ("vscode baseline snapshot failed: {0}" -f $_.Exception.Message)
+    $vscodeBaseline = @()
+    $vscodeOwnerContext = $null
+  }
+}
 
 try {
   New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
@@ -779,6 +1086,7 @@ try {
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SETUP_GITHUB_LOGIN' -Value '0'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SETUP_SKIP_POST_CHECK' -Value '1'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SETUP_SKIP_ADVANCED_MODULES' -Value '1'
+  Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_HOME' -Value (Join-Path $tmpRoot '.rayman-global')
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_RAG_ROOT' -Value '.rag'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_RAG_NAMESPACE' -Value (Split-Path -Leaf $tmpRoot)
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_ALLOW_EXTERNAL_RAG_ROOT' -Value '0'
@@ -795,7 +1103,7 @@ try {
     Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SKIP_PWA' -Value '1'
   }
 
-  $setupRun = Invoke-CopySmokeSetupRun -SetupScript $setupScript -TempRoot $tmpRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $Strict.IsPresent
+  $setupRun = Invoke-CopySmokeSetupRun -SetupScript $setupScript -TempRoot $tmpRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $Strict.IsPresent -TrackedAssetsMode 'block' -PassName '01-fresh-pass'
   $setupExitCode = [int]$setupRun.ExitCode
   $setupException = [string]$setupRun.Exception
   $setupExceptionLocation = [string]$setupRun.ExceptionLocation
@@ -853,29 +1161,87 @@ try {
 }
 
 $setupLog = ''
+$vscodeAuditCleanupPids = @()
 $ownershipSummary = Get-CopySmokeSandboxOwnershipSummary -TempRoot $tmpRoot -TempRayman $tmpRayman -BaselinePids $sandboxBaselinePids -OwnerToken $ownerToken
 $setupLog = Get-CopySmokeLatestSetupLog -TempRayman $tmpRayman
+if (Get-Command Sync-RaymanWorkspaceVsCodeWindows -ErrorAction SilentlyContinue) {
+  try {
+    $cleanupVsCode = ($setupExitCode -ne 0) -or (-not $KeepTemp)
+    $vscodeReport = Sync-RaymanWorkspaceVsCodeWindows `
+      -WorkspaceRootPath $WorkspaceRoot `
+      -BaselineSnapshot $vscodeBaseline `
+      -WorkspaceRoots @($tmpRoot) `
+      -OwnerContext $vscodeOwnerContext `
+      -CleanupOwned:$cleanupVsCode `
+      -CleanupReason $(if ($setupExitCode -ne 0) { 'copy-smoke-failed' } else { 'copy-smoke-temp-cleanup' }) `
+      -Source 'copy-smoke'
+    if ($null -ne $vscodeReport -and @($vscodeReport.new_pids).Count -gt 0) {
+      Info ("vscode new pids: {0}" -f (@($vscodeReport.new_pids) -join ', '))
+    }
+    if ($null -ne $vscodeReport -and @($vscodeReport.cleanup_pids).Count -gt 0) {
+      Info ("vscode cleanup pids: {0}" -f (@($vscodeReport.cleanup_pids) -join ', '))
+    }
+    if ($cleanupVsCode) {
+      $vscodeAuditCleanupPids = @(Stop-CopySmokeArchivedVsCodeWindows -WorkspaceRoot $WorkspaceRoot -SetupRuns @($script:CopySmokeSetupRuns.ToArray()) -AlreadyCleanedPids @($vscodeReport.cleanup_pids))
+      if ($vscodeAuditCleanupPids.Count -gt 0) {
+        Info ("vscode archived-audit cleanup pids: {0}" -f ($vscodeAuditCleanupPids -join ', '))
+      }
+    }
+    if (Get-Command Get-RaymanVsCodeWindowAuditPath -ErrorAction SilentlyContinue) {
+      Info ("vscode report: {0}" -f (Get-RaymanVsCodeWindowAuditPath -WorkspaceRootPath $WorkspaceRoot))
+    }
+  } catch {
+    Warn ("vscode audit failed: {0}" -f $_.Exception.Message)
+  }
+}
 
 if ($setupExitCode -eq 0) {
-  Write-CopySmokeTelemetry -ExitCode 0
-  Ok ("copy smoke passed (strict={0}, scope={1})" -f ([string]$Strict.IsPresent).ToLowerInvariant(), $Scope)
-  if (-not [string]::IsNullOrWhiteSpace($setupLog)) {
-    Info ("setup log: {0}" -f $setupLog)
+  try {
+    $copiedRaymanCli = Join-Path $tmpRayman 'rayman.ps1'
+    if (Test-Path -LiteralPath $copiedRaymanCli -PathType Leaf) {
+      Reset-LastExitCodeCompat
+      & $copiedRaymanCli 'codex' 'status' '--json' '-WorkspaceRoot' $tmpRoot | Out-Null
+      $copiedCodexStatusExit = Get-LastExitCodeCompat -Default 1
+      if ($copiedCodexStatusExit -ne 0) {
+        throw ("copied rayman codex status failed (exit={0})" -f $copiedCodexStatusExit)
+      }
+
+      Reset-LastExitCodeCompat
+      & $copiedRaymanCli 'codex' 'list' '--json' '-WorkspaceRoot' $tmpRoot | Out-Null
+      $copiedCodexListExit = Get-LastExitCodeCompat -Default 1
+      if ($copiedCodexListExit -ne 0) {
+        throw ("copied rayman codex list failed (exit={0})" -f $copiedCodexListExit)
+      }
+
+      Ok 'copied rayman codex status/list smoke passed'
+    }
+  } catch {
+    $setupExitCode = 15
+    $setupException = $_.Exception.Message
+    $setupExceptionLocation = 'copy_smoke_codex_cli'
   }
 
-  if ($KeepTemp) {
-    Info ("kept temp workspace: {0}" -f $tmpRoot)
-    Show-CopySmokeOpenHints -TempRoot $tmpRoot
-  } else {
-    try {
-      Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
-      Info "temp workspace cleaned"
-    } catch {
-      Warn ("failed to clean temp workspace: {0}" -f $_.Exception.Message)
-      Info ("temp workspace: {0}" -f $tmpRoot)
+  if ($setupExitCode -eq 0) {
+    Write-CopySmokeTelemetry -ExitCode 0
+    Ok ("copy smoke passed (strict={0}, scope={1})" -f ([string]$Strict.IsPresent).ToLowerInvariant(), $Scope)
+    if (-not [string]::IsNullOrWhiteSpace($setupLog)) {
+      Info ("setup log: {0}" -f $setupLog)
     }
+
+    if ($KeepTemp) {
+      Info ("kept temp workspace: {0}" -f $tmpRoot)
+      Show-CopySmokeOpenHints -TempRoot $tmpRoot
+    } else {
+      try {
+        Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Info "temp workspace cleaned"
+      } catch {
+        Warn ("failed to clean temp workspace: {0}" -f $_.Exception.Message)
+        Info ("temp workspace: {0}" -f $tmpRoot)
+      }
+    }
+    exit 0
   }
-  exit 0
 }
 
 Warn ("copy smoke failed (exit={0}, scope={1})" -f $setupExitCode, $Scope)
@@ -897,7 +1263,7 @@ if (Test-Path -LiteralPath $playwrightSummaryPath -PathType Leaf) {
 Write-CopySmokeSandboxOwnershipSummary -Summary $ownershipSummary
 Warn ("temp workspace kept for inspection: {0}" -f $tmpRoot)
 Show-CopySmokeOpenHints -TempRoot $tmpRoot
-$debugBundle = Build-CopySmokeDebugSummary -TempRoot $tmpRoot -SetupLog $setupLog -PlaywrightSummary $playwrightSummaryPath -SetupException $setupException -SetupExceptionLocation $setupExceptionLocation -SetupExceptionStackTop $setupExceptionStackTop -ExitCode $setupExitCode -Scope $Scope -StrictMode $Strict.IsPresent -OwnershipSummary $ownershipSummary
+$debugBundle = Build-CopySmokeDebugSummary -TempRoot $tmpRoot -SetupLog $setupLog -PlaywrightSummary $playwrightSummaryPath -SetupException $setupException -SetupExceptionLocation $setupExceptionLocation -SetupExceptionStackTop $setupExceptionStackTop -ExitCode $setupExitCode -Scope $Scope -StrictMode $Strict.IsPresent -OwnershipSummary $ownershipSummary -SetupRuns @($script:CopySmokeSetupRuns.ToArray()) -VsCodeAuditCleanupPids $vscodeAuditCleanupPids
 $debugBundlePath = Write-CopySmokeDebugBundle -TempRoot $tmpRoot -Text $debugBundle
 if (-not [string]::IsNullOrWhiteSpace($debugBundlePath)) {
   Warn ("debug bundle: {0}" -f $debugBundlePath)

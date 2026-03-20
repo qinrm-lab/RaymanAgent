@@ -13,6 +13,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+  . $commonPath
+}
+
 function Get-EnvBoolCompat([string]$Name, [bool]$Default) {
   $raw = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
@@ -147,6 +152,33 @@ function Get-JsonOrNull([string]$Path) {
   }
 }
 
+function Resolve-PromptTemplateKey {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$PromptKeyText
+  )
+
+  $normalizedPromptKey = ([string]$PromptKeyText).Trim()
+  if ([string]::IsNullOrWhiteSpace($normalizedPromptKey)) { return '' }
+
+  $promptDir = Join-Path $WorkspaceRoot '.github\prompts'
+  if (-not (Test-Path -LiteralPath $promptDir -PathType Container)) {
+    return $normalizedPromptKey
+  }
+
+  $candidates = @(Get-ChildItem -LiteralPath $promptDir -Filter '*.prompt.md' -File -ErrorAction SilentlyContinue)
+  foreach ($candidate in $candidates) {
+    if ($candidate.Name.Equals($normalizedPromptKey, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $candidate.Name
+    }
+    if ($candidate.BaseName.Equals($normalizedPromptKey, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $candidate.Name
+    }
+  }
+
+  return $normalizedPromptKey
+}
+
 function Resolve-ModelRouting {
   param(
     [object]$ModelRoutingConfig,
@@ -267,6 +299,68 @@ function Get-AgentCapabilityRegistry {
   }
 }
 
+function Get-CodexMultiAgentRegistry {
+  param(
+    [string]$WorkspaceRoot
+  )
+
+  $path = Join-Path $WorkspaceRoot '.Rayman\config\codex_multi_agent.json'
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return [pscustomobject]@{
+      path = $path
+      valid = $false
+      enabled = $false
+      error = 'missing_registry'
+      roles = @()
+      delegation_rules = @()
+    }
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $schema = [string](Get-PropValue -Object $raw -Name 'schema' -Default '')
+    $roles = New-Object System.Collections.Generic.List[object]
+    foreach ($prop in (Get-PropValue -Object $raw -Name 'roles' -Default @()).PSObject.Properties) {
+      $role = $prop.Value
+      $roles.Add([pscustomobject]@{
+          name = [string]$prop.Name
+          description = [string](Get-PropValue -Object $role -Name 'description' -Default '')
+          mode = [string](Get-PropValue -Object $role -Name 'mode' -Default '')
+          responsibility = [string](Get-PropValue -Object $role -Name 'responsibility' -Default '')
+        }) | Out-Null
+    }
+
+    $delegationRules = New-Object System.Collections.Generic.List[object]
+    foreach ($rule in @(Get-PropValue -Object $raw -Name 'delegation_rules' -Default @())) {
+      if ($null -eq $rule) { continue }
+      $delegationRules.Add([pscustomobject]@{
+          id = [string](Get-PropValue -Object $rule -Name 'id' -Default '')
+          mode = [string](Get-PropValue -Object $rule -Name 'mode' -Default '')
+          role = [string](Get-PropValue -Object $rule -Name 'role' -Default '')
+          summary = [string](Get-PropValue -Object $rule -Name 'summary' -Default '')
+        }) | Out-Null
+    }
+
+    return [pscustomobject]@{
+      path = $path
+      valid = ($schema -eq 'rayman.codex_multi_agent.v1')
+      enabled = [bool](Get-PropValue -Object $raw -Name 'enabled' -Default $true)
+      error = ''
+      roles = @($roles.ToArray())
+      delegation_rules = @($delegationRules.ToArray())
+    }
+  } catch {
+    return [pscustomobject]@{
+      path = $path
+      valid = $false
+      enabled = $false
+      error = $_.Exception.Message
+      roles = @()
+      delegation_rules = @()
+    }
+  }
+}
+
 function Resolve-AgentCapabilityState {
   param(
     [object]$Registry
@@ -340,7 +434,7 @@ function Resolve-AgentCapabilityState {
     host_is_windows = $hostIsWindows
     desktop_session_available = [bool]$desktop.available
     desktop_session_reason = [string]$desktop.reason
-    capabilities = @($resolved)
+    capabilities = @($resolved.ToArray())
   }
 }
 
@@ -400,8 +494,8 @@ function Get-AgentCapabilityMatches {
   }
 
   return [pscustomobject]@{
-    all_matches = @($matches)
-    active_matches = @($activeMatches)
+    all_matches = @($matches.ToArray())
+    active_matches = @($activeMatches.ToArray())
   }
 }
 
@@ -446,6 +540,49 @@ function Build-AgentCapabilityPreamble {
     }
   }
   $lines.Add('[/RaymanCapabilityHints]')
+  return ($lines -join "`n")
+}
+
+function Build-RaymanSubagentPreamble {
+  param(
+    [object]$Registry
+  )
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add('[RaymanSubagentHints]')
+  $lines.Add('explicit_spawn_rule=Codex only spawns subagents when you explicitly ask it to.')
+  $lines.Add('fallback_rule=If multi-agent tools are unavailable, disabled, or the workspace is not trusted, stay single-agent, keep MCP guidance, and state the degraded reason.')
+
+  if ($null -eq $Registry -or -not [bool]$Registry.valid) {
+    $lines.Add(('status=registry_invalid:{0}' -f [string](Get-PropValue -Object $Registry -Name 'error' -Default 'missing_registry')))
+    $lines.Add('[/RaymanSubagentHints]')
+    return ($lines -join "`n")
+  }
+
+  $lines.Add(('enabled={0}' -f [string]([bool]$Registry.enabled).ToString().ToLowerInvariant()))
+  foreach ($role in @($Registry.roles)) {
+    $summary = [string]$role.description
+    if (-not [string]::IsNullOrWhiteSpace([string]$role.responsibility)) {
+      $summary += (' Responsibility: {0}.' -f [string]$role.responsibility)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$role.mode)) {
+      $summary += (' Mode: {0}.' -f [string]$role.mode)
+    }
+    $lines.Add(('role.{0}={1}' -f [string]$role.name, $summary.Trim()))
+  }
+
+  foreach ($rule in @($Registry.delegation_rules)) {
+    $prefix = ('rule.{0}' -f [string]$rule.id)
+    $summary = [string]$rule.summary
+    if (-not [string]::IsNullOrWhiteSpace([string]$rule.role)) {
+      $summary += (' Use role `{0}`.' -f [string]$rule.role)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$rule.mode)) {
+      $summary += (' Mode=`{0}`.' -f [string]$rule.mode)
+    }
+    $lines.Add(('{0}={1}' -f $prefix, $summary.Trim()))
+  }
+  $lines.Add('[/RaymanSubagentHints]')
   return ($lines -join "`n")
 }
 
@@ -721,7 +858,8 @@ function Build-SystemSlimDispatchPrompt {
     [string]$CommandText,
     [string]$TaskKindText,
     [string]$WorkspaceRoot,
-    [string]$CapabilityPreamble = ''
+    [string]$CapabilityPreamble = '',
+    [string]$SubagentPreamble = ''
   )
 
   $body = ''
@@ -735,8 +873,16 @@ function Build-SystemSlimDispatchPrompt {
     $body = ("Workspace={0}`nGoal=Please execute general engineering task and report actionable result." -f $WorkspaceRoot)
   }
 
+  $preambles = New-Object System.Collections.Generic.List[string]
   if (-not [string]::IsNullOrWhiteSpace($CapabilityPreamble)) {
-    return ($CapabilityPreamble.Trim() + "`n" + $body)
+    $preambles.Add($CapabilityPreamble.Trim()) | Out-Null
+  }
+  if (-not [string]::IsNullOrWhiteSpace($SubagentPreamble)) {
+    $preambles.Add($SubagentPreamble.Trim()) | Out-Null
+  }
+  if ($preambles.Count -gt 0) {
+    $preambles.Add($body) | Out-Null
+    return ($preambles -join "`n")
   }
   return $body
 }
@@ -792,6 +938,7 @@ $policyConfigPath = Join-Path $raymanDir 'config\agent_policy.json'
 $modelRoutingPath = Join-Path $raymanDir 'config\model_routing.json'
 $capabilityRegistry = Get-AgentCapabilityRegistry -WorkspaceRoot $WorkspaceRoot
 $capabilityState = Resolve-AgentCapabilityState -Registry $capabilityRegistry
+$multiAgentRegistry = Get-CodexMultiAgentRegistry -WorkspaceRoot $WorkspaceRoot
 $routerConfig = Get-JsonOrNull -Path $routerConfigPath
 $policyConfig = Get-JsonOrNull -Path $policyConfigPath
 $modelRoutingConfig = Get-JsonOrNull -Path $modelRoutingPath
@@ -816,7 +963,7 @@ $lastPath = Join-Path $runsDir 'last.json'
 
 $repoName = Split-Path -Leaf $WorkspaceRoot
 $repoPath = $WorkspaceRoot
-$effectivePromptKey = ([string]$PromptKey).Trim()
+$effectivePromptKey = Resolve-PromptTemplateKey -WorkspaceRoot $WorkspaceRoot -PromptKeyText $PromptKey
 $requestedModelResolution = Resolve-ModelRouting -ModelRoutingConfig $modelRoutingConfig -TaskKindText $TaskKind -PromptKeyText $effectivePromptKey
 $requestedModelSource = [string]$requestedModelResolution.source
 $requestedModelAlias = [string]$requestedModelResolution.route_key
@@ -871,6 +1018,7 @@ $capabilityMatches = Get-AgentCapabilityMatches -CapabilityState $capabilityStat
 $matchedCapabilities = @($capabilityMatches.all_matches)
 $activeCapabilityMatches = @($capabilityMatches.active_matches)
 $capabilityPreamble = Build-AgentCapabilityPreamble -CapabilityMatches $activeCapabilityMatches
+$subagentPreamble = Build-RaymanSubagentPreamble -Registry $multiAgentRegistry
 
 if ($matchedCapabilities.Count -gt 0) {
   $matchSummary = @($matchedCapabilities | ForEach-Object {
@@ -1106,23 +1254,23 @@ $errorMessage = ''
 
 if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   $delegated = $true
-  $promptText = Build-SystemSlimDispatchPrompt -TaskText $Task -CommandText $Command -TaskKindText $TaskKind -WorkspaceRoot $WorkspaceRoot -CapabilityPreamble $capabilityPreamble
+  $promptText = Build-SystemSlimDispatchPrompt -TaskText $Task -CommandText $Command -TaskKindText $TaskKind -WorkspaceRoot $WorkspaceRoot -CapabilityPreamble $capabilityPreamble -SubagentPreamble $subagentPreamble
   $promptSingleLine = ($promptText -replace "[`r`n]+", ' ').Trim()
   $executedCommand = ('codex exec -C "{0}" "{1}"' -f $WorkspaceRoot, $promptSingleLine)
   Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("system-slim delegated: target={0}; prompt={1}" -f $delegationTarget, $promptSingleLine)
 
   if (-not $DryRun) {
     try {
-      $codexCmd = Get-Command 'codex' -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($null -eq $codexCmd) {
-        throw 'codex command not found at runtime'
+      $delegateResult = Invoke-RaymanCodexCommand -WorkspaceRoot $WorkspaceRoot -ArgumentList @('exec', '-C', $WorkspaceRoot, $promptText) -RequireManagedLogin -Capture
+      if (-not [string]::IsNullOrWhiteSpace([string]$delegateResult.command)) {
+        $executedCommand = [string]$delegateResult.command
       }
-      $delegateOutput = & $codexCmd.Source 'exec' '-C' $WorkspaceRoot $promptText 2>&1
-      if ($delegateOutput) {
-        $delegateOutput | ForEach-Object { Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ([string]$_) }
+      foreach ($line in @($delegateResult.stdout + $delegateResult.stderr)) {
+        Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ([string]$line)
       }
-      $exitCode = [int]$LASTEXITCODE
-      $success = ($exitCode -eq 0)
+      $exitCode = [int]$delegateResult.exit_code
+      $success = [bool]$delegateResult.success
+      $errorMessage = [string]$delegateResult.error
     } catch {
       $exitCode = 1
       $success = $false
@@ -1179,7 +1327,7 @@ $summary = [ordered]@{
   selected_model_alias = $selectedModelAlias
   selected_model_selector = $selectedModelSelector
   resolved_model = $resolvedModel
-  candidate_chain = @($candidates)
+  candidate_chain = @($candidates.ToArray())
   selected_backend = $selectedBackend
   selection_reason = $selectionReason
   policy_blocked = $policyBlocked

@@ -142,6 +142,13 @@ $keyFiles = @(
 	'.github\copilot-instructions.md',
 	'.RaymanAgent\.RaymanAgent.requirements.md',
 	'.Rayman\config\agent_capabilities.json',
+	'.Rayman\config\codex_multi_agent.json',
+	'.Rayman\config\codex_agents\rayman_explorer.toml',
+	'.Rayman\config\codex_agents\rayman_reviewer.toml',
+	'.Rayman\config\codex_agents\rayman_docs_researcher.toml',
+	'.Rayman\config\codex_agents\rayman_browser_debugger.toml',
+	'.Rayman\config\codex_agents\rayman_winapp_debugger.toml',
+	'.Rayman\config\codex_agents\rayman_worker.toml',
 	'.Rayman\config\agent_router.json',
 	'.Rayman\config\agent_policy.json',
 	'.Rayman\config\model_routing.json',
@@ -220,12 +227,15 @@ if ($null -ne $capabilityReport) {
 	$lines.Add("- Active: " + ($(if ($activeCapabilities.Count -gt 0) { ($activeCapabilities -join ', ') } else { '(none)' })))
 	$lines.Add(('- Codex config: `{0}`' -f $(if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) { '.codex\config.toml' } else { '(missing)' })))
 	$lines.Add(('- Workspace trust: `{0}` ({1})' -f [string]$capabilityReport.workspace_trust_status, [string]$capabilityReport.workspace_trust_reason))
-	$lines.Add(('- Managed block present: `{0}`' -f [string]([bool]$capabilityReport.managed_block_present).ToString().ToLowerInvariant()))
+	$lines.Add(('- Managed capability block: `{0}`' -f [string]([bool]$capabilityReport.managed_block_present).ToString().ToLowerInvariant()))
+	$lines.Add(('- Multi-agent supported/effective: `{0}` / `{1}`' -f [string]([bool](Get-PropValue -Object $capabilityReport -Name 'multi_agent_supported' -Default $false)).ToString().ToLowerInvariant(), [string]([bool](Get-PropValue -Object $capabilityReport -Name 'multi_agent_effective' -Default $false)).ToString().ToLowerInvariant()))
+	$lines.Add(('- Multi-agent degraded reason: `{0}`' -f [string](Get-PropValue -Object $capabilityReport -Name 'multi_agent_degraded_reason' -Default '')))
+	$lines.Add(('- Multi-agent roles: {0}' -f $(if (@(Get-PropValue -Object $capabilityReport -Name 'multi_agent_roles' -Default @()).Count -gt 0) { ((@(Get-PropValue -Object $capabilityReport -Name 'multi_agent_roles' -Default @()) | ForEach-Object { [string]$_ }) -join ', ') } else { '(none)' })))
 	$lines.Add(('- Playwright ready: `{0}` ({1})' -f [string]([bool](Get-PropValue -Object $playwrightReport -Name 'ready' -Default $false)).ToString().ToLowerInvariant(), [string](Get-PropValue -Object $playwrightReport -Name 'reason' -Default 'unknown')))
 	$lines.Add(('- WinApp ready: `{0}` ({1})' -f [string]([bool](Get-PropValue -Object $winAppReport -Name 'ready' -Default $false)).ToString().ToLowerInvariant(), [string](Get-PropValue -Object $winAppReport -Name 'reason' -Default 'unknown')))
 } else {
 	$lines.Add('- Report: `.Rayman\runtime\agent_capabilities.report.md` (not generated yet)')
-	$lines.Add('- Summary: run `rayman agent-capabilities --sync` to materialize `.codex\config.toml` and capability status.')
+	$lines.Add('- Summary: run `rayman agent-capabilities --sync` to materialize `.codex\config.toml`, MCP capability status, and Codex multi-agent status.')
 }
 $lines.Add("")
 $lines.Add("## Recommended Entry Points")

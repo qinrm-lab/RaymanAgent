@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "rayman.review_loop.config.v1",
   "max_rounds": 2,
   "task_kind_default": "review",

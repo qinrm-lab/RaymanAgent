@@ -1,6 +1,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$raymanCodexCommonPath = Join-Path $PSScriptRoot 'scripts\codex\codex_common.ps1'
+if (Test-Path -LiteralPath $raymanCodexCommonPath -PathType Leaf) {
+    . $raymanCodexCommonPath
+}
+
 function Get-RaymanWorkspaceRootDefault {
     if (-not [string]::IsNullOrWhiteSpace([string]$PSScriptRoot)) {
         return (Split-Path -Parent $PSScriptRoot)
@@ -55,12 +60,172 @@ function Get-RaymanPathComparisonValue {
     if ($candidate.StartsWith('Microsoft.PowerShell.Core\FileSystem::', [System.StringComparison]::OrdinalIgnoreCase)) {
         $candidate = $candidate.Substring('Microsoft.PowerShell.Core\FileSystem::'.Length)
     }
+    $candidate = $candidate.Trim().Trim('"').Trim("'")
+    if ($candidate -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
+        $drive = [string]$Matches[1]
+        $rest = if ($Matches.Count -gt 2) { [string]$Matches[2] } else { '' }
+        if ([string]::IsNullOrWhiteSpace($rest)) {
+            $candidate = ('{0}:\' -f $drive.ToUpperInvariant())
+        } else {
+            $candidate = ('{0}:\{1}' -f $drive.ToUpperInvariant(), ($rest -replace '/', '\'))
+        }
+    }
     try {
         $full = [System.IO.Path]::GetFullPath($candidate)
     } catch {
         $full = $candidate
     }
     return ($full.TrimEnd('\', '/') -replace '\\', '/').ToLowerInvariant()
+}
+
+function Get-RaymanPathComparisonVariants {
+    param(
+        [string]$PathValue
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return @() }
+
+    $variants = New-Object System.Collections.Generic.List[string]
+    $primary = Get-RaymanPathComparisonValue -PathValue $PathValue
+    if (-not [string]::IsNullOrWhiteSpace($primary)) {
+        $variants.Add($primary) | Out-Null
+    }
+
+    $raw = [string]$PathValue
+    if ($raw.StartsWith('Microsoft.PowerShell.Core\FileSystem::', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $raw = $raw.Substring('Microsoft.PowerShell.Core\FileSystem::'.Length)
+    }
+    $raw = $raw.Trim().Trim('"').Trim("'")
+
+    if ($raw -match '^([A-Za-z]):[\\/]*(.*)$') {
+        $drive = ([string]$Matches[1]).ToLowerInvariant()
+        $rest = [string]$Matches[2]
+        $restNorm = ($rest -replace '\\', '/').Trim('/')
+        $wslVariant = if ([string]::IsNullOrWhiteSpace($restNorm)) {
+            "/mnt/$drive"
+        } else {
+            "/mnt/$drive/$restNorm"
+        }
+        $normalizedWsl = Get-RaymanPathComparisonValue -PathValue $wslVariant
+        if (-not [string]::IsNullOrWhiteSpace($normalizedWsl) -and $variants -notcontains $normalizedWsl) {
+            $variants.Add($normalizedWsl) | Out-Null
+        }
+    } elseif ($raw -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
+        $drive = ([string]$Matches[1]).ToUpperInvariant()
+        $rest = if ($Matches.Count -gt 2) { [string]$Matches[2] } else { '' }
+        $windowsVariant = if ([string]::IsNullOrWhiteSpace($rest)) {
+            ('{0}:\' -f $drive)
+        } else {
+            ('{0}:\{1}' -f $drive, ($rest -replace '/', '\'))
+        }
+        $normalizedWindows = Get-RaymanPathComparisonValue -PathValue $windowsVariant
+        if (-not [string]::IsNullOrWhiteSpace($normalizedWindows) -and $variants -notcontains $normalizedWindows) {
+            $variants.Add($normalizedWindows) | Out-Null
+        }
+    }
+
+    return @($variants | Select-Object -Unique)
+}
+
+function Test-RaymanPathsEquivalent {
+    param(
+        [string]$LeftPath,
+        [string]$RightPath
+    )
+
+    $leftVariants = @(Get-RaymanPathComparisonVariants -PathValue $LeftPath)
+    $rightVariants = @(Get-RaymanPathComparisonVariants -PathValue $RightPath)
+    if ($leftVariants.Count -eq 0 -or $rightVariants.Count -eq 0) { return $false }
+
+    foreach ($left in $leftVariants) {
+        if ($rightVariants -contains $left) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Convert-RaymanPathForCurrentHost {
+    param(
+        [string]$PathValue
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
+
+    $candidate = [string]$PathValue
+    if ($candidate.StartsWith('Microsoft.PowerShell.Core\FileSystem::', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $candidate = $candidate.Substring('Microsoft.PowerShell.Core\FileSystem::'.Length)
+    }
+    $candidate = $candidate.Trim().Trim('"').Trim("'")
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return '' }
+
+    $isWindowsHost = Test-RaymanWindowsPlatform
+    if ($isWindowsHost) {
+        if ($candidate -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
+            $drive = ([string]$Matches[1]).ToUpperInvariant()
+            $rest = if ($Matches.Count -gt 2) { [string]$Matches[2] } else { '' }
+            if ([string]::IsNullOrWhiteSpace($rest)) {
+                return ('{0}:\' -f $drive)
+            }
+            return ('{0}:\{1}' -f $drive, ($rest -replace '/', '\'))
+        }
+        return $candidate
+    }
+
+    if ($candidate -match '^([A-Za-z]):[\\/]*(.*)$') {
+        $drive = ([string]$Matches[1]).ToLowerInvariant()
+        $rest = [string]$Matches[2]
+        $restNorm = ($rest -replace '\\', '/').Trim('/')
+        if ([string]::IsNullOrWhiteSpace($restNorm)) {
+            return "/mnt/$drive"
+        }
+        return "/mnt/$drive/$restNorm"
+    }
+
+    return $candidate
+}
+
+function Resolve-RaymanLiteralPath {
+    param(
+        [string]$PathValue,
+        [switch]$AllowMissing
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @([string]$PathValue, (Convert-RaymanPathForCurrentHost -PathValue $PathValue))) {
+        if ([string]::IsNullOrWhiteSpace($item)) { continue }
+        $normalized = [string]$item
+        if ($normalized.StartsWith('Microsoft.PowerShell.Core\FileSystem::', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $normalized = $normalized.Substring('Microsoft.PowerShell.Core\FileSystem::'.Length)
+        }
+        $normalized = $normalized.Trim().Trim('"').Trim("'")
+        if ([string]::IsNullOrWhiteSpace($normalized)) { continue }
+        if ($candidates -notcontains $normalized) {
+            $candidates.Add($normalized) | Out-Null
+        }
+    }
+
+    foreach ($candidate in @($candidates.ToArray())) {
+        try {
+            return ((Resolve-Path -LiteralPath $candidate -ErrorAction Stop | Select-Object -First 1).Path)
+        } catch {}
+    }
+
+    foreach ($candidate in @($candidates.ToArray())) {
+        try {
+            if (Test-Path -LiteralPath $candidate) {
+                return $candidate
+            }
+        } catch {}
+    }
+
+    if ($AllowMissing -and $candidates.Count -gt 0) {
+        return [string]$candidates[0]
+    }
+
+    return ''
 }
 
 function Get-RaymanReportWorkspaceRoot {
@@ -86,12 +251,7 @@ function Test-RaymanReportWorkspaceMatchesRoot {
     if ([string]::IsNullOrWhiteSpace($reportRoot)) {
         return $true
     }
-    $workspaceNorm = Get-RaymanPathComparisonValue -PathValue $WorkspaceRoot
-    $reportNorm = Get-RaymanPathComparisonValue -PathValue $reportRoot
-    if ([string]::IsNullOrWhiteSpace($workspaceNorm) -or [string]::IsNullOrWhiteSpace($reportNorm)) {
-        return $false
-    }
-    return ($workspaceNorm -eq $reportNorm)
+    return (Test-RaymanPathsEquivalent -LeftPath $WorkspaceRoot -RightPath $reportRoot)
 }
 
 function Write-Info([string]$Message) {
@@ -156,7 +316,12 @@ function Get-RaymanWorkspaceEnvBool {
         return $Default
     }
 
-    $envFile = Join-Path $WorkspaceRoot '.rayman.env.ps1'
+    $workspaceRootPath = Resolve-RaymanLiteralPath -PathValue $WorkspaceRoot -AllowMissing
+    if ([string]::IsNullOrWhiteSpace($workspaceRootPath)) {
+        return $Default
+    }
+
+    $envFile = [System.IO.Path]::Combine($workspaceRootPath, '.rayman.env.ps1')
     if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
         return $Default
     }
@@ -203,7 +368,12 @@ function Get-RaymanWorkspaceEnvString {
         return $Default
     }
 
-    $envFile = Join-Path $WorkspaceRoot '.rayman.env.ps1'
+    $workspaceRootPath = Resolve-RaymanLiteralPath -PathValue $WorkspaceRoot -AllowMissing
+    if ([string]::IsNullOrWhiteSpace($workspaceRootPath)) {
+        return $Default
+    }
+
+    $envFile = [System.IO.Path]::Combine($workspaceRootPath, '.rayman.env.ps1')
     if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
         return $Default
     }
@@ -232,6 +402,324 @@ function Get-RaymanWorkspaceEnvString {
     } catch {}
 
     return $Default
+}
+
+function Remove-RaymanJsonComments {
+    param(
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+
+    $sb = New-Object System.Text.StringBuilder
+    $inString = $false
+    $escapeNext = $false
+    $inLineComment = $false
+    $inBlockComment = $false
+
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        $next = if ($i + 1 -lt $Text.Length) { $Text[$i + 1] } else { [char]0 }
+
+        if ($inLineComment) {
+            if ($c -eq "`n") {
+                $inLineComment = $false
+                [void]$sb.Append($c)
+            }
+            continue
+        }
+
+        if ($inBlockComment) {
+            if ($c -eq '*' -and $next -eq '/') {
+                $inBlockComment = $false
+                $i++
+            }
+            continue
+        }
+
+        if ($inString) {
+            [void]$sb.Append($c)
+            if ($escapeNext) {
+                $escapeNext = $false
+            } elseif ($c -eq '\') {
+                $escapeNext = $true
+            } elseif ($c -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+
+        if ($c -eq '"') {
+            $inString = $true
+            [void]$sb.Append($c)
+            continue
+        }
+
+        if ($c -eq '/' -and $next -eq '/') {
+            $inLineComment = $true
+            $i++
+            continue
+        }
+
+        if ($c -eq '/' -and $next -eq '*') {
+            $inBlockComment = $true
+            $i++
+            continue
+        }
+
+        [void]$sb.Append($c)
+    }
+
+    return $sb.ToString()
+}
+
+function Remove-RaymanJsonTrailingCommas {
+    param(
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+
+    $sb = New-Object System.Text.StringBuilder
+    $inString = $false
+    $escapeNext = $false
+
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+
+        if ($inString) {
+            [void]$sb.Append($c)
+            if ($escapeNext) {
+                $escapeNext = $false
+            } elseif ($c -eq '\') {
+                $escapeNext = $true
+            } elseif ($c -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+
+        if ($c -eq '"') {
+            $inString = $true
+            [void]$sb.Append($c)
+            continue
+        }
+
+        if ($c -eq ',') {
+            $j = $i + 1
+            while ($j -lt $Text.Length -and [char]::IsWhiteSpace($Text[$j])) { $j++ }
+            if ($j -lt $Text.Length -and ($Text[$j] -eq '}' -or $Text[$j] -eq ']')) {
+                continue
+            }
+        }
+
+        [void]$sb.Append($c)
+    }
+
+    return $sb.ToString()
+}
+
+function ConvertFrom-RaymanJsonDeserializerValue {
+    param(
+        [object]$Value,
+        [switch]$AsHashtable
+    )
+
+    if ($null -eq $Value) { return $null }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $map = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $map[[string]$key] = ConvertFrom-RaymanJsonDeserializerValue -Value $Value[$key] -AsHashtable:$AsHashtable
+        }
+        if ($AsHashtable) {
+            return $map
+        }
+        return [pscustomobject]$map
+    }
+
+    if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) {
+            $items.Add((ConvertFrom-RaymanJsonDeserializerValue -Value $item -AsHashtable:$AsHashtable)) | Out-Null
+        }
+        return @($items.ToArray())
+    }
+
+    return $Value
+}
+
+function ConvertFrom-RaymanJsonText {
+    param(
+        [string]$Text,
+        [switch]$AsHashtable
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+
+    $jsonDocumentType = 'System.Text.Json.JsonDocument' -as [type]
+    if ($null -ne $jsonDocumentType) {
+        $jsonValueKindType = 'System.Text.Json.JsonValueKind' -as [type]
+        $convertElement = $null
+        $convertElement = {
+            param([object]$Element)
+
+            switch ($Element.ValueKind) {
+                $jsonValueKindType::Object {
+                    $map = [ordered]@{}
+                    foreach ($prop in $Element.EnumerateObject()) {
+                        $map[[string]$prop.Name] = & $convertElement $prop.Value
+                    }
+                    if ($AsHashtable) { return $map }
+                    return [pscustomobject]$map
+                }
+                $jsonValueKindType::Array {
+                    $items = New-Object System.Collections.Generic.List[object]
+                    foreach ($child in $Element.EnumerateArray()) {
+                        $items.Add((& $convertElement $child)) | Out-Null
+                    }
+                    return @($items.ToArray())
+                }
+                $jsonValueKindType::String { return $Element.GetString() }
+                $jsonValueKindType::Number {
+                    $longValue = 0L
+                    if ($Element.TryGetInt64([ref]$longValue)) { return $longValue }
+                    $doubleValue = 0.0
+                    if ($Element.TryGetDouble([ref]$doubleValue)) { return $doubleValue }
+                    return $Element.ToString()
+                }
+                $jsonValueKindType::True { return $true }
+                $jsonValueKindType::False { return $false }
+                $jsonValueKindType::Null { return $null }
+                default { return $Element.ToString() }
+            }
+        }
+
+        $doc = $null
+        try {
+            $doc = $jsonDocumentType::Parse($Text)
+            return (& $convertElement $doc.RootElement)
+        } finally {
+            if ($null -ne $doc) { $doc.Dispose() }
+        }
+    }
+
+    $serializer = $null
+    try { Add-Type -AssemblyName 'System.Web.Extensions' -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try {
+        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    } catch {
+        $serializer = $null
+    }
+    if ($null -ne $serializer) {
+        try { $serializer.MaxJsonLength = [int]::MaxValue } catch {}
+        $parsed = $serializer.DeserializeObject($Text)
+        return (ConvertFrom-RaymanJsonDeserializerValue -Value $parsed -AsHashtable:$AsHashtable)
+    }
+
+    $convertFromJsonSupportsHashtable = $false
+    try {
+        $convertFromJsonCmd = Get-Command ConvertFrom-Json -ErrorAction Stop
+        $convertFromJsonSupportsHashtable = $convertFromJsonCmd.Parameters.ContainsKey('AsHashtable')
+    } catch {}
+    if ($AsHashtable) {
+        if (-not $convertFromJsonSupportsHashtable) {
+            throw 'ConvertFrom-Json -AsHashtable is unavailable and no alternate JSON parser was found.'
+        }
+        return ($Text | ConvertFrom-Json -AsHashtable -ErrorAction Stop)
+    }
+    return ($Text | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function Read-RaymanJsonFile {
+    param(
+        [string]$Path,
+        [switch]$AsHashtable
+    )
+
+    $result = [ordered]@{
+        Exists = $false
+        ParseFailed = $false
+        Obj = $null
+        Error = ''
+        Sanitized = $false
+        Path = $Path
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject]$result
+    }
+
+    $result.Exists = $true
+    $raw = ''
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    } catch {
+        $result.ParseFailed = $true
+        $result.Error = $_.Exception.Message
+        return [pscustomobject]$result
+    }
+
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [pscustomobject]$result
+    }
+
+    $clean = Remove-RaymanJsonTrailingCommas -Text (Remove-RaymanJsonComments -Text $raw)
+    $result.Sanitized = ($clean -ne $raw)
+
+    try {
+        $result.Obj = ConvertFrom-RaymanJsonText -Text $clean -AsHashtable:$AsHashtable
+    } catch {
+        $result.ParseFailed = $true
+        $result.Error = $_.Exception.Message
+    }
+
+    return [pscustomobject]$result
+}
+
+function Get-RaymanWorkspaceApprovalMode {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_APPROVAL_MODE' -Default 'full-auto')
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return 'full-auto'
+    }
+    return $raw.Trim().ToLowerInvariant()
+}
+
+function Get-RaymanSetupPostCheckMode {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_SETUP_POST_CHECK_MODE' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        switch ($raw.Trim().ToLowerInvariant()) {
+            'prompt' { return 'prompt' }
+            'strict' { return 'strict' }
+            'normal' { return 'normal' }
+            'skip' { return 'skip' }
+        }
+    }
+
+    if ((Get-RaymanWorkspaceApprovalMode -WorkspaceRoot $WorkspaceRoot) -eq 'full-auto') {
+        return 'strict'
+    }
+
+    $interactive = $true
+    try {
+        $interactive = (-not [Console]::IsInputRedirected)
+    } catch {
+        $interactive = $true
+    }
+
+    if ($interactive) {
+        return 'prompt'
+    }
+
+    return 'strict'
 }
 
 function Get-RaymanVscodeBootstrapProfile {
@@ -495,11 +983,100 @@ function Get-RaymanAttentionAlertEnabled {
             return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_MANUAL_ENABLED' -Default $true)
         }
         'done' {
-            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_DONE_ENABLED' -Default $true)
+            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_DONE_ENABLED' -Default $false)
         }
         default {
             return $true
         }
+    }
+}
+
+function Get-RaymanAttentionSurface {
+    param(
+        [string]$WorkspaceRoot = '',
+        [string]$Default = 'log'
+    )
+
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    $fallback = if ([string]::IsNullOrWhiteSpace([string]$Default)) { 'log' } else { [string]$Default }
+    $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $root -Name 'RAYMAN_ALERT_SURFACE' -Default $fallback)
+    if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+        $raw = $fallback
+    }
+
+    switch ($raw.Trim().ToLowerInvariant()) {
+        'toast' { return 'toast' }
+        'silent' { return 'silent' }
+        default { return 'log' }
+    }
+}
+
+function Get-RaymanAttentionStatePath {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace([string]$root)) {
+        return ''
+    }
+
+    $runtimeDir = Join-Path $root '.Rayman\runtime'
+    if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+    }
+
+    return (Join-Path $runtimeDir 'attention.last.json')
+}
+
+function Write-RaymanAttentionState {
+    param(
+        [string]$WorkspaceRoot = '',
+        [string]$Kind = 'manual',
+        [string]$Title = '',
+        [string]$Message = '',
+        [string]$Surface = 'log',
+        [bool]$AlertEnabled = $true,
+        [bool]$SpeechEnabled = $false,
+        [bool]$Suppressed = $false
+    )
+
+    $statePath = Get-RaymanAttentionStatePath -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace([string]$statePath)) {
+        return
+    }
+
+    $payload = [ordered]@{
+        schema = 'rayman.attention.last.v1'
+        kind = $Kind
+        title = $Title
+        message = $Message
+        surface = $Surface
+        alert_enabled = $AlertEnabled
+        speech_enabled = $SpeechEnabled
+        suppressed = $Suppressed
+        updated_at = (Get-Date).ToString('o')
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($statePath, ($payload | ConvertTo-Json -Depth 6), $utf8NoBom)
+}
+
+function Write-RaymanAttentionConsoleMessage {
+    param(
+        [string]$Kind = 'manual',
+        [string]$Title = '',
+        [string]$Message = ''
+    )
+
+    $resolvedTitle = if ([string]::IsNullOrWhiteSpace([string]$Title)) { 'Rayman 提醒' } else { [string]$Title }
+    $resolvedMessage = if ([string]::IsNullOrWhiteSpace([string]$Message)) { 'Rayman 需要您关注当前任务。' } else { [string]$Message }
+    $line = ("[{0}] {1}" -f $resolvedTitle, $resolvedMessage)
+
+    switch (([string]$Kind).Trim().ToLowerInvariant()) {
+        'error' { Write-Host $line -ForegroundColor Red }
+        'done' { Write-Host $line -ForegroundColor Green }
+        default { Write-Host $line -ForegroundColor Yellow }
     }
 }
 
@@ -519,14 +1096,14 @@ function Get-RaymanAttentionSpeechEnabled {
         return (Convert-RaymanStringToBool -Value $legacySpeechRaw -Default $true)
     }
 
-    if (-not (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_TTS_ENABLED' -Default $true)) {
+    if (-not (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_TTS_ENABLED' -Default $false)) {
         return $false
     }
 
     $kindValue = if ([string]::IsNullOrWhiteSpace([string]$Kind)) { 'manual' } else { [string]$Kind }
     switch ($kindValue.Trim().ToLowerInvariant()) {
         'done' {
-            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_TTS_DONE_ENABLED' -Default $true)
+            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_TTS_DONE_ENABLED' -Default $false)
         }
         default {
             return $true
@@ -1271,7 +1848,14 @@ function Invoke-RaymanGitBootstrap {
         }
 
         $report.github_login_attempted = $true
-        $loginResult = Invoke-RaymanNativeCommandCapture -FilePath ([string]$cliResolution.source) -ArgumentList @('auth', 'login', '--hostname', $GitHubHost, '--git-protocol', $GitProtocol, '--web') -WorkingDirectory $WorkspaceRoot
+        Write-Host "🔐 [Rayman] 因为遇到未登录，正在启动 GitHub 交互式登录..." -ForegroundColor Cyan
+        Write-Host "（如果在终端里发生黑屏盲输密码，或者需查看一次性校验码，请看页面或上方提示）" -ForegroundColor DarkGray
+        $loginProc = Start-Process -FilePath ([string]$cliResolution.source) -ArgumentList @('auth', 'login', '--hostname', $GitHubHost, '--git-protocol', $GitProtocol, '--web') -WorkingDirectory $WorkspaceRoot -Wait -PassThru -NoNewWindow
+        $loginResult = [pscustomobject]@{
+            success = ($null -ne $loginProc -and $loginProc.ExitCode -eq 0)
+            output = ''
+            error = if ($null -ne $loginProc -and $loginProc.ExitCode -ne 0) { "Process exited with code $($loginProc.ExitCode)" } else { "Unknown interactive failure" }
+        }
         $postLoginStatus = Get-RaymanGitHubAuthStatus -CliSource ([string]$cliResolution.source) -GitHubHost $GitHubHost
         $report.github_auth_status = [string]$postLoginStatus.status
         $report.github_login_success = ([bool]$loginResult.success -and ($report.github_auth_status -eq 'authenticated'))
@@ -1884,10 +2468,13 @@ function Invoke-RaymanAttentionAlert {
         [string]$WorkspaceRoot = ''
     )
 
-    $root = if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
-        Resolve-RaymanWorkspaceRoot
-    } else {
-        Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace([string]$root)) {
+        $root = if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+            Resolve-RaymanWorkspaceRoot
+        } else {
+            Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
+        }
     }
     $assetAnalysis = Get-RaymanRequiredAssetAnalysis -WorkspaceRoot $root -Label 'attention-alert' -RequiredRelPaths @(
         '.Rayman/scripts/utils/request_attention.ps1'
@@ -1913,10 +2500,14 @@ function Invoke-RaymanAttentionAlert {
 
     $alertEnabled = Get-RaymanAttentionAlertEnabled -WorkspaceRoot $root -Kind $Kind
     $speechEnabled = Get-RaymanAttentionSpeechEnabled -WorkspaceRoot $root -Kind $Kind
+    $surface = Get-RaymanAttentionSurface -WorkspaceRoot $root -Default 'log'
 
     if (-not $alertEnabled) {
         try {
             Write-RaymanDiag -Scope 'attention' -Message ("request_attention suppressed ({0}): {1}" -f $Kind, $message) -WorkspaceRoot $root
+        } catch {}
+        try {
+            Write-RaymanAttentionState -WorkspaceRoot $root -Kind $Kind -Title $toastTitle -Message $message -Surface $surface -AlertEnabled $false -SpeechEnabled $false -Suppressed $true
         } catch {}
 
         return [pscustomobject]@{
@@ -1925,34 +2516,49 @@ function Invoke-RaymanAttentionAlert {
             Reason = $message
             MaxSeconds = $MaxSeconds
             RequestedAt = (Get-Date).ToString('o')
+            Surface = $surface
             AlertEnabled = $false
             SpeechEnabled = $false
             Suppressed = $true
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-        try {
-            $attentionParams = @{
-                Kind = $Kind
-                Message = $message
-                Title = $toastTitle
-                WorkspaceRoot = $root
+    try {
+        Write-RaymanDiag -Scope 'attention' -Message ("request_attention ({0}, surface={1}): {2}" -f $Kind, $surface, $message) -WorkspaceRoot $root
+    } catch {}
+
+    $delivered = $false
+    if ($surface -eq 'toast') {
+        if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+            try {
+                $attentionParams = @{
+                    Kind = $Kind
+                    Message = $message
+                    Title = $toastTitle
+                    WorkspaceRoot = $root
+                }
+                if ($speechEnabled) {
+                    $attentionParams['EnableSpeech'] = $true
+                } else {
+                    $attentionParams['DisableSpeech'] = $true
+                }
+                & $scriptPath @attentionParams | Out-Null
+                $delivered = $true
+            } catch {
+                Write-RaymanDiag -Scope 'attention' -Message ("request_attention failed: {0}" -f $_.Exception.ToString()) -WorkspaceRoot $root
+                Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
             }
-            if ($speechEnabled) {
-                $attentionParams['EnableSpeech'] = $true
-            } else {
-                $attentionParams['DisableSpeech'] = $true
-            }
-            & $scriptPath @attentionParams | Out-Null
-        } catch {
-            Write-RaymanDiag -Scope 'attention' -Message ("request_attention failed: {0}" -f $_.Exception.ToString()) -WorkspaceRoot $root
-            Write-Warn ("[attention] {0}" -f $message)
+        } else {
+            Write-RaymanRequiredAssetDiagnostics -Analysis $assetAnalysis -Scope 'attention'
+            Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
         }
-    } else {
-        Write-RaymanRequiredAssetDiagnostics -Analysis $assetAnalysis -Scope 'attention'
-        Write-Warn ("[attention] {0}" -f $message)
+    } elseif ($surface -eq 'log') {
+        Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
     }
+
+    try {
+        Write-RaymanAttentionState -WorkspaceRoot $root -Kind $Kind -Title $toastTitle -Message $message -Surface $surface -AlertEnabled $true -SpeechEnabled $(if ($surface -eq 'toast') { $speechEnabled } else { $false }) -Suppressed $false
+    } catch {}
 
     return [pscustomobject]@{
         Kind = $Kind
@@ -1960,8 +2566,10 @@ function Invoke-RaymanAttentionAlert {
         Reason = $message
         MaxSeconds = $MaxSeconds
         RequestedAt = (Get-Date).ToString('o')
+        Surface = $surface
         AlertEnabled = $true
-        SpeechEnabled = $speechEnabled
+        SpeechEnabled = $(if ($surface -eq 'toast') { $speechEnabled } else { $false })
+        Delivered = $delivered
         Suppressed = $false
     }
 }

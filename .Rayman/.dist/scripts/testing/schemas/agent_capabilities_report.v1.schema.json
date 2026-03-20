@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/agent_capabilities_report.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "action",
+    "workspace_root",
+    "registry_path",
+    "registry_valid",
+    "global_enabled",
+    "host_is_windows",
+    "codex_available",
+    "codex_runtime_host",
+    "codex_runtime_host_source",
+    "path_normalization_status",
+    "codex_config_path",
+    "codex_config_exists",
+    "managed_block_present",
+    "managed_slices",
+    "project_profiles_written",
+    "subagents_written",
+    "custom_agents_present",
+    "skills_present",
+    "active_capabilities",
+    "playwright",
+    "winapp",
+    "capabilities"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.agent_capabilities.report.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "registry_path": {
+      "type": "string"
+    },
+    "registry_valid": {
+      "type": "boolean"
+    },
+    "registry_error": {
+      "type": "string"
+    },
+    "global_enabled": {
+      "type": "boolean"
+    },
+    "host_is_windows": {
+      "type": "boolean"
+    },
+    "desktop_session_available": {
+      "type": "boolean"
+    },
+    "desktop_session_reason": {
+      "type": "string"
+    },
+    "codex_available": {
+      "type": "boolean"
+    },
+    "codex_version": {
+      "type": "string"
+    },
+    "codex_runtime_host": {
+      "type": "string"
+    },
+    "codex_runtime_host_source": {
+      "type": "string"
+    },
+    "codex_runtime_host_setting": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "codex_runtime_settings_path": {
+      "type": "string"
+    },
+    "path_normalization_status": {
+      "type": "string"
+    },
+    "workspace_trust_status": {
+      "type": "string"
+    },
+    "workspace_trust_reason": {
+      "type": "string"
+    },
+    "workspace_trust_config_path": {
+      "type": "string"
+    },
+    "codex_config_path": {
+      "type": "string"
+    },
+    "codex_config_exists": {
+      "type": "boolean"
+    },
+    "managed_block_present": {
+      "type": "boolean"
+    },
+    "project_doc_managed_block_present": {
+      "type": "boolean"
+    },
+    "profiles_managed_block_present": {
+      "type": "boolean"
+    },
+    "multi_agent_managed_block_present": {
+      "type": "boolean"
+    },
+    "project_doc_block_changed": {
+      "type": "boolean"
+    },
+    "profiles_block_changed": {
+      "type": "boolean"
+    },
+    "multi_agent_block_changed": {
+      "type": "boolean"
+    },
+    "config_file_changed": {
+      "type": "boolean"
+    },
+    "managed_slices": {
+      "type": "object"
+    },
+    "project_profiles_written": {
+      "type": "boolean"
+    },
+    "subagents_written": {
+      "type": "boolean"
+    },
+    "custom_agents_present": {
+      "type": "boolean"
+    },
+    "skills_present": {
+      "type": "boolean"
+    },
+    "active_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "degraded_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "prepare": {
+      "type": "object"
+    },
+    "multi_agent_config_path": {
+      "type": "string"
+    },
+    "multi_agent_config_valid": {
+      "type": "boolean"
+    },
+    "multi_agent_enabled": {
+      "type": "boolean"
+    },
+    "multi_agent_requested": {
+      "type": "boolean"
+    },
+    "multi_agent_supported": {
+      "type": "boolean"
+    },
+    "multi_agent_effective": {
+      "type": "boolean"
+    },
+    "multi_agent_trust_status": {
+      "type": "string"
+    },
+    "multi_agent_trust_assumption": {
+      "type": "string"
+    },
+    "playwright": {
+      "type": "object",
+      "required": [
+        "ready",
+        "reason",
+        "summary_path",
+        "current_host",
+        "effective_host"
+      ],
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "summary_path": {
+          "type": "string"
+        },
+        "detail_log": {
+          "type": "string"
+        },
+        "current_host": {
+          "type": "string"
+        },
+        "current_host_ready": {
+          "type": "boolean"
+        },
+        "current_host_reason": {
+          "type": "string"
+        },
+        "effective_host": {
+          "type": "string"
+        },
+        "effective_ready": {
+          "type": "boolean"
+        },
+        "effective_reason": {
+          "type": "string"
+        },
+        "current_host_summary_path": {
+          "type": "string"
+        },
+        "effective_summary_path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "winapp": {
+      "type": "object",
+      "required": [
+        "ready",
+        "reason",
+        "summary_path",
+        "current_host",
+        "effective_host"
+      ],
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "summary_path": {
+          "type": "string"
+        },
+        "current_host": {
+          "type": "string"
+        },
+        "current_host_ready": {
+          "type": "boolean"
+        },
+        "current_host_reason": {
+          "type": "string"
+        },
+        "current_host_detail": {
+          "type": "string"
+        },
+        "effective_host": {
+          "type": "string"
+        },
+        "effective_ready": {
+          "type": "boolean"
+        },
+        "effective_reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "active",
+          "status_reason",
+          "provider",
+          "kind",
+          "mcp_id",
+          "written_to_codex_config",
+          "fallback_command",
+          "prepare_command",
+          "triggers"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
+          "activation_source": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mcp_id": {
+            "type": "string"
+          },
+          "written_to_codex_config": {
+            "type": "boolean"
+          },
+          "fallback_command": {
+            "type": "string"
+          },
+          "prepare_command": {
+            "type": "string"
+          },
+          "triggers": {
+            "type": "array"
+          },
+          "playwright_ready": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "winapp_ready": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

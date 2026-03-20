@@ -40,3 +40,18 @@ deps_check.txt
 *.zip
 tmp_restore.log
 restore_server_diag.log
+
+# local diagnostic scratch files
+/hostname.txt
+/ip.txt
+/mdns_test.txt
+/proxy_wsl_test.txt
+/result.txt
+/result_raw2.txt
+/test_grep.ps1
+/to_delete.txt
+/wsl_curl_lan.txt
+/wsl_proxy_result.txt
+/testResults.xml
+__pycache__/
+*.pyc

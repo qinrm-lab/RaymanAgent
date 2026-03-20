@@ -54,6 +54,19 @@ Write-Session -State 'parent-exited'
 if ($StopBackgroundWatchersOnExit) {
   $stopScript = Join-Path $WorkspaceRoot '.Rayman\scripts\watch\stop_background_watchers.ps1'
   if (Test-Path -LiteralPath $stopScript -PathType Leaf) {
-    & $stopScript -WorkspaceRoot $WorkspaceRoot -IncludeResidualCleanup -OwnerPid $ParentPid | Out-Host
+    try {
+      & $stopScript -WorkspaceRoot $WorkspaceRoot -OwnerPid $ParentPid -OnOwnerExit | Out-Host
+      if (-not [string]::IsNullOrWhiteSpace($SessionFile) -and (Test-Path -LiteralPath $SessionFile -PathType Leaf)) {
+        try {
+          Remove-Item -LiteralPath $SessionFile -Force -ErrorAction Stop
+        } catch {
+          Write-Session -State 'stop-failed'
+          throw
+        }
+      }
+    } catch {
+      Write-Session -State 'stop-failed'
+      throw
+    }
   }
 }

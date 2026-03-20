@@ -1,7 +1,9 @@
 param(
   [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
   [switch]$IncludeResidualCleanup,
-  [string]$OwnerPid = ''
+  [string]$OwnerPid = '',
+  [switch]$OnOwnerExit,
+  [switch]$NoMain
 )
 
 Set-StrictMode -Version Latest
@@ -19,140 +21,47 @@ if (-not (Test-Path -LiteralPath $ownedProcessPath -PathType Leaf)) {
 }
 . $ownedProcessPath -NoMain
 
+$watchLifecycleLibPath = Join-Path $PSScriptRoot 'watch_lifecycle.lib.ps1'
+if (-not (Test-Path -LiteralPath $watchLifecycleLibPath -PathType Leaf)) {
+  throw "watch_lifecycle.lib.ps1 not found: $watchLifecycleLibPath"
+}
+. $watchLifecycleLibPath
+
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $runtimeDir = Join-Path $WorkspaceRoot '.Rayman\runtime'
+$sessionDir = Join-Path $runtimeDir 'vscode_sessions'
+$script:RaymanStopWorkspaceRoot = $WorkspaceRoot
+$script:RaymanStopRuntimeDir = $runtimeDir
+$script:RaymanStopSessionDir = $sessionDir
 
-function Normalize-PathForMatch([string]$PathValue) {
-  if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
-  try {
-    $full = [System.IO.Path]::GetFullPath($PathValue)
-    return ($full -replace '/', '\').ToLowerInvariant()
-  } catch {
-    return ($PathValue -replace '/', '\').ToLowerInvariant()
-  }
-}
-
-function Stop-ResidualRaymanStartupProcesses {
-  $workspaceNeedle = Normalize-PathForMatch -PathValue $WorkspaceRoot
-  if ([string]::IsNullOrWhiteSpace($workspaceNeedle)) { return }
-
-  $scriptNeedles = @(
-    '.rayman\scripts\watch\start_background_watchers.ps1'
-    '.rayman\scripts\watch\vscode_folder_open_bootstrap.ps1'
-    '.rayman\scripts\utils\ensure_win_deps.ps1'
-    '.rayman\scripts\state\check_pending_task.ps1'
-    '.rayman\scripts\watch\daily_health_check.ps1'
+function Get-RaymanOwnedRecordsForOwner {
+  param(
+    [object]$OwnerContext,
+    [string[]]$Kinds = @()
   )
 
-  $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
-  })
-  if ($processes.Count -eq 0) { return }
+  if ($null -eq $OwnerContext) { return @() }
 
-  $processByPid = @{}
-  foreach ($proc in $processes) {
-    $processByPid[[int]$proc.ProcessId] = $proc
-  }
-
-  $matchedStartupPids = New-Object 'System.Collections.Generic.HashSet[int]'
-  foreach ($proc in $processes) {
-    $name = ([string]$proc.Name).ToLowerInvariant()
-    if ($name -ne 'powershell.exe' -and $name -ne 'pwsh.exe') {
-      continue
-    }
-
-    $cmd = ([string]$proc.CommandLine).ToLowerInvariant().Replace('/', '\')
-    if (-not $cmd.Contains($workspaceNeedle)) {
-      continue
-    }
-    if (-not ($scriptNeedles | Where-Object { $cmd.Contains($_) })) {
-      continue
-    }
-    if ([int]$proc.ProcessId -eq [int]$PID) {
-      continue
-    }
-
-    [void]$matchedStartupPids.Add([int]$proc.ProcessId)
-  }
-
-  foreach ($procId in @($matchedStartupPids)) {
-    try {
-      Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-      Write-Info ("[watch-stop] stopped residual startup process (PID={0})." -f $procId)
-    } catch {
-      Write-Warn ("[watch-stop] failed to stop residual startup process (PID={0}): {1}" -f $procId, $_.Exception.Message)
+  $kindSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($kind in @($Kinds)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$kind)) {
+      [void]$kindSet.Add(([string]$kind).Trim())
     }
   }
 
-  foreach ($proc in $processes) {
-    $name = ([string]$proc.Name).ToLowerInvariant()
-    if ($name -ne 'wsl.exe') {
-      continue
+  return @(
+    Get-RaymanWorkspaceOwnedProcessRecords -WorkspaceRootPath $script:RaymanStopWorkspaceRoot | Where-Object {
+      $ownerKey = if ($_.PSObject.Properties['owner_key']) { [string]$_.owner_key } else { '' }
+      $kindValue = if ($_.PSObject.Properties['kind']) { [string]$_.kind } else { '' }
+      if ($ownerKey -ne [string]$OwnerContext.owner_key) { return $false }
+      if ($kindSet.Count -eq 0) { return $true }
+      return $kindSet.Contains($kindValue)
     }
-
-    $currentPid = [int]$proc.ParentProcessId
-    $hit = $false
-    $hop = 0
-    while ($currentPid -gt 0 -and $hop -lt 16) {
-      if ($matchedStartupPids.Contains($currentPid)) {
-        $hit = $true
-        break
-      }
-      if (-not $processByPid.ContainsKey($currentPid)) {
-        break
-      }
-      $currentPid = [int]$processByPid[$currentPid].ParentProcessId
-      $hop++
-    }
-
-    if (-not $hit) {
-      continue
-    }
-
-    try {
-      Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction SilentlyContinue
-      Write-Info ("[watch-stop] stopped residual WSL helper (PID={0})." -f [int]$proc.ProcessId)
-    } catch {
-      Write-Warn ("[watch-stop] failed to stop residual WSL helper (PID={0}): {1}" -f [int]$proc.ProcessId, $_.Exception.Message)
-    }
-  }
+  )
 }
 
-function Stop-ProcessByPidFile([string]$Name, [string]$PidFile) {
-  if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
-    Write-Info ("[watch-stop] {0} is not running (no pid file)." -f $Name)
-    return
-  }
-
-  $pidVal = Get-RaymanPidFromFile -PidFilePath $PidFile
-  if ($pidVal -gt 0) {
-    try {
-      $proc = Get-Process -Id $pidVal -ErrorAction SilentlyContinue
-      if ($proc) {
-        Stop-Process -Id $pidVal -Force -ErrorAction SilentlyContinue
-        Write-Info ("[watch-stop] stopped {0} (PID={1})." -f $Name, $pidVal)
-      }
-    } catch {
-      Write-Warn ("[watch-stop] stop {0} failed: {1}" -f $Name, $_.Exception.Message)
-    }
-  }
-
-  try { Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue } catch {}
-}
-
-Write-Info '[watch-stop] stopping Rayman background services...'
-
-Stop-ProcessByPidFile -Name 'prompt-watch' -PidFile (Join-Path $runtimeDir 'win_watch.pid')
-Stop-ProcessByPidFile -Name 'attention-watch' -PidFile (Join-Path $runtimeDir 'attention_watch.pid')
-Stop-ProcessByPidFile -Name 'auto-save-watch' -PidFile (Join-Path $runtimeDir 'auto_save_watch.pid')
-Stop-ProcessByPidFile -Name 'mcp-sqlite' -PidFile (Join-Path $runtimeDir 'mcp\sqlite.pid')
-
-$ownedProcessOwner = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $WorkspaceRoot -ExplicitOwnerPid $OwnerPid
-$ownedCleanupResults = @(Stop-RaymanWorkspaceOwnedProcessesForCurrentOwner -WorkspaceRootPath $WorkspaceRoot -OwnerContext $ownedProcessOwner -Kinds @('dotnet') -Reason 'watch-stop')
-if ($ownedCleanupResults.Count -eq 0) {
-  Write-Info ("[watch-stop] no registered workspace-owned dotnet processes for {0}." -f [string]$ownedProcessOwner.owner_display)
-} else {
-  foreach ($cleanup in $ownedCleanupResults) {
+function Write-OwnedCleanupResults([object[]]$CleanupResults) {
+  foreach ($cleanup in @($CleanupResults)) {
     $pidText = if ($cleanup.cleanup_pids -and $cleanup.cleanup_pids.Count -gt 0) { ($cleanup.cleanup_pids -join ',') } else { '(none)' }
     if ([string]$cleanup.cleanup_result -eq 'cleaned') {
       Write-Info ("[watch-stop] cleaned owned {0} process root={1} pids={2} owner={3} reason={4}" -f [string]$cleanup.kind, [int]$cleanup.root_pid, $pidText, [string]$cleanup.owner_display, [string]$cleanup.cleanup_reason)
@@ -163,12 +72,243 @@ if ($ownedCleanupResults.Count -eq 0) {
   }
 }
 
-if ($IncludeResidualCleanup) {
-  Stop-ResidualRaymanStartupProcesses
-  $sessionDir = Join-Path $runtimeDir 'vscode_sessions'
-  if (Test-Path -LiteralPath $sessionDir -PathType Container) {
-    try { Remove-Item -LiteralPath $sessionDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+function Invoke-OwnedProcessCleanup {
+  param(
+    [object[]]$Records,
+    [string]$Reason,
+    [switch]$SkipCurrentProcessRoot
+  )
+
+  $results = New-Object System.Collections.Generic.List[object]
+  foreach ($record in @($Records)) {
+    if ($null -eq $record) { continue }
+
+    $rootPid = 0
+    try { $rootPid = [int]$record.root_pid } catch { $rootPid = 0 }
+    if ($SkipCurrentProcessRoot -and $rootPid -eq [int]$PID) {
+      Remove-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $script:RaymanStopWorkspaceRoot -RootPid $rootPid
+      Write-Info ("[watch-stop] detached current process record (PID={0}, owner={1})." -f $rootPid, [string]$record.owner_display)
+      continue
+    }
+
+    $result = Stop-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $script:RaymanStopWorkspaceRoot -Record $record -Reason $Reason
+    if ($null -ne $result) {
+      $results.Add($result) | Out-Null
+    }
+  }
+
+  return @($results.ToArray())
+}
+
+function Stop-ProcessByPidFile {
+  param(
+    [string]$Name,
+    [string]$PidFile,
+    [string]$Reason
+  )
+
+  if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
+    Write-Info ("[watch-stop] {0} is not running (no pid file)." -f $Name)
+    return
+  }
+
+  $pidVal = Get-RaymanPidFromFile -PidFilePath $PidFile
+  if ($pidVal -le 0) {
+    try { Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue } catch {}
+    Write-Info ("[watch-stop] {0} pid file was stale and has been removed." -f $Name)
+    return
+  }
+
+  $record = [pscustomobject]@{
+    owner_key = 'pid-file'
+    owner_display = 'pid-file'
+    kind = $Name
+    launcher = 'pid-file'
+    root_pid = $pidVal
+    started_at = ''
+    command = $Name
+  }
+
+  $result = Stop-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $script:RaymanStopWorkspaceRoot -Record $record -Reason $Reason
+  if ($null -ne $result) {
+    Write-OwnedCleanupResults -CleanupResults @($result)
+  }
+
+  try { Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue } catch {}
+}
+
+function Stop-ResidualRaymanStartupProcesses {
+  param(
+    [bool]$StopSharedServices,
+    [int]$CurrentOwnerPid = 0
+  )
+
+  $workspaceNeedle = Normalize-RaymanWatchPathForMatch -PathValue $script:RaymanStopWorkspaceRoot
+  if ([string]::IsNullOrWhiteSpace($workspaceNeedle)) { return }
+
+  $scriptNeedles = if ($StopSharedServices) {
+    @(
+      '.rayman\win-exitwatch.ps1'
+      '.rayman\win-watch.ps1'
+      '.rayman\scripts\alerts\attention_watch.ps1'
+      '.rayman\scripts\state\auto_save_watch.ps1'
+      '.rayman\scripts\mcp\manage_mcp.ps1'
+      '.rayman\scripts\watch\start_background_watchers.ps1'
+      '.rayman\scripts\watch\vscode_folder_open_bootstrap.ps1'
+      '.rayman\scripts\utils\ensure_win_deps.ps1'
+      '.rayman\scripts\state\check_pending_task.ps1'
+      '.rayman\scripts\watch\daily_health_check.ps1'
+    )
+  } else {
+    @('.rayman\win-exitwatch.ps1')
+  }
+
+  $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
+  })
+  if ($processes.Count -eq 0) { return }
+
+  $processByPid = @{}
+  $childrenByParent = @{}
+  foreach ($proc in $processes) {
+    $procPid = [int]$proc.ProcessId
+    $parentPid = [int]$proc.ParentProcessId
+    $processByPid[$procPid] = $proc
+    if (-not $childrenByParent.ContainsKey($parentPid)) {
+      $childrenByParent[$parentPid] = New-Object System.Collections.Generic.List[int]
+    }
+    $childrenByParent[$parentPid].Add($procPid) | Out-Null
+  }
+
+  $matchedStartupPids = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($proc in $processes) {
+    $name = ([string]$proc.Name).ToLowerInvariant()
+    if ($name -ne 'powershell.exe' -and $name -ne 'pwsh.exe') {
+      continue
+    }
+
+    $procPid = [int]$proc.ProcessId
+    if ($procPid -eq [int]$PID) {
+      continue
+    }
+
+    $cmd = ([string]$proc.CommandLine).ToLowerInvariant().Replace('/', '\')
+    if (-not $cmd.Contains($workspaceNeedle)) {
+      continue
+    }
+    if (-not ($scriptNeedles | Where-Object { $cmd.Contains($_) })) {
+      continue
+    }
+    if (-not $StopSharedServices -and $CurrentOwnerPid -gt 0) {
+      $ownerToken = ("-parentpid {0}" -f $CurrentOwnerPid)
+      if (-not $cmd.Contains($ownerToken)) {
+        continue
+      }
+    }
+
+    [void]$matchedStartupPids.Add($procPid)
+  }
+
+  $allMatchedPids = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($rootPid in @($matchedStartupPids)) {
+    $queue = New-Object 'System.Collections.Generic.Queue[int]'
+    $queue.Enqueue([int]$rootPid)
+    while ($queue.Count -gt 0) {
+      $currentPid = [int]$queue.Dequeue()
+      if ($currentPid -eq [int]$PID -or $allMatchedPids.Contains($currentPid)) {
+        continue
+      }
+      [void]$allMatchedPids.Add($currentPid)
+      if ($childrenByParent.ContainsKey($currentPid)) {
+        foreach ($childPid in $childrenByParent[$currentPid]) {
+          if (-not $allMatchedPids.Contains([int]$childPid)) {
+            $queue.Enqueue([int]$childPid)
+          }
+        }
+      }
+    }
+  }
+
+  foreach ($procId in @($allMatchedPids | Sort-Object -Descending)) {
+    try {
+      Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+      Write-Info ("[watch-stop] stopped residual startup process (PID={0})." -f $procId)
+    } catch {
+      Write-Warn ("[watch-stop] failed to stop residual startup process (PID={0}): {1}" -f $procId, $_.Exception.Message)
+    }
   }
 }
 
-Write-Info '[watch-stop] all background services stopped.'
+function Invoke-RaymanStopBackgroundWatchers {
+  param(
+    [string]$WorkspaceRootPath,
+    [switch]$DoResidualCleanup,
+    [string]$ExplicitOwnerPid = '',
+    [switch]$OwnerExit
+  )
+
+  Write-Info '[watch-stop] stopping Rayman background services...'
+
+  $currentOwnerPid = Resolve-RaymanWatchPid -Value $ExplicitOwnerPid
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRootPath).Path
+  $script:RaymanStopWorkspaceRoot = $resolvedRoot
+  $script:RaymanStopRuntimeDir = Join-Path $resolvedRoot '.Rayman\runtime'
+  $script:RaymanStopSessionDir = Join-Path $script:RaymanStopRuntimeDir 'vscode_sessions'
+
+  $ownerContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $resolvedRoot -ExplicitOwnerPid $ExplicitOwnerPid
+  $sharedOwnerContext = Get-RaymanWorkspaceSharedProcessOwnerContext -WorkspaceRootPath $resolvedRoot
+
+  $sharedServicesStillNeeded = $false
+  if ($OwnerExit) {
+    $otherActiveSessions = @(Get-RaymanOtherActiveVsCodeSessions -SessionDirectory $script:RaymanStopSessionDir -CurrentOwnerPid $currentOwnerPid)
+    $sharedServicesStillNeeded = ($otherActiveSessions.Count -gt 0)
+    if ($sharedServicesStillNeeded) {
+      $otherOwnerText = @($otherActiveSessions | ForEach-Object { [int]$_.parent_pid } | Sort-Object -Unique) -join ','
+      Write-Info ("[watch-stop] keep shared background services alive; other active session(s)={0}." -f $otherOwnerText)
+    }
+  }
+
+  $ownerCleanupRecords = @(Get-RaymanOwnedRecordsForOwner -OwnerContext $ownerContext -Kinds @('watcher', 'dotnet', 'vscode'))
+  $ownerCleanupResults = @(Invoke-OwnedProcessCleanup -Records $ownerCleanupRecords -Reason (Get-RaymanWatchCleanupReason -OwnerExit:$OwnerExit) -SkipCurrentProcessRoot:$OwnerExit)
+  if ($ownerCleanupResults.Count -eq 0) {
+    Write-Info ("[watch-stop] no owner-scoped watcher/dotnet/vscode processes for {0}." -f [string]$ownerContext.owner_display)
+  } else {
+    Write-OwnedCleanupResults -CleanupResults $ownerCleanupResults
+  }
+
+  if (-not $OwnerExit -or -not $sharedServicesStillNeeded) {
+    $sharedCleanupRecords = @(Get-RaymanOwnedRecordsForOwner -OwnerContext $sharedOwnerContext -Kinds @('watcher', 'mcp'))
+    $sharedCleanupResults = @(Invoke-OwnedProcessCleanup -Records $sharedCleanupRecords -Reason (Get-RaymanWatchCleanupReason -OwnerExit:$OwnerExit -Shared))
+    if ($sharedCleanupResults.Count -gt 0) {
+      Write-OwnedCleanupResults -CleanupResults $sharedCleanupResults
+    }
+
+    $sharedReason = Get-RaymanWatchCleanupReason -OwnerExit:$OwnerExit -Shared
+    Stop-ProcessByPidFile -Name 'prompt-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'win_watch.pid') -Reason $sharedReason
+    Stop-ProcessByPidFile -Name 'attention-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'attention_watch.pid') -Reason $sharedReason
+    Stop-ProcessByPidFile -Name 'auto-save-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'auto_save_watch.pid') -Reason $sharedReason
+    Stop-ProcessByPidFile -Name 'mcp-sqlite' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'mcp\sqlite.pid') -Reason $sharedReason
+  } else {
+    Write-Info '[watch-stop] shared watcher/mcp services remain running for other VS Code sessions.'
+  }
+
+  if ($DoResidualCleanup -or $OwnerExit) {
+    Stop-ResidualRaymanStartupProcesses -StopSharedServices:(-not $OwnerExit -or -not $sharedServicesStillNeeded) -CurrentOwnerPid $currentOwnerPid
+  }
+
+  if ($DoResidualCleanup -and -not $OwnerExit) {
+    if (Test-Path -LiteralPath $script:RaymanStopSessionDir -PathType Container) {
+      try { Remove-Item -LiteralPath $script:RaymanStopSessionDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    }
+  }
+
+  Write-Info '[watch-stop] all background services stopped.'
+}
+
+if (-not $NoMain) {
+  Invoke-RaymanStopBackgroundWatchers `
+    -WorkspaceRootPath $WorkspaceRoot `
+    -DoResidualCleanup:$IncludeResidualCleanup `
+    -ExplicitOwnerPid $OwnerPid `
+    -OwnerExit:$OnOwnerExit
+}

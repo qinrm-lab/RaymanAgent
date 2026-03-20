@@ -1,3 +1,7 @@
+﻿---
+description: "Generate a Rayman release-triage packet with blockers, evidence, and go/no-go framing."
+---
+
 # Release Triage Packet
 
 - Task: {{TASK}}

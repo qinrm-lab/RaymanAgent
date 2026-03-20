@@ -1,0 +1,63 @@
+{
+  "schema": "rayman.project_gate.v1",
+  "generated_at": "2026-03-12T12:00:00+08:00",
+  "workspace_root": "/tmp/rayman-project-sample",
+  "lane": "fast",
+  "config_path": "/tmp/rayman-project-sample/.rayman.project.json",
+  "config_exists": true,
+  "overall": "WARN",
+  "success": true,
+  "counts": {
+    "pass": 3,
+    "warn": 1,
+    "fail": 0,
+    "skip": 0,
+    "total": 4
+  },
+  "checks": [
+    {
+      "key": "requirements_layout",
+      "name": "Requirements layout",
+      "status": "PASS",
+      "detail": "exit=0; duration_seconds=1.024",
+      "action": "修复 requirements / assets 结构",
+      "command": "bash ./.Rayman/scripts/ci/validate_requirements.sh",
+      "log_path": ".Rayman/runtime/project_gates/logs/fast.requirements_layout.log",
+      "exit_code": 0,
+      "duration_seconds": 1.024
+    },
+    {
+      "key": "protected_assets",
+      "name": "Protected assets",
+      "status": "PASS",
+      "detail": "Protected assets / config sanity=PASS",
+      "action": "修复 config_sanity 与额外 manifest 的日志输出",
+      "command": "",
+      "log_path": ".Rayman/runtime/project_gates/logs/fast.protected_assets.log",
+      "exit_code": 0,
+      "duration_seconds": 0
+    },
+    {
+      "key": "build",
+      "name": "Build",
+      "status": "PASS",
+      "detail": "exit=0; duration_seconds=8.812",
+      "action": "配置最小 build",
+      "command": "dotnet build RaymanWeb.slnx -c Release",
+      "log_path": ".Rayman/runtime/project_gates/logs/fast.build.log",
+      "exit_code": 0,
+      "duration_seconds": 8.812
+    },
+    {
+      "key": "project_smoke",
+      "name": "Project smoke",
+      "status": "WARN",
+      "detail": "command not configured",
+      "action": "配置项目轻量回归",
+      "command": "",
+      "log_path": ".Rayman/runtime/project_gates/logs/fast.project_smoke.log",
+      "exit_code": 0,
+      "duration_seconds": 0
+    }
+  ]
+}

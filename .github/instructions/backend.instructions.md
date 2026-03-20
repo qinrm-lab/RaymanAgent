@@ -1,4 +1,4 @@
----
+﻿---
 applyTo: "**/*.ps1"
 description: "Use when editing Rayman PowerShell automation, setup/init scripts, watchers, dispatch, repair, release, or other backend orchestration scripts."
 ---

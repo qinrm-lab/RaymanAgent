@@ -1,3 +1,7 @@
+﻿---
+description: "Generate a Rayman test-closure packet for gaps, evidence, and residual risk."
+---
+
 # Test Gap Closure Packet
 
 - Task: {{TASK}}

@@ -9,6 +9,26 @@ fail(){ echo "❌ [rayman-ci] $*" >&2; exit 1; }
 warn(){ echo "⚠️  [rayman-ci] $*" >&2; }
 info(){ echo "✅ [rayman-ci] $*"; }
 
+DEFAULT_BASE_REF="origin/main"
+
+resolve_base_ref(){
+  local explicit="${RAYMAN_BASE_REF:-}"
+  if [[ -n "${explicit// }" ]]; then
+    printf '%s' "${explicit}"
+    return 0
+  fi
+
+  local candidate
+  for candidate in "${DEFAULT_BASE_REF}" origin/master main master; do
+    if git rev-parse --verify --quiet "${candidate}" >/dev/null 2>&1; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  printf '%s' "${DEFAULT_BASE_REF}"
+}
+
 RUNTIME_DIR=".Rayman/runtime"
 DECISION_LOG="${RUNTIME_DIR}/decision.log"
 DECISION_SUMMARY="${RUNTIME_DIR}/decision.summary.tsv"
@@ -115,7 +135,10 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=Never git fetch --all --prune >/dev/null 2>&1 || true
-BASE="${RAYMAN_BASE_REF:-origin/main}"
+BASE="$(resolve_base_ref)"
+if [[ -z "${RAYMAN_BASE_REF:-}" && "${BASE}" != "${DEFAULT_BASE_REF}" ]] && git rev-parse --verify --quiet "${BASE}" >/dev/null 2>&1; then
+  warn "默认 base ref ${DEFAULT_BASE_REF} 不存在，已自动回退到 ${BASE}"
+fi
 
 if ! git rev-parse --verify --quiet "${BASE}" >/dev/null 2>&1; then
   if [[ "${RAYMAN_ALLOW_MISSING_BASE_REF:-0}" == "1" ]]; then

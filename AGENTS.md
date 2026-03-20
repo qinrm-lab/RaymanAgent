@@ -11,6 +11,15 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 - 你在开始任何产物生成/调试前，**必须先阅读** `./.Rayman/context/skills.auto.md` 并按其建议选择合适的工具（例如 pdfs/docs/spreadsheets/slides 等）。
 - 如需覆盖自动选择：使用环境变量 `RAYMAN_SKILLS_FORCE=pdfs,docs,...`；关闭自动选择：`RAYMAN_SKILLS_OFF=1`。
 
+## Codex subagents（Rayman 默认能力层）
+
+- Rayman 会把 Codex 的 `subagents` 作为默认能力层的一部分管理，`.codex/config.toml` 同时承载 MCP 配置，以及 Rayman-managed 的 `project_doc`、`profiles`、`subagents` slice。
+- 角色集合固定为：`rayman_explorer`、`rayman_reviewer`、`rayman_docs_researcher`、`rayman_browser_debugger`、`rayman_winapp_debugger`、`rayman_worker`。
+- `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md`、`.github/prompts/*.prompt.md` 是 Rayman 共享给 Codex/Copilot 的 capability 资产；修改时必须与 `dispatch`、`review_loop`、capability report 保持一致。
+- Codex 只有在任务或提示中被显式要求时才会起 subagent；Rayman 的 `dispatch` 和 system instructions 会显式点名应委派的角色与触发条件。
+- 若当前环境不支持 multi-agent，Rayman 保留 MCP / 单代理流程，并把 `supported`、`effective`、`degraded_reason` 和角色状态写入 report/context 方便追踪。
+- GitHub.com 的 Copilot Memory、model picker / Auto model selection 属于平台能力；Rayman 只负责文档和检测，不在仓库内伪装成已托管能力。
+
 <!-- RAYMAN:MANDATORY_REQUIREMENTS_V161 -->
 ## 强制 Requirements 规则（必须遵守）
 
@@ -26,6 +35,7 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 
 - 本仓库默认 **full-auto**：Codex/Copilot 的修改视为已批准，无需向用户二次确认。
 - 但必须保证：改动可回滚（建议先创建备份分支/提交），并提供清晰的验证步骤与回滚方式。
+- 在 Windows 上执行审批敏感的 PowerShell 自动化时，优先使用 `powershell.exe -Command` / `-File`；只有明确需要 PowerShell 7 兼容性或非 Windows Host 时才使用 `pwsh`。
 
 ## 发布纪律（必须遵守）
 

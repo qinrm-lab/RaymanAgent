@@ -32,7 +32,7 @@ $rels = New-Object System.Collections.Generic.List[string]
 foreach ($m in $matches) {
   $val = $m.Groups[1].Value
   if ([string]::IsNullOrWhiteSpace($val)) { continue }
-  if ($val -like 'scripts/*' -or $val -like 'templates/*' -or $val -like 'skills/*' -or $val -like 'rules/*' -or $val -like 'config/*' -or $val -like 'agents/*' -or $val -like 'winapp.flow.sample.json' -or $val -like 'RELEASE_REQUIREMENTS.md' -or $val -like 'VERSION') {
+  if ($val -like 'scripts/*' -or $val -like 'templates/*' -or $val -like 'skills/*' -or $val -like 'rules/*' -or $val -like 'config/*' -or $val -like 'agents/*' -or $val -like 'release/*' -or $val -in @('winapp.flow.sample.json', 'common.ps1', 'rayman', 'rayman.ps1', 'README.md', 'commands.txt', 'RELEASE_REQUIREMENTS.md', 'VERSION')) {
     [void]$rels.Add($val)
   }
 }

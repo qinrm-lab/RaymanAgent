@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "rayman.agent_policy.v1",
   "allow_bypass_with_reason": true,
   "audit": {

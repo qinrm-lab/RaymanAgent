@@ -1,0 +1,72 @@
+# schema: rayman.command_catalog.v1
+# columns: name<TAB>platform<TAB>group<TAB>summary<TAB>recommended
+help	all	core	Show CLI help and platform tags.	0
+init	all	core	Run full init (environment setup).	0
+watch	all	core	Start watcher (prompt sync + fast-init).	0
+watch-auto	windows-only	watchers	Start background watchers (prompt-watch + attention-watch).	1
+watch-stop	windows-only	watchers	Stop background watchers and helper processes.	1
+alert-watch	windows-only	watchers	Start the foreground attention watcher.	0
+alert-stop	windows-only	watchers	Stop the background attention watcher.	0
+fast-init	all	core	Generate missing requirements only (no installs).	0
+migrate	all	core	Migrate legacy requirements into the standard layout.	0
+migrate-rag	pwsh-only	core	Migrate legacy RAG data into .rag/<namespace>.	0
+rag-bootstrap	pwsh-only	core	Probe and prepare the RAG Python runtime.	0
+doctor	all	diagnostics	Run read-only health checks.	0
+copy-self-check	all	diagnostics	Run copy-initialization smoke verification.	0
+self-check	pwsh-only	diagnostics	Alias of `copy-self-check`.	0
+copy-check	pwsh-only	diagnostics	Alias of `copy-self-check`.	0
+check	all	diagnostics	Run the baseline check suite.	0
+ensure-test-deps	all	automation	Detect and install project test dependencies.	0
+ensure-playwright	all	automation	Prepare Playwright browser automation dependencies.	0
+ensure-winapp	windows-only	automation	Check Windows desktop UI Automation readiness.	0
+pwa-test	pwsh-only	automation	Run the Playwright PWA flow with local fallback.	0
+winapp-test	windows-only	automation	Run the Windows desktop UI flow.	0
+winapp-inspect	windows-only	automation	Export the Windows control tree for flow authoring.	0
+linux-test	pwsh-only	automation	Run Linux tests in WSL with dependency bootstrap.	0
+dispatch	all	automation	Route a task to codex, copilot, or local backends.	1
+codex	all	automation	Manage Rayman-scoped Codex accounts, switching, and CLI execution.	1
+agent-capabilities	pwsh-only	automation	Sync or inspect Rayman-managed Codex capabilities.	1
+agent-contract	pwsh-only	diagnostics	Check agent assets, instructions, and generated-context contracts.	0
+review-loop	pwsh-only	automation	Run the dispatch plus test-fix review loop.	1
+first-pass-report	pwsh-only	automation	Generate the first-pass KPI report.	0
+prompts	pwsh-only	automation	List, show, or apply reusable prompt templates.	0
+fast-gate	all	project	Run the standard project fast gate.	0
+browser-gate	all	project	Run the standard project browser gate.	0
+full-gate	all	project	Run the standard project full gate.	0
+release-gate	pwsh-only	release	Run release readiness checks and reports.	1
+release	all	release	Run the release profile gate.	0
+version	pwsh-only	release	Show managed version state and consistency.	0
+newversion	pwsh-only	release	Set the managed Rayman version across governed files.	0
+package-dist	pwsh-only	release	Build the distributable .Rayman package.	0
+package	pwsh-only	release	Alias of `package-dist`.	0
+clean	all	diagnostics	Clean runtime, temp, and copy-smoke artifacts.	0
+snapshot	all	diagnostics	Create a rollback snapshot under .Rayman/runtime/snapshots.	0
+metrics	all	diagnostics	Show telemetry metrics and assertions.	0
+trend	all	diagnostics	Generate the daily telemetry trend report.	0
+baseline-guard	all	diagnostics	Compare recent telemetry against the historical baseline.	0
+telemetry-export	all	diagnostics	Export a telemetry artifact bundle.	0
+telemetry-index	all	diagnostics	Rebuild the telemetry artifact index.	0
+telemetry-prune	all	diagnostics	Prune telemetry history and refresh the index.	0
+deploy	pwsh-only	release	Run project deployment automation.	0
+cache-clear	pwsh-only	state	Clear project caches and temporary outputs.	0
+state-save	pwsh-only	state	Save task state and stash changes.	0
+state-resume	pwsh-only	state	Resume task state and restore stashed changes.	0
+test-fix	pwsh-only	automation	Run tests/builds and record repair diagnostics.	0
+req-ts-backfill	pwsh-only	project	Backfill requirements timestamps.	0
+dist-sync	pwsh-only	release	Sync and validate the .Rayman/.dist mirror.	0
+diagnostics-residual	pwsh-only	diagnostics	Check residual source/dist diagnostics drift.	0
+context-update	pwsh-only	diagnostics	Regenerate local context and auto-skill artifacts.	1
+health-check	pwsh-only	diagnostics	Run the daily health check once.	0
+one-click-health	pwsh-only	diagnostics	Force daily health check and refresh proxy health snapshot.	1
+health	pwsh-only	diagnostics	Alias of `one-click-health`.	0
+一键健康检查	pwsh-only	diagnostics	Alias of `one-click-health`.	0
+proxy-health	pwsh-only	diagnostics	Show the resolved proxy snapshot and sources.	0
+proxy-check	pwsh-only	diagnostics	Alias of `proxy-health`.	0
+ensure-wsl-deps	pwsh-only	core	Install or verify WSL-side dependencies.	0
+ensure-win-deps	windows-only	core	Check Windows-side dependencies.	0
+single-repo-upgrade	pwsh-only	release	Run the single-repo deep upgrade flow.	0
+single-repo-kpi	pwsh-only	diagnostics	Generate the single-repo KPI dashboard.	0
+menu	pwsh-only	core	Show the interactive command picker.	0
+interactive	pwsh-only	core	Alias of menu.	0
+transfer-export	all	state	[Agent/Handover] 导出当前工作区及系统状态信息。	0
+transfer-import	all	state	[Agent/Handover] 导入并恢复外部环境及工作区状态信息。	0

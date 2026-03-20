@@ -11,8 +11,6 @@ need=(
   ".Rayman/run/check.sh"
   ".Rayman/scripts/release/validate_release_requirements.sh"
   ".Rayman/scripts/ci/validate_requirements.sh"
-  ".Rayman/scripts/test_in_sandbox_win.ps1"
-  ".Rayman/scripts/test_in_sandbox_wsl.sh"
   ".Rayman/scripts/dynproxy/README.md"
   ".Rayman/scripts/pwa/ensure_playwright_wsl.sh"
   ".Rayman/scripts/pwa/ensure_playwright_ready.ps1"

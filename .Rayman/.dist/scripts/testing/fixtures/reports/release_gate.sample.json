@@ -1,0 +1,38 @@
+{
+  "schema": "rayman.release_gate.v1",
+  "generated_at": "2026-03-12T12:00:00+08:00",
+  "workspace_root": "/workspace/RaymanAgent",
+  "mode": "project",
+  "report_path": "/workspace/RaymanAgent/.Rayman/state/release_gate_report.md",
+  "overall": "PASS",
+  "counts": {
+    "pass": 3,
+    "warn": 0,
+    "fail": 0
+  },
+  "options": {
+    "allow_no_git": false,
+    "skip_auto_dist_sync": true,
+    "include_residual_diagnostics": false
+  },
+  "checks": [
+    {
+      "name": "版本一致性",
+      "status": "PASS",
+      "detail": "版本与标记均已统一到 V160/v160（mode=project）",
+      "action": ""
+    },
+    {
+      "name": "Dist镜像同步",
+      "status": "PASS",
+      "detail": "已自动同步并校验 .Rayman/.dist",
+      "action": ""
+    },
+    {
+      "name": "Windows桌面自动化能力",
+      "status": "PASS",
+      "detail": "Windows UI Automation readiness passed",
+      "action": ""
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+﻿---
+description: "Generate a Rayman bugfix packet with root cause, validation, and rollback expectations."
+---
+
 # Bugfix Task Packet
 
 - Task: {{TASK}}

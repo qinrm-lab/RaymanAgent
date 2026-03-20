@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/winapp_flow.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "target",
+    "steps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.winapp.flow.v1"
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "launch_command": {
+          "type": "string"
+        },
+        "process_name": {
+          "type": "string"
+        },
+        "window_title_regex": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "default_timeout_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

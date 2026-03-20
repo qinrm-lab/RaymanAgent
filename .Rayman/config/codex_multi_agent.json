@@ -1,0 +1,127 @@
+{
+  "schema": "rayman.codex_multi_agent.v1",
+  "enabled": true,
+  "env_toggle": "RAYMAN_CODEX_MULTI_AGENT_ENABLED",
+  "detection": {
+    "feature_name": "multi_agent",
+    "preferred_command": "codex features list",
+    "minimum_version_fallback": "0.5.80"
+  },
+  "defaults": {
+    "features.multi_agent": true,
+    "agents.max_threads": 4,
+    "agents.max_depth": 2,
+    "agents.job_max_runtime_seconds": 1800
+  },
+  "roles": {
+    "rayman_explorer": {
+      "description": "Read-only scout for ambiguous or multi-file tasks. Map the code surface, identify entry points, and gather evidence before edits.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_explorer.toml",
+      "nickname_candidates": [
+        "Scout",
+        "Mapper",
+        "Tracer"
+      ],
+      "mode": "read-only",
+      "responsibility": "Codebase scan, entry-point discovery, and evidence collection before edits."
+    },
+    "rayman_reviewer": {
+      "description": "Read-only reviewer for correctness, regression risk, and test gaps on risky or cross-module work.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_reviewer.toml",
+      "nickname_candidates": [
+        "Audit",
+        "Gate",
+        "Check"
+      ],
+      "mode": "read-only",
+      "responsibility": "Correctness review, regression spotting, and test-risk assessment."
+    },
+    "rayman_docs_researcher": {
+      "description": "Read-only OpenAI documentation specialist. Verify Codex, API, SDK, and model facts with OpenAI Docs MCP first.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_docs_researcher.toml",
+      "nickname_candidates": [
+        "Docs",
+        "Spec",
+        "Source"
+      ],
+      "mode": "read-only",
+      "responsibility": "Official-document verification for OpenAI, Codex, API, SDK, and model questions."
+    },
+    "rayman_browser_debugger": {
+      "description": "Workspace-write browser debugger. Use Playwright MCP first for browser, UI, recording, and E2E investigation.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_browser_debugger.toml",
+      "nickname_candidates": [
+        "Browser",
+        "E2E",
+        "Trace"
+      ],
+      "mode": "workspace-write",
+      "responsibility": "Browser/UI/E2E debugging with Playwright-first evidence and bounded fixes."
+    },
+    "rayman_winapp_debugger": {
+      "description": "Workspace-write Windows UI debugger. Use Rayman WinApp MCP first for WinForms, MAUI(Windows), and UIA work.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_winapp_debugger.toml",
+      "nickname_candidates": [
+        "WinUI",
+        "UIA",
+        "Desktop"
+      ],
+      "mode": "workspace-write",
+      "responsibility": "Windows desktop UI debugging with Rayman WinApp-first evidence and bounded fixes."
+    },
+    "rayman_worker": {
+      "description": "Bounded sidecar worker for well-scoped patches, tests, or follow-up fixes with explicit ownership.",
+      "config_file": "../.Rayman/config/codex_agents/rayman_worker.toml",
+      "nickname_candidates": [
+        "Patch",
+        "Fixer",
+        "Worker"
+      ],
+      "mode": "inherit",
+      "responsibility": "Parallel implementation, testing, or follow-up fixes with explicit file ownership."
+    }
+  },
+  "delegation_rules": [
+    {
+      "id": "simple_single_file",
+      "mode": "optional",
+      "summary": "Simple single-file tasks do not require a subagent."
+    },
+    {
+      "id": "explore_before_edit",
+      "mode": "required",
+      "role": "rayman_explorer",
+      "summary": "Multi-file, ambiguous, or explore-before-edit tasks must explicitly spawn rayman_explorer first."
+    },
+    {
+      "id": "risk_review",
+      "mode": "required",
+      "role": "rayman_reviewer",
+      "summary": "Cross-module, risky, or pre-merge verification tasks must explicitly spawn rayman_reviewer."
+    },
+    {
+      "id": "openai_docs",
+      "mode": "required",
+      "role": "rayman_docs_researcher",
+      "summary": "OpenAI, API, SDK, model, or official-doc work must explicitly spawn rayman_docs_researcher."
+    },
+    {
+      "id": "browser_ui",
+      "mode": "required",
+      "role": "rayman_browser_debugger",
+      "summary": "Browser, UI, recording, or E2E work must explicitly spawn rayman_browser_debugger."
+    },
+    {
+      "id": "windows_uia",
+      "mode": "required",
+      "role": "rayman_winapp_debugger",
+      "summary": "WinForms, MAUI(Windows), desktop, dialog, or UIA work must explicitly spawn rayman_winapp_debugger."
+    },
+    {
+      "id": "sidecar_worker",
+      "mode": "recommended",
+      "role": "rayman_worker",
+      "summary": "Bounded implementation, test, or fix sidecars should use rayman_worker with explicit ownership."
+    }
+  ]
+}

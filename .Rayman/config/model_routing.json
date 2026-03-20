@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "rayman.model_routing.v1",
   "defaults": {
     "route": "ui_selected",
@@ -44,15 +44,15 @@
     "review": {
       "mode": "prompt_rotation",
       "prompt_keys": [
-        "review.initial",
-        "review.counter",
-        "review.final"
+        "review.initial.prompt.md",
+        "review.counter.prompt.md",
+        "review.final.prompt.md"
       ]
     }
   },
   "prompt_routes": {
-    "review.initial": "gemini_latest_pro",
-    "review.counter": "claude_latest_opus",
-    "review.final": "gpt_latest"
+    "review.initial.prompt.md": "gemini_latest_pro",
+    "review.counter.prompt.md": "claude_latest_opus",
+    "review.final.prompt.md": "gpt_latest"
   }
 }

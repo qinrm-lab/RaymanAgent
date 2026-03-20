@@ -551,14 +551,8 @@ function Invoke-DotNetViaNativeWindowsHost {
 function Invoke-RaymanCommand {
     param(
         [string]$Command,
-        [bool]$UseSandboxEffective,
-        [string]$SandboxScript,
         [string]$Kind = ''
     )
-
-    if ($UseSandboxEffective -and (Test-Path -LiteralPath $SandboxScript -PathType Leaf)) {
-        return & $SandboxScript -Command $Command 2>&1
-    }
 
     if ($Kind -ne 'dotnet') {
         return Invoke-Expression $Command 2>&1
@@ -756,14 +750,6 @@ if (Get-Command Get-RaymanRequiredAssetAnalysis -ErrorAction SilentlyContinue) {
     }
 }
 
-# 检查是否启用了 Docker 沙箱模式（默认关闭，仅在显式开启时启用）
-$UseSandbox = Get-EnvBoolCompat -Name 'RAYMAN_USE_SANDBOX' -Default $false
-$SandboxScript = Join-Path $WorkspaceRoot ".Rayman\scripts\sandbox\run_in_sandbox.ps1"
-
-# 沙箱只有在 docker 可用时才算有效，否则会造成“本该跑测试却直接失败”的误报
-$dockerOk = $null -ne (Get-Command docker -ErrorAction SilentlyContinue)
-$UseSandboxEffective = ($UseSandbox -and $dockerOk -and (Test-Path -LiteralPath $SandboxScript -PathType Leaf))
-
 Set-Location $WorkspaceRoot
 
 $MaxAttempts = Get-EnvInt -Name 'RAYMAN_SELF_HEAL_MAX_ATTEMPTS' -Default 2
@@ -870,14 +856,14 @@ function Invoke-CommonFixes {
             foreach ($workloadCommand in @(Get-RaymanMauiWorkloadRestoreCommands -PrimaryContext $PrimaryContext)) {
                 Write-Host ("🛠️  [Self-Heal] 尝试 {0} ..." -f $workloadCommand) -ForegroundColor Yellow
                 $FixLog.Add($workloadCommand)
-                $null = Invoke-RaymanCommand -Command $workloadCommand -UseSandboxEffective $false -SandboxScript $SandboxScript -Kind 'dotnet'
+                $null = Invoke-RaymanCommand -Command $workloadCommand -Kind 'dotnet'
                 $did = $true
             }
         }
         if ($text -match 'assets file.*not found|Run a NuGet package restore|NU1\d\d\d|NU2\d\d\d|NU3\d\d\d') {
             Write-Host "🛠️  [Self-Heal] 尝试 dotnet restore ..." -ForegroundColor Yellow
             $FixLog.Add('dotnet restore')
-            $null = Invoke-RaymanCommand -Command 'dotnet restore' -UseSandboxEffective $false -SandboxScript $SandboxScript -Kind 'dotnet'
+            $null = Invoke-RaymanCommand -Command 'dotnet restore' -Kind 'dotnet'
             $did = $true
         }
     } elseif ($Kind -eq 'node') {
@@ -887,7 +873,7 @@ function Invoke-CommonFixes {
             if ($lock) { $cmd = 'npm ci' }
             Write-Host "🛠️  [Self-Heal] 尝试 $cmd ..." -ForegroundColor Yellow
             $FixLog.Add($cmd)
-            $null = Invoke-RaymanCommand -Command $cmd -UseSandboxEffective $false -SandboxScript $SandboxScript -Kind 'node'
+            $null = Invoke-RaymanCommand -Command $cmd -Kind 'node'
             $did = $true
         }
     } elseif ($Kind -eq 'python') {
@@ -1113,7 +1099,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     Write-Host ("▶️ 检测到 {0} 项目，执行: {1} (attempt {2}/{3})" -f $primary.Kind, $primary.Command, $attempt, $MaxAttempts) -ForegroundColor Cyan
     $CommandLog.Add($primary.Command)
 
-    $output = Invoke-RaymanCommand -Command $primary.Command -UseSandboxEffective $UseSandboxEffective -SandboxScript $SandboxScript -Kind $primary.Kind
+    $output = Invoke-RaymanCommand -Command $primary.Command -Kind $primary.Kind
     $exit = $LASTEXITCODE
     $outLines = @($output)
 
@@ -1219,7 +1205,7 @@ if ($ErrorFound) {
             "**时间**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
             '',
             "**工作区**: $WorkspaceRoot",
-            "**沙箱**: $UseSandboxEffective",
+            "**执行路径**: 宿主机 / Windows bridge（Rayman 通用测试 sandbox wrapper 已移除）",
             '',
             '## 🕵️ 深度诊断建议 (RCA)',
             '如需深度诊断推演，可查阅刚刚生成的快照：`.Rayman/state/error_snapshot.md`',

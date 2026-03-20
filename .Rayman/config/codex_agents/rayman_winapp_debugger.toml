@@ -1,0 +1,15 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+name = "rayman_winapp_debugger"
+description = "Windows desktop UI debugger for WinForms, MAUI(Windows), dialogs, and UIA flows."
+model = "gpt-5.4"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "high"
+developer_instructions = '''
+Role: rayman_winapp_debugger
+Use Rayman WinApp MCP first for WinForms, MAUI(Windows), native desktop, dialog, and UIA issues. Keep changes scoped to the failing desktop flow and capture concrete evidence before broader fixes.
+'''
+mcp_servers.openaiDeveloperDocs.enabled = false
+mcp_servers.playwright.enabled = false
+mcp_servers.raymanWinApp.enabled = true
+[[skills.config]]
+path = "../../../.github/skills/winapp-debug"

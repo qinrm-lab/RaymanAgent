@@ -1,0 +1,64 @@
+{
+  "schema": "rayman.agent_capabilities.v1",
+  "capabilities": {
+    "openai_docs": {
+      "enabled": true,
+      "provider": "codex",
+      "kind": "codex_mcp_http",
+      "mcp_id": "openaiDeveloperDocs",
+      "url": "https://developers.openai.com/mcp",
+      "required": false,
+      "triggers": [
+        "openai",
+        "responses api",
+        "model",
+        "docs",
+        "mcp",
+        "sdk"
+      ]
+    },
+    "web_auto_test": {
+      "enabled": true,
+      "provider": "codex",
+      "kind": "codex_mcp_stdio_plus_rayman_fallback",
+      "mcp_id": "playwright",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp"
+      ],
+      "required": false,
+      "prepare_command": "rayman ensure-playwright",
+      "fallback_command": "rayman pwa-test",
+      "triggers": [
+        "browser",
+        "web",
+        "网页",
+        "playwright",
+        "e2e",
+        "page",
+        "ui"
+      ]
+    },
+    "winapp_auto_test": {
+      "enabled": true,
+      "provider": "codex",
+      "kind": "codex_mcp_stdio_plus_rayman_fallback",
+      "mcp_id": "raymanWinApp",
+      "required": false,
+      "prepare_command": "rayman ensure-winapp",
+      "fallback_command": "rayman winapp-test",
+      "triggers": [
+        "winforms",
+        "winform",
+        "maui",
+        "desktop",
+        "windows app",
+        "native ui",
+        "dialog",
+        "window",
+        "uia"
+      ]
+    }
+  }
+}

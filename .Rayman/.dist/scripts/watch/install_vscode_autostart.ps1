@@ -257,11 +257,12 @@ if ($tasksDoc.ParseFailed) {
   $taskLabel = 'Rayman: Folder Open Bootstrap'
   $capabilityTaskLabel = 'Rayman: Ensure Agent Capabilities'
   $winAppTaskLabel = 'Rayman: Ensure WinApp Automation'
+  $stopTaskLabel = 'Rayman: Stop Watchers'
   $readyTaskLabel = 'Rayman: Common - Ready for Agent Work'
   $desiredTask = [ordered]@{
     label = $taskLabel
     type = 'process'
-    command = 'powershell'
+    command = 'powershell.exe'
     detail = '文件夹打开时统一执行 Rayman 后台启动与轻量检查。'
     linux = [ordered]@{
       command = 'pwsh'
@@ -290,7 +291,7 @@ if ($tasksDoc.ParseFailed) {
   $desiredCapabilityTask = [ordered]@{
     label = $capabilityTaskLabel
     type = 'shell'
-    command = 'powershell'
+    command = 'powershell.exe'
     detail = '同步 Codex Agent capabilities 到 .codex/config.toml，并补齐 OpenAI Docs / Playwright / WinApp MCP。'
     linux = [ordered]@{
       command = 'pwsh'
@@ -316,7 +317,7 @@ if ($tasksDoc.ParseFailed) {
   $desiredWinAppTask = [ordered]@{
     label = $winAppTaskLabel
     type = 'shell'
-    command = 'powershell'
+    command = 'powershell.exe'
     detail = '确保 Windows 桌面 UI Automation 能力可用于 WinForms / MAUI(Windows) 自动化。'
     linux = [ordered]@{
       command = 'pwsh'
@@ -337,12 +338,38 @@ if ($tasksDoc.ParseFailed) {
     }
     problemMatcher = @()
   }
+  $desiredStopTask = [ordered]@{
+    label = $stopTaskLabel
+    type = 'shell'
+    command = 'powershell.exe'
+    detail = '停止 Rayman watcher、auto-save 与 MCP 后台服务。'
+    linux = [ordered]@{
+      command = 'pwsh'
+    }
+    args = @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      '${workspaceFolder}\\.Rayman\\scripts\\watch\\stop_background_watchers.ps1',
+      '-IncludeResidualCleanup',
+      '-OwnerPid',
+      '${env:VSCODE_PID}'
+    )
+    presentation = [ordered]@{
+      reveal = 'always'
+      panel = 'shared'
+      clear = $false
+    }
+    problemMatcher = @()
+  }
 
   $taskList = @($currentTasks)
   $newList = New-Object 'System.Collections.Generic.List[object]'
   $replaced = $false
   $capabilityTaskReplaced = $false
   $winAppTaskReplaced = $false
+  $stopTaskReplaced = $false
   $manualOnlyLabels = @(
     'Rayman: Auto Start Watchers'
     'Rayman: Check Pending Task'
@@ -380,6 +407,9 @@ if ($tasksDoc.ParseFailed) {
     } elseif (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $winAppTaskLabel) {
       $newList.Add($desiredWinAppTask) | Out-Null
       $winAppTaskReplaced = $true
+    } elseif (-not [string]::IsNullOrWhiteSpace($label) -and $label -eq $stopTaskLabel) {
+      $newList.Add($desiredStopTask) | Out-Null
+      $stopTaskReplaced = $true
     } else {
       $newList.Add($t) | Out-Null
     }
@@ -392,6 +422,9 @@ if ($tasksDoc.ParseFailed) {
   }
   if (-not $winAppTaskReplaced) {
     $newList.Add($desiredWinAppTask) | Out-Null
+  }
+  if (-not $stopTaskReplaced) {
+    $newList.Add($desiredStopTask) | Out-Null
   }
   Set-JsonProperty -Obj $tasksObj -Name 'tasks' -Value ($newList.ToArray())
 

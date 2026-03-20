@@ -694,6 +694,8 @@ $requiredFiles = @(
   '.Rayman/scripts/rag/manage_rag.ps1',
   '.Rayman/scripts/rag/build_index.py',
   '.Rayman/scripts/mcp/manage_mcp.ps1',
+  '.Rayman/win-watch.ps1',
+  '.Rayman/scripts/watch/embedded_watchers.lib.ps1',
   '.Rayman/scripts/watch/start_background_watchers.ps1',
   '.Rayman/scripts/watch/vscode_folder_open_bootstrap.ps1',
   '.Rayman/scripts/watch/daily_health_check.ps1',

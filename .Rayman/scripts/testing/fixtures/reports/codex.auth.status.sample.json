@@ -1,0 +1,25 @@
+{
+  "schema": "rayman.codex.auth.status.v1",
+  "generated_at": "2026-03-19T12:00:00+08:00",
+  "workspace_root": "E:\\rayman\\software\\DemoRepo",
+  "vscode_user_profile": "秦瑞明",
+  "vscode_user_profile_location": "-331173c2",
+  "vscode_user_profile_source": "workspace_association",
+  "vscode_user_profile_status": "workspace_profile_detected",
+  "vscode_user_profile_detected": true,
+  "vscode_user_profile_is_default": false,
+  "account_alias": "primary",
+  "profile": "review",
+  "profile_source": "workspace_binding",
+  "codex_home": "C:\\Users\\demo\\.rayman\\codex\\accounts\\primary",
+  "managed": true,
+  "account_known": true,
+  "authenticated": true,
+  "status": "authenticated",
+  "exit_code": 0,
+  "command": "codex login status",
+  "output": [
+    "Logged in"
+  ],
+  "repair_command": "rayman codex login --alias primary"
+}

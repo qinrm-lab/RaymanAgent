@@ -1,0 +1,15 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+name = "rayman_docs_researcher"
+description = "OpenAI documentation specialist for Codex, API, SDK, and model verification."
+model = "gpt-5.4-mini"
+sandbox_mode = "read-only"
+model_reasoning_effort = "medium"
+developer_instructions = '''
+Role: rayman_docs_researcher
+Stay read-only. Use OpenAI Docs MCP as the source of truth for Codex, API, SDK, model, and official-document questions. Prefer official documentation over memory and state when an answer is an inference.
+'''
+mcp_servers.openaiDeveloperDocs.enabled = true
+mcp_servers.playwright.enabled = false
+mcp_servers.raymanWinApp.enabled = false
+[[skills.config]]
+path = "../../../.github/skills/openai-docs-research"

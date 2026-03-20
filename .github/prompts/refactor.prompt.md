@@ -1,3 +1,7 @@
+﻿---
+description: "Generate a Rayman refactor packet focused on bounded change and regression control."
+---
+
 # Refactor Task Packet
 
 - Task: {{TASK}}

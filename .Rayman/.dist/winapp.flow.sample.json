@@ -1,0 +1,19 @@
+{
+  "schema": "rayman.winapp.flow.v1",
+  "target": {
+    "launch_command": "notepad.exe",
+    "process_name": "notepad",
+    "window_title_regex": ".*Notepad.*"
+  },
+  "default_timeout_ms": 15000,
+  "steps": [
+    {
+      "action": "wait_window",
+      "window_title_regex": ".*Notepad.*"
+    },
+    {
+      "action": "screenshot",
+      "file_name": "sample-notepad.png"
+    }
+  ]
+}

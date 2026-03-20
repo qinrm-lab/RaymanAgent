@@ -8,6 +8,8 @@
 >
 > 说明：本文件只约束 Rayman 自身（初始化/脚本/监控/沙盒/配置/生成规范），
 > **不约束你的业务项目本身的测试是否通过**。
+>
+> 显式迁移说明：Rayman 通用测试 sandbox wrapper 已废弃，Agent / Codex 执行隔离改由 Codex 内置 sandbox 负责；Windows Sandbox 相关要求仅保留给 PWA / Playwright UI 调试基座。
 
 ## 1. 问题闭环与停止条件
 
@@ -38,7 +40,8 @@
 
 - **WorkspaceRoot**：你的项目根目录（包含 `.Rayman/` 的那一层）。
 - **RaymanDir**：`WorkspaceRoot/.Rayman`。
-- **Sandbox**：Rayman 运行测试用的隔离工作区目录（默认：`RaymanDir/run/sandbox/workspace`）。
+- **Codex Built-in Sandbox**：Codex runtime 提供的代码执行隔离；Rayman 不再维护 `RaymanDir/run/sandbox/workspace` 包装层。
+- **Windows Sandbox**：Rayman PWA / Playwright UI 调试基座使用的 Windows 宿主隔离环境。
 - **ProjectName**：Rayman 识别的项目名（通常为 WorkspaceRoot 目录名）。
 - **ProjectRequirements**：`.${ProjectName}.requirements.md`，项目级需求与验收文件。
 - **Win Proxy Mode = system**：Windows 端不管理/不监控系统代理。
@@ -58,8 +61,8 @@
 - `.Rayman/win-watch.ps1`
 - `.Rayman/win-exitwatch.ps1`
 - `.Rayman/rayman-win.cmd`
-- `.Rayman/scripts/test_in_sandbox_win.ps1`
-- `.Rayman/scripts/test_in_sandbox_wsl.sh`
+- `.Rayman/release/FEATURE_INVENTORY.md`
+- `.Rayman/release/ENHANCEMENT_ROADMAP_2026.md`
 - `.Rayman/scripts/dynproxy/*`
 - `.Rayman/context/*`
 - `.Rayman/RELEASE_REQUIREMENTS.md`
@@ -158,7 +161,7 @@
 - 对应的验收标准（Acceptance Criteria）
 - 明确区分：
   - 项目功能验收
-  - Rayman 工具行为假设（如 sandbox、测试方式）
+  - Rayman 工具行为假设（如 Codex Built-in Sandbox、Playwright 测试方式）
 
 ---
 
@@ -172,31 +175,20 @@
 
 ---
 
-## 3. Sandbox 测试机制
+## 3. Agent 执行隔离与 UI Sandbox
 
-### 3.1 Sandbox 执行约束
+### 3.1 Codex Built-in Sandbox
 
-- 所有测试必须在：
-
-  ```text
-  RaymanDir/run/sandbox/workspace
-  ```
-
-  内执行
-- 测试日志必须输出到：
-
-  ```text
-  RaymanDir/run/sandbox/test.log
-  ```
+- Rayman 不再提供通用测试 wrapper（如 `test_in_sandbox_*`）或 `RaymanDir/run/sandbox/workspace` 执行目录。
+- Agent / Codex 的代码执行隔离依赖 Codex 内置 sandbox。
+- `test-fix`、`review-loop`、`dispatch` 触发的本地命令允许直接走当前宿主 / Windows bridge 路径。
 
 ---
 
-### 3.2 VSCode / Copilot / Codex
+### 3.2 Windows Sandbox（PWA / UI）
 
-- Windows 下：
-  - VSCode 触发的测试（含 Copilot / Codex）
-    **必须运行在 sandbox 内**
-- 不允许直接在原 workspace 执行测试命令
+- Windows Sandbox 仅用于第 7 节的 Playwright / PWA UI 调试基座。
+- 该链路的 bootstrap / ready / copy smoke 要求保持有效，不等同于已移除的通用测试 wrapper。
 
 ---
 
@@ -204,9 +196,8 @@
 
 ### 4.1 VSCode Tasks
 
-- 必须提供任务：
-  - `Rayman: Test (Sandbox)`
-- 任务必须可直接运行，无需用户编辑配置
+- 不再要求提供 `Rayman: Test (Sandbox)`。
+- VSCode 仍需能直接识别 Rayman 相关任务入口，无需用户手工补配。
 
 ---
 
@@ -329,8 +320,6 @@
 - MUST_EXIST: .Rayman/run/check.sh
 - MUST_EXIST: .Rayman/scripts/release/validate_release_requirements.sh
 - MUST_EXIST: .Rayman/scripts/ci/validate_requirements.sh
-- MUST_EXIST: .Rayman/scripts/test_in_sandbox_win.ps1
-- MUST_EXIST: .Rayman/scripts/test_in_sandbox_wsl.sh
 - MUST_EXIST: .Rayman/scripts/dynproxy/README.md
 - MUST_EXIST: .Rayman/scripts/pwa/ensure_playwright_wsl.sh
 - MUST_EXIST: .Rayman/scripts/pwa/ensure_playwright_ready.ps1

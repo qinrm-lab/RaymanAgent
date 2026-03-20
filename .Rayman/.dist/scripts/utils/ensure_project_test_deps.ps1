@@ -12,6 +12,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+    . $commonPath
+}
+
+$workspacePlatformProfilePath = Join-Path $PSScriptRoot 'workspace_platform_profile.ps1'
+if (Test-Path -LiteralPath $workspacePlatformProfilePath -PathType Leaf) {
+    . $workspacePlatformProfilePath -NoMain
+}
+
 function Info([string]$m){ Write-Host ("ℹ️  [test-deps] {0}" -f $m) -ForegroundColor Cyan }
 function Warn([string]$m){ Write-Host ("⚠️  [test-deps] {0}" -f $m) -ForegroundColor Yellow }
 function Fail([string]$m){ Write-Host ("❌ [test-deps] {0}" -f $m) -ForegroundColor Red }
@@ -175,6 +185,10 @@ function Ensure-WindowsAppsInPathBestEffort {
 function Get-RaymanDotNetTargetFrameworksFromText {
     param([string]$ProjectText)
 
+    if (Get-Command Get-RaymanWorkspacePlatformTargetFrameworksFromText -ErrorAction SilentlyContinue) {
+        return @(Get-RaymanWorkspacePlatformTargetFrameworksFromText -ProjectText $ProjectText)
+    }
+
     $frameworks = New-Object 'System.Collections.Generic.List[string]'
     if ([string]::IsNullOrWhiteSpace($ProjectText)) {
         return @()
@@ -310,6 +324,14 @@ function Get-RaymanWorkspaceDependencyProfile {
 
     $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
     $onlyKindsConfig = Resolve-OnlyKinds -OnlyKindsText $OnlyKindsText
+    $platformProfile = $null
+    if (Get-Command Get-RaymanWorkspacePlatformProfile -ErrorAction SilentlyContinue) {
+        try {
+            $platformProfile = Get-RaymanWorkspacePlatformProfile -WorkspaceRoot $resolvedRoot
+        } catch {
+            $platformProfile = $null
+        }
+    }
 
     $excludeSegs = @('\.git\', '\.Rayman\', '\.venv\', '\node_modules\', '\bin\', '\obj\')
     function Is-ExcludedPath([string]$FullPath) {
@@ -323,22 +345,58 @@ function Get-RaymanWorkspaceDependencyProfile {
     $projectFiles = Get-ChildItem -LiteralPath $resolvedRoot -Recurse -File -Include *.sln,*.slnx,*.csproj,*.fsproj,*.vbproj,package.json,pyproject.toml,requirements.txt -ErrorAction SilentlyContinue |
         Where-Object { -not (Is-ExcludedPath -FullPath $_.FullName) }
 
-    $needsDotNet = $false
+    $needsDotNet = if ($null -ne $platformProfile) { [bool]$platformProfile.needs_dotnet } else { $false }
     $needsNode = $false
     $needsPython = $false
-    $needWindowsDesktop = $false
+    $needWindowsDesktop = if ($null -ne $platformProfile) { [bool]$platformProfile.has_windows_desktop_ui } else { $false }
+    $requiresWindowsHost = if ($null -ne $platformProfile) { [bool]$platformProfile.requires_windows_host } else { $false }
+    $autoEnableWindows = if ($null -ne $platformProfile) { [bool]$platformProfile.auto_enable_windows } else { $false }
+    $windowsOnlyDesktopProject = if ($null -ne $platformProfile) { [bool]$platformProfile.is_windows_only_desktop_project } else { $false }
     $allFrameworks = New-Object 'System.Collections.Generic.List[string]'
     $mauiProjects = New-Object 'System.Collections.Generic.List[object]'
     $dotNetProjectPaths = New-Object 'System.Collections.Generic.List[string]'
 
+    if ($null -ne $platformProfile) {
+        foreach ($framework in @($platformProfile.target_frameworks)) {
+            if ([string]::IsNullOrWhiteSpace([string]$framework)) { continue }
+            if (-not $allFrameworks.Contains([string]$framework)) {
+                $allFrameworks.Add([string]$framework) | Out-Null
+            }
+        }
+        foreach ($projectPath in @($platformProfile.dotnet_project_paths)) {
+            if ([string]::IsNullOrWhiteSpace([string]$projectPath)) { continue }
+            if (-not $dotNetProjectPaths.Contains([string]$projectPath)) {
+                $dotNetProjectPaths.Add([string]$projectPath) | Out-Null
+            }
+        }
+        foreach ($project in @($platformProfile.maui_projects)) {
+            if ($null -eq $project) { continue }
+            $projectPath = ''
+            if ($project.PSObject.Properties['path']) {
+                $projectPath = [string]$project.path
+            }
+            if ([string]::IsNullOrWhiteSpace($projectPath)) { continue }
+            $frameworks = @()
+            if ($project.PSObject.Properties['target_frameworks']) {
+                $frameworks = @($project.target_frameworks)
+            }
+            $mauiProjects.Add([pscustomobject]@{
+                Path = $projectPath
+                TargetFrameworks = @($frameworks)
+            }) | Out-Null
+        }
+    }
+
     foreach ($f in $projectFiles) {
         switch -Regex ($f.Name) {
             '\.(sln|slnx|csproj|fsproj|vbproj)$' {
-                $needsDotNet = $true
-                if (-not $dotNetProjectPaths.Contains($f.FullName)) {
+                if (-not $needsDotNet) {
+                    $needsDotNet = $true
+                }
+                if (($null -eq $platformProfile) -and -not $dotNetProjectPaths.Contains($f.FullName)) {
                     $dotNetProjectPaths.Add($f.FullName) | Out-Null
                 }
-                if ($f.Extension -eq '.csproj') {
+                if (($null -eq $platformProfile) -and $f.Extension -eq '.csproj') {
                     try {
                         $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
                         $frameworks = @(Get-RaymanDotNetTargetFrameworksFromText -ProjectText $raw)
@@ -385,11 +443,15 @@ function Get-RaymanWorkspaceDependencyProfile {
         NeedsNode = $needsNode
         NeedsPython = $needsPython
         NeedWindowsDesktop = $needWindowsDesktop
+        RequiresWindowsHost = $requiresWindowsHost
+        AutoEnableWindows = $autoEnableWindows
+        WindowsOnlyDesktopProject = $windowsOnlyDesktopProject
         IsMaui = ($mauiProjects.Count -gt 0)
         MauiProjects = @($mauiProjects.ToArray())
         PreferredMauiProject = $preferredMauiProject
         DotNetProjectPaths = @($dotNetProjectPaths.ToArray())
         TargetFrameworks = @($allFrameworks.ToArray())
+        PlatformProfile = $platformProfile
         RequiredSdkMajor = $requiredSdkMajor
         DotNetInstallChannel = Resolve-RaymanDotNetInstallChannel -SdkMajor $requiredSdkMajor
         DotNetWingetPackageId = Resolve-RaymanDotNetWingetPackageId -SdkMajor $requiredSdkMajor

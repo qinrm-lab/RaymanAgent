@@ -8,6 +8,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+  . $commonPath
+}
+
 function Info([string]$Message) { Write-Host ("[daily-health] {0}" -f $Message) -ForegroundColor Cyan }
 function Warn([string]$Message) { Write-Host ("[daily-health] {0}" -f $Message) -ForegroundColor Yellow }
 
@@ -217,6 +222,17 @@ $summary.Add(('- generated_at: {0}' -f (Get-Date).ToString('o'))) | Out-Null
 $summary.Add(('- mode: {0}' -f $modeKey)) | Out-Null
 $summary.Add(('- git: {0}' -f $gitSummary)) | Out-Null
 $summary.Add(('- todo_fixme_hits: {0}' -f $todoMatches.Count)) | Out-Null
+try {
+  if (Get-Command Resolve-RaymanCodexContext -ErrorAction SilentlyContinue) {
+    $codexContext = Resolve-RaymanCodexContext -WorkspaceRoot $WorkspaceRoot
+    $codexStatus = Get-RaymanCodexLoginStatus -WorkspaceRoot $WorkspaceRoot -AccountAlias ([string]$codexContext.account_alias)
+    $aliasText = if ([string]::IsNullOrWhiteSpace([string]$codexContext.account_alias)) { '(unbound)' } else { [string]$codexContext.account_alias }
+    $profileText = if ([string]::IsNullOrWhiteSpace([string]$codexContext.effective_profile)) { '(none)' } else { [string]$codexContext.effective_profile }
+    $summary.Add(('- codex_auth: alias={0} profile={1} status={2}' -f $aliasText, $profileText, [string]$codexStatus.status)) | Out-Null
+  }
+} catch {
+  $summary.Add(('- codex_auth: error={0}' -f $_.Exception.Message)) | Out-Null
+}
 if ($todoMatches.Count -gt 0) {
   $summary.Add('') | Out-Null
   $summary.Add('## sample hits') | Out-Null

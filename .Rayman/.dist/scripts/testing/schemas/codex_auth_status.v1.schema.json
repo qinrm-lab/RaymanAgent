@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_root",
+    "vscode_user_profile",
+    "vscode_user_profile_location",
+    "vscode_user_profile_source",
+    "vscode_user_profile_status",
+    "vscode_user_profile_detected",
+    "vscode_user_profile_is_default",
+    "account_alias",
+    "profile",
+    "profile_source",
+    "codex_home",
+    "managed",
+    "account_known",
+    "authenticated",
+    "status",
+    "exit_code",
+    "command",
+    "output",
+    "repair_command"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.codex.auth.status.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "vscode_user_profile": {
+      "type": "string"
+    },
+    "vscode_user_profile_location": {
+      "type": "string"
+    },
+    "vscode_user_profile_source": {
+      "type": "string"
+    },
+    "vscode_user_profile_status": {
+      "type": "string"
+    },
+    "vscode_user_profile_detected": {
+      "type": "boolean"
+    },
+    "vscode_user_profile_is_default": {
+      "type": "boolean"
+    },
+    "account_alias": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "profile_source": {
+      "type": "string"
+    },
+    "codex_home": {
+      "type": "string"
+    },
+    "managed": {
+      "type": "boolean"
+    },
+    "account_known": {
+      "type": "boolean"
+    },
+    "authenticated": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "command": {
+      "type": "string"
+    },
+    "output": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "repair_command": {
+      "type": "string"
+    }
+  }
+}

@@ -43,6 +43,15 @@ function Get-McpConfigObject([string]$Path, [string]$DbPathToken) {
         return (Get-DefaultMcpConfig -DbPathToken $DbPathToken)
     }
 
+    if (Get-Command Read-RaymanJsonFile -ErrorAction SilentlyContinue) {
+        $doc = Read-RaymanJsonFile -Path $Path
+        if (-not [bool]$doc.ParseFailed) {
+            return $doc.Obj
+        }
+        Write-Warn ("[mcp] invalid json/jsonc, fallback to defaults: {0}; detail={1}" -f $Path, [string]$doc.Error)
+        return (Get-DefaultMcpConfig -DbPathToken $DbPathToken)
+    }
+
     try {
         $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
         $parsed = $raw | ConvertFrom-Json -ErrorAction Stop

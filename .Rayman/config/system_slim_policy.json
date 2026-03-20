@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "rayman.system_slim.policy.v1",
   "enabled": true,
   "notify_on_upgrade": true,

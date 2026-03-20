@@ -13,6 +13,18 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
 }
 . $commonPath
 
+$ownedProcessPath = Join-Path $PSScriptRoot '..\utils\workspace_process_ownership.ps1'
+if (-not (Test-Path -LiteralPath $ownedProcessPath -PathType Leaf)) {
+  throw "workspace_process_ownership.ps1 not found: $ownedProcessPath"
+}
+. $ownedProcessPath -NoMain
+
+$watchLifecycleLibPath = Join-Path $PSScriptRoot 'watch_lifecycle.lib.ps1'
+if (-not (Test-Path -LiteralPath $watchLifecycleLibPath -PathType Leaf)) {
+  throw "watch_lifecycle.lib.ps1 not found: $watchLifecycleLibPath"
+}
+. $watchLifecycleLibPath
+
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 [void](Repair-RaymanNestedDir -WorkspaceRoot $WorkspaceRoot)
 $raymanDir = Join-Path $WorkspaceRoot '.Rayman'
@@ -21,132 +33,34 @@ if (-not (Test-Path -LiteralPath $runtimeDir)) {
   New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 }
 $isWindowsHost = Test-RaymanWindowsPlatform
-
-function Read-SessionState([string]$SessionPath) {
-  if ([string]::IsNullOrWhiteSpace($SessionPath) -or -not (Test-Path -LiteralPath $SessionPath -PathType Leaf)) {
-    return $null
-  }
-
-  try {
-    $raw = Get-Content -LiteralPath $SessionPath -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-    return ($raw | ConvertFrom-Json -ErrorAction Stop)
-  } catch {
-    Write-Warn ("[watch-auto] invalid session file removed: {0}" -f $SessionPath)
-    try { Remove-Item -LiteralPath $SessionPath -Force -ErrorAction SilentlyContinue } catch {}
-    return $null
-  }
-}
-
-function Normalize-PathForMatch([string]$PathValue) {
-  if ([string]::IsNullOrWhiteSpace($PathValue)) { return '' }
-  try {
-    $full = [System.IO.Path]::GetFullPath($PathValue)
-    return ($full -replace '/', '\').ToLowerInvariant()
-  } catch {
-    return ($PathValue -replace '/', '\').ToLowerInvariant()
-  }
-}
-
-function Resolve-IntPid([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) { return 0 }
-  $parsed = 0
-  if ([int]::TryParse($Value.Trim(), [ref]$parsed) -and $parsed -gt 0) {
-    return $parsed
-  }
-  return 0
-}
-
-function Get-ProcessStartUtcString([int]$ProcessId) {
-  if ($ProcessId -le 0) { return '' }
-  try {
-    $proc = Get-Process -Id $ProcessId -ErrorAction Stop
-    return $proc.StartTime.ToUniversalTime().ToString('o')
-  } catch {
-    return ''
-  }
-}
-
-function Test-ProcessAlive([int]$ProcessId, [string]$ExpectedStartUtc = '') {
-  if ($ProcessId -le 0) { return $false }
-
-  try {
-    $proc = Get-Process -Id $ProcessId -ErrorAction Stop
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedStartUtc)) {
-      $actualStartUtc = $proc.StartTime.ToUniversalTime().ToString('o')
-      if ($actualStartUtc -ne $ExpectedStartUtc) {
-        return $false
-      }
-    }
-    return $true
-  } catch {
-    return $false
-  }
-}
+$sharedOwnerContext = Get-RaymanWorkspaceSharedProcessOwnerContext -WorkspaceRootPath $WorkspaceRoot
 
 function Remove-StaleVsCodeSessions {
   $sessionDir = Join-Path $runtimeDir 'vscode_sessions'
-  if (-not (Test-Path -LiteralPath $sessionDir -PathType Container)) {
-    return
-  }
-
-  $sessionFiles = @(Get-ChildItem -LiteralPath $sessionDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-  foreach ($sessionFile in $sessionFiles) {
-    $session = Read-SessionState -SessionPath $sessionFile.FullName
-    if ($null -eq $session) { continue }
-
-    $sessionPid = Resolve-IntPid -Value ([string]$session.parentPid)
-    $sessionStartUtc = [string]$session.parentStartUtc
-    $state = ([string]$session.state).Trim().ToLowerInvariant()
-    $alive = Test-ProcessAlive -ProcessId $sessionPid -ExpectedStartUtc $sessionStartUtc
-    if ($alive -and $state -ne 'parent-exited') {
+  foreach ($session in @(Get-RaymanVsCodeSessionEntries -SessionDirectory $sessionDir)) {
+    if ([bool]$session.active) {
       continue
     }
 
-    Write-Info ("[watch-auto] removing stale vscode session: {0}" -f $sessionFile.Name)
+    $sessionFileName = if ([string]::IsNullOrWhiteSpace([string]$session.path)) {
+      '(unknown)'
+    } else {
+      [System.IO.Path]::GetFileName([string]$session.path)
+    }
+
+    if (-not [bool]$session.valid) {
+      Write-Warn ("[watch-auto] invalid session file removed: {0}" -f $sessionFileName)
+    } else {
+      Write-Info ("[watch-auto] removing stale vscode session: {0}" -f $sessionFileName)
+    }
+
     try {
-      Remove-Item -LiteralPath $sessionFile.FullName -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath ([string]$session.path) -Force -ErrorAction SilentlyContinue
     } catch {
-      Write-Warn ("[watch-auto] remove stale session failed ({0}): {1}" -f $sessionFile.FullName, $_.Exception.Message)
-      Write-RaymanDiag -Scope 'watch-auto' -Message ("remove stale session failed; session={0}; error={1}" -f $sessionFile.FullName, $_.Exception.ToString())
+      Write-Warn ("[watch-auto] remove stale session failed ({0}): {1}" -f [string]$session.path, $_.Exception.Message)
+      Write-RaymanDiag -Scope 'watch-auto' -Message ("remove stale session failed; session={0}; error={1}" -f [string]$session.path, $_.Exception.ToString())
     }
   }
-}
-
-function Resolve-VscodeOwnerPid([string]$ExplicitPid) {
-  $pidFromArg = Resolve-IntPid -Value $ExplicitPid
-  if ($pidFromArg -gt 0) { return $pidFromArg }
-
-  $pidFromEnv = Resolve-IntPid -Value ([string][System.Environment]::GetEnvironmentVariable('VSCODE_PID'))
-  if ($pidFromEnv -gt 0) { return $pidFromEnv }
-
-  if (-not $isWindowsHost) { return 0 }
-
-  $visited = New-Object 'System.Collections.Generic.HashSet[int]'
-  $currentPid = [int]$PID
-  $hop = 0
-  while ($currentPid -gt 0 -and $hop -lt 12) {
-    if ($visited.Contains($currentPid)) { break }
-    [void]$visited.Add($currentPid)
-
-    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $currentPid) -ErrorAction SilentlyContinue
-    if ($null -eq $proc) { break }
-    $parentPid = [int]$proc.ParentProcessId
-    if ($parentPid -le 0) { break }
-
-    $parent = Get-Process -Id $parentPid -ErrorAction SilentlyContinue
-    if ($null -ne $parent) {
-      $name = [string]$parent.ProcessName
-      if ($name -like 'Code*') {
-        return $parentPid
-      }
-    }
-
-    $currentPid = $parentPid
-    $hop++
-  }
-
-  return 0
 }
 
 function Resolve-StartPowerShellHost {
@@ -181,12 +95,67 @@ function Write-PidFile([string]$PidFile, [int]$ProcessId) {
   }
 }
 
+function Register-RaymanBackgroundProcess {
+  param(
+    [string]$Name,
+    [int]$ProcessId,
+    [object]$OwnerContext,
+    [string]$Kind = 'watcher',
+    [string]$Launcher = 'watch-auto',
+    [string]$Command = ''
+  )
+
+  if ($ProcessId -le 0 -or $null -eq $OwnerContext) { return }
+  $commandText = if ([string]::IsNullOrWhiteSpace($Command)) { $Name } else { $Command }
+
+  try {
+    $null = Register-RaymanWorkspaceOwnedProcess `
+      -WorkspaceRootPath $WorkspaceRoot `
+      -OwnerContext $OwnerContext `
+      -Kind $Kind `
+      -Launcher $Launcher `
+      -RootPid $ProcessId `
+      -Command $commandText
+  } catch {
+    Write-Warn ("[watch-auto] register owned process failed ({0}, pid={1}): {2}" -f $Name, $ProcessId, $_.Exception.Message)
+    Write-RaymanDiag -Scope 'watch-auto' -Message ("register owned process failed; name={0}; pid={1}; error={2}" -f $Name, $ProcessId, $_.Exception.ToString())
+  }
+}
+
+function Resolve-RaymanBackgroundCommandText([string]$ScriptPath, [string[]]$ScriptArgs) {
+  $parts = New-Object System.Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace($ScriptPath)) {
+    $parts.Add($ScriptPath) | Out-Null
+  }
+  foreach ($arg in @($ScriptArgs)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$arg)) {
+      $parts.Add([string]$arg) | Out-Null
+    }
+  }
+  return (($parts.ToArray()) -join ' ')
+}
+
+function Resolve-McpRootPid([string]$PidFile, [int[]]$FallbackPids = @()) {
+  $pidFromFile = Get-RaymanPidFromFile -PidFilePath $PidFile
+  if ($pidFromFile -gt 0) {
+    return $pidFromFile
+  }
+
+  foreach ($pidValue in @($FallbackPids | Select-Object -Unique)) {
+    if ([int]$pidValue -gt 0) {
+      return [int]$pidValue
+    }
+  }
+
+  return 0
+}
+
 function Find-ExistingPowerShellProcess([string]$ScriptPath, [string]$WorkspaceRootPath) {
   if (-not $isWindowsHost) { return 0 }
   if ([string]::IsNullOrWhiteSpace($ScriptPath)) { return 0 }
 
-  $scriptNeedle = Normalize-PathForMatch -PathValue $ScriptPath
-  $workspaceNeedle = Normalize-PathForMatch -PathValue (Join-Path $WorkspaceRootPath '.Rayman')
+  $scriptNeedle = Normalize-RaymanWatchPathForMatch -PathValue $ScriptPath
+  $workspaceNeedle = Normalize-RaymanWatchPathForMatch -PathValue (Join-Path $WorkspaceRootPath '.Rayman')
   if ([string]::IsNullOrWhiteSpace($scriptNeedle) -or [string]::IsNullOrWhiteSpace($workspaceNeedle)) { return 0 }
 
   $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -209,8 +178,8 @@ function Find-ExistingExitWatchProcess([int]$ParentPid, [string]$WorkspaceRootPa
   if (-not $isWindowsHost) { return 0 }
   if ($ParentPid -le 0) { return 0 }
 
-  $scriptNeedle = Normalize-PathForMatch -PathValue $ExitWatchScript
-  $workspaceNeedle = Normalize-PathForMatch -PathValue $WorkspaceRootPath
+  $scriptNeedle = Normalize-RaymanWatchPathForMatch -PathValue $ExitWatchScript
+  $workspaceNeedle = Normalize-RaymanWatchPathForMatch -PathValue $WorkspaceRootPath
   if ([string]::IsNullOrWhiteSpace($scriptNeedle) -or [string]::IsNullOrWhiteSpace($workspaceNeedle)) { return 0 }
 
   $pidToken = ("-parentpid {0}" -f $ParentPid)
@@ -232,7 +201,7 @@ function Find-ExistingExitWatchProcess([int]$ParentPid, [string]$WorkspaceRootPa
 function Get-McpProcessPidsForWorkspace([string]$WorkspaceRootPath) {
   if (-not $isWindowsHost) { return @() }
 
-  $dbNeedle = Normalize-PathForMatch -PathValue (Join-Path $WorkspaceRootPath '.Rayman\state\rayman.db')
+  $dbNeedle = Normalize-RaymanWatchPathForMatch -PathValue (Join-Path $WorkspaceRootPath '.Rayman\state\rayman.db')
   if ([string]::IsNullOrWhiteSpace($dbNeedle)) { return @() }
 
   $hits = New-Object 'System.Collections.Generic.List[int]'
@@ -272,7 +241,7 @@ function Get-WatcherStartFailureKind([string]$Message) {
 function New-WatcherStartupMutex([string]$WorkspaceRootPath) {
   if ([string]::IsNullOrWhiteSpace($WorkspaceRootPath)) { return $null }
 
-  $normalized = Normalize-PathForMatch -PathValue $WorkspaceRootPath
+  $normalized = Normalize-RaymanWatchPathForMatch -PathValue $WorkspaceRootPath
   if ([string]::IsNullOrWhiteSpace($normalized)) { return $null }
 
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
@@ -293,10 +262,20 @@ function Start-RaymanDetachedWatcher {
     [string[]]$ScriptArgs,
     [string]$PidFile,
     [string]$EnableEnvName,
-    [bool]$DefaultEnabled = $true
+    [bool]$DefaultEnabled = $true,
+    [object]$EnabledOverride = $null,
+    [object]$OwnerContext = $null,
+    [string]$Kind = 'watcher',
+    [string]$Launcher = 'watch-auto'
   )
 
-  if (-not (Get-RaymanEnvBool -Name $EnableEnvName -Default $DefaultEnabled)) {
+  $enabled = if ($PSBoundParameters.ContainsKey('EnabledOverride') -and $null -ne $EnabledOverride) {
+    [bool]$EnabledOverride
+  } else {
+    Get-RaymanEnvBool -Name $EnableEnvName -Default $DefaultEnabled
+  }
+
+  if (-not $enabled) {
     Write-Info ("[watch-auto] {0} disabled by {1}=0." -f $Name, $EnableEnvName)
     return
   }
@@ -309,12 +288,14 @@ function Start-RaymanDetachedWatcher {
   $existingPid = Find-ExistingPowerShellProcess -ScriptPath $ScriptPath -WorkspaceRootPath $WorkspaceRoot
   if ($existingPid -gt 0) {
     Write-PidFile -PidFile $PidFile -ProcessId $existingPid
+    Register-RaymanBackgroundProcess -Name $Name -ProcessId $existingPid -OwnerContext $OwnerContext -Kind $Kind -Launcher $Launcher -Command (Resolve-RaymanBackgroundCommandText -ScriptPath $ScriptPath -ScriptArgs $ScriptArgs)
     Write-Info ("[watch-auto] {0} already running (process-scan PID={1})." -f $Name, $existingPid)
     return
   }
 
   $oldPid = Get-RaymanPidFromFile -PidFilePath $PidFile
   if ($oldPid -gt 0 -and (Test-RaymanPidFileProcess -PidFilePath $PidFile -AllowedProcessNames @('powershell', 'pwsh'))) {
+    Register-RaymanBackgroundProcess -Name $Name -ProcessId $oldPid -OwnerContext $OwnerContext -Kind $Kind -Launcher $Launcher -Command (Resolve-RaymanBackgroundCommandText -ScriptPath $ScriptPath -ScriptArgs $ScriptArgs)
     Write-Info ("[watch-auto] {0} already running (PID={1})." -f $Name, $oldPid)
     return
   }
@@ -355,6 +336,7 @@ function Start-RaymanDetachedWatcher {
       }
       $proc = Start-RaymanProcessHiddenCompat -FilePath $psHost -ArgumentList $args
       Write-PidFile -PidFile $PidFile -ProcessId ([int]$proc.Id)
+      Register-RaymanBackgroundProcess -Name $Name -ProcessId ([int]$proc.Id) -OwnerContext $OwnerContext -Kind $Kind -Launcher $Launcher -Command (Resolve-RaymanBackgroundCommandText -ScriptPath $ScriptPath -ScriptArgs $ScriptArgs)
       Write-Info ("[watch-auto] started {0} (PID={1}, host={2})." -f $Name, $proc.Id, $psHost)
       $started = $true
       break
@@ -403,16 +385,18 @@ try {
     if (-not $enableExitLinkedStop) {
       Write-Info "[watch-auto] exit-linked stop disabled by RAYMAN_VSCODE_EXIT_LINKED_STOP_ENABLED=0."
     } else {
-      $ownerPid = Resolve-VscodeOwnerPid -ExplicitPid $VscodeOwnerPid
+      $ownerPid = Resolve-RaymanVsCodeOwnerPid -ExplicitPid $VscodeOwnerPid -CurrentProcessId $PID -WindowsHost:$isWindowsHost
       if ($ownerPid -le 0) {
         Write-Warn "[watch-auto] cannot resolve VS Code owner PID; skip exitwatch binding."
       } else {
+        $ownerProcessContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $WorkspaceRoot -ExplicitOwnerPid ([string]$ownerPid)
         $exitWatchScript = Join-Path $raymanDir 'win-exitwatch.ps1'
         if (-not (Test-Path -LiteralPath $exitWatchScript -PathType Leaf)) {
           Write-Warn ("[watch-auto] exitwatch script not found: {0}" -f $exitWatchScript)
         } else {
           $existingExitWatchPid = Find-ExistingExitWatchProcess -ParentPid $ownerPid -WorkspaceRootPath $WorkspaceRoot -ExitWatchScript $exitWatchScript
           if ($existingExitWatchPid -gt 0) {
+            Register-RaymanBackgroundProcess -Name 'exitwatch' -ProcessId $existingExitWatchPid -OwnerContext $ownerProcessContext -Kind 'watcher' -Launcher 'watch-auto-exitwatch' -Command (Resolve-RaymanBackgroundCommandText -ScriptPath $exitWatchScript -ScriptArgs @('-ParentPid', [string]$ownerPid, '-WorkspaceRoot', $WorkspaceRoot))
             Write-Info ("[watch-auto] exitwatch already running (PID={0}, owner={1})." -f $existingExitWatchPid, $ownerPid)
           } else {
             $sessionDir = Join-Path $runtimeDir 'vscode_sessions'
@@ -420,7 +404,7 @@ try {
               New-Item -ItemType Directory -Force -Path $sessionDir | Out-Null
             }
             $sessionFile = Join-Path $sessionDir ("{0}.json" -f $ownerPid)
-            $parentStartUtc = Get-ProcessStartUtcString -ProcessId $ownerPid
+            $parentStartUtc = Get-RaymanProcessStartUtcString -ProcessId $ownerPid
             $exitArgs = @(
               '-NoProfile',
               '-ExecutionPolicy',
@@ -445,6 +429,7 @@ try {
                 throw "cannot find PowerShell host (pwsh/powershell) in PATH"
               }
               $exitProc = Start-RaymanProcessHiddenCompat -FilePath $psHost -ArgumentList $exitArgs
+              Register-RaymanBackgroundProcess -Name 'exitwatch' -ProcessId ([int]$exitProc.Id) -OwnerContext $ownerProcessContext -Kind 'watcher' -Launcher 'watch-auto-exitwatch' -Command (Resolve-RaymanBackgroundCommandText -ScriptPath $exitWatchScript -ScriptArgs $exitArgs)
               Write-Info ("[watch-auto] exitwatch attached (PID={0}, owner={1})." -f $exitProc.Id, $ownerPid)
             } catch {
               Write-Warn ("[watch-auto] failed to start exitwatch: {0}" -f $_.Exception.Message)
@@ -456,42 +441,36 @@ try {
     }
   }
 
-  $watchScript = Join-Path $raymanDir 'win-watch.ps1'
-  $watchPidFile = Join-Path $runtimeDir 'win_watch.pid'
-  Start-RaymanDetachedWatcher `
-    -Name 'prompt-watch' `
-    -ScriptPath $watchScript `
-    -ScriptArgs @('-WorkspaceRoot', $WorkspaceRoot, '-PidFile', $watchPidFile) `
-    -PidFile $watchPidFile `
-    -EnableEnvName 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' `
-    -DefaultEnabled $true
+  $embeddedAttentionEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' -Default $false
+  $embeddedAutoSaveEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' -Default $false
+  $promptWatchEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' -Default $true
+  $startSharedWatch = ($promptWatchEnabled -or $embeddedAttentionEnabled -or $embeddedAutoSaveEnabled)
 
-  $watchAllAttention = Get-RaymanEnvBool -Name 'RAYMAN_ALERT_WATCH_ALL_PROCESSES' -Default $false
-  $attentionTargets = @(Get-RaymanAttentionWatchProcessNames)
-  if ($watchAllAttention -or (Test-RaymanAttentionWatchTargetsAvailable -WatchAll:$watchAllAttention -ProcessNames $attentionTargets)) {
-    $alertScript = Join-Path $raymanDir 'scripts\alerts\attention_watch.ps1'
-    $alertPidFile = Join-Path $runtimeDir 'attention_watch.pid'
+  if ($startSharedWatch) {
+    $watchScript = Join-Path $raymanDir 'win-watch.ps1'
+    $watchPidFile = Join-Path $runtimeDir 'win_watch.pid'
+    $watchArgs = @('-WorkspaceRoot', $WorkspaceRoot, '-PidFile', $watchPidFile)
+    if ($embeddedAttentionEnabled) {
+      $watchArgs += '-EnableEmbeddedAttentionWatch'
+    }
+    if ($embeddedAutoSaveEnabled) {
+      $watchArgs += '-EnableEmbeddedAutoSave'
+    }
+
     Start-RaymanDetachedWatcher `
-      -Name 'attention-watch' `
-      -ScriptPath $alertScript `
-      -ScriptArgs @('-WorkspaceRoot', $WorkspaceRoot, '-PidFile', $alertPidFile) `
-      -PidFile $alertPidFile `
-      -EnableEnvName 'RAYMAN_ALERT_WATCH_ENABLED' `
-      -DefaultEnabled $true
+      -Name 'prompt-watch' `
+      -ScriptPath $watchScript `
+      -ScriptArgs $watchArgs `
+      -PidFile $watchPidFile `
+      -EnableEnvName 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' `
+      -DefaultEnabled $true `
+      -EnabledOverride $startSharedWatch `
+      -OwnerContext $sharedOwnerContext `
+      -Kind 'watcher' `
+      -Launcher 'watch-auto-shared'
   } else {
-    Write-Info ("[watch-auto] skip attention-watch (no target process: {0})." -f (($attentionTargets | Select-Object -Unique) -join ','))
+    Write-Info '[watch-auto] shared win-watch disabled (no prompt/attention/auto-save feature enabled).'
   }
-
-  # 启动自动保存服务 (Auto-Save Watcher)
-  $autoSaveScript = Join-Path $raymanDir 'scripts\state\auto_save_watch.ps1'
-  $autoSavePidFile = Join-Path $runtimeDir 'auto_save_watch.pid'
-  Start-RaymanDetachedWatcher `
-    -Name 'auto-save-watch' `
-    -ScriptPath $autoSaveScript `
-    -ScriptArgs @('-WorkspaceRoot', $WorkspaceRoot, '-PidFile', $autoSavePidFile) `
-    -PidFile $autoSavePidFile `
-    -EnableEnvName 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' `
-    -DefaultEnabled $true
 
   # 启动 MCP 服务器
   $mcpScript = Join-Path $raymanDir 'scripts\mcp\manage_mcp.ps1'
@@ -502,6 +481,8 @@ try {
     } else {
       $mcpPids = @(Get-McpProcessPidsForWorkspace -WorkspaceRootPath $WorkspaceRoot)
       if ($mcpPids.Count -gt 0) {
+        $mcpRootPid = Resolve-McpRootPid -PidFile (Join-Path $runtimeDir 'mcp\sqlite.pid') -FallbackPids $mcpPids
+        Register-RaymanBackgroundProcess -Name 'mcp-sqlite' -ProcessId $mcpRootPid -OwnerContext $sharedOwnerContext -Kind 'mcp' -Launcher 'watch-auto-mcp' -Command 'sqlite'
         Write-Info ("[watch-auto] MCP already running for workspace (pid(s)={0}); skip start." -f ($mcpPids -join ','))
       } else {
         Write-Info "[watch-auto] starting MCP servers..."
@@ -515,6 +496,8 @@ try {
           $mcpAttempt++
           try {
             & $mcpScript -Action start
+            $mcpRootPid = Resolve-McpRootPid -PidFile (Join-Path $runtimeDir 'mcp\sqlite.pid') -FallbackPids (Get-McpProcessPidsForWorkspace -WorkspaceRootPath $WorkspaceRoot)
+            Register-RaymanBackgroundProcess -Name 'mcp-sqlite' -ProcessId $mcpRootPid -OwnerContext $sharedOwnerContext -Kind 'mcp' -Launcher 'watch-auto-mcp' -Command 'sqlite'
             $mcpStarted = $true
           } catch {
             $mcpError = $_.Exception.Message

@@ -1,0 +1,20 @@
+{
+  "schema": "rayman.winapp.flow.result.v1",
+  "generated_at": "2026-03-12T12:00:00+08:00",
+  "workspace_root": "/workspace/RaymanAgent",
+  "flow_file": "/workspace/RaymanAgent/.Rayman/winapp.flow.sample.json",
+  "default_timeout_ms": 15000,
+  "success": false,
+  "degraded": true,
+  "degraded_reason": "host_not_windows",
+  "error_message": "Windows desktop automation unavailable: host_not_windows (Windows UI Automation is only available on Windows hosts.)",
+  "detail_log": "/workspace/RaymanAgent/.Rayman/logs/winapp.flow.sample.log",
+  "launch": null,
+  "window": null,
+  "artifacts": {
+    "last_result_json": "/workspace/RaymanAgent/.Rayman/runtime/winapp-tests/last_result.json",
+    "readiness_json": "/workspace/RaymanAgent/.Rayman/runtime/winapp.ready.windows.json",
+    "screenshots_dir": "/workspace/RaymanAgent/.Rayman/runtime/winapp-tests/screenshots"
+  },
+  "steps": []
+}

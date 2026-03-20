@@ -10,6 +10,12 @@ if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
 
+$assetManifestPath = Join-Path $WorkspaceRoot '.Rayman\scripts\agents\agent_asset_manifest.ps1'
+if (-not (Test-Path -LiteralPath $assetManifestPath -PathType Leaf)) {
+  throw "agent_asset_manifest.ps1 not found: $assetManifestPath"
+}
+. $assetManifestPath
+
 function Ensure-ParentDir([string]$Path) {
   $parent = Split-Path -Parent $Path
   if ([string]::IsNullOrWhiteSpace($parent)) { return }
@@ -37,13 +43,29 @@ function Ensure-FileIfMissing([string]$Path, [string]$Content, [switch]$AlwaysUp
   return $false
 }
 
+function Test-ForceManagedFileUpdate {
+  $raw = [Environment]::GetEnvironmentVariable('RAYMAN_AGENT_ASSETS_FORCE_UPDATE')
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    return $false
+  }
+  return ($raw -ne '0' -and $raw -ne 'false' -and $raw -ne 'False')
+}
+
+function Ensure-ManagedFile([string]$Path, [string]$Content) {
+  return (Ensure-FileIfMissing -Path $Path -Content $Content -AlwaysUpdate:(Test-ForceManagedFileUpdate))
+}
+
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+if (Test-ForceManagedFileUpdate) {
+  Write-Host "⚠️ [agent-assets] force update enabled: existing managed assets will be overwritten." -ForegroundColor Yellow
+}
 
 $routerJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\agent_router.json'
 $policyJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\agent_policy.json'
 $reviewJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\review_loop.json'
 $modelRoutingJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\model_routing.json'
 $systemSlimPolicyPath = Join-Path $WorkspaceRoot '.Rayman\config\system_slim_policy.json'
+$reviewPromptManifest = @(Get-RaymanReviewPromptManifest)
 
 $routerJson = @'
 {
@@ -212,66 +234,61 @@ $reviewJson = @'
 }
 '@
 
-$modelRoutingJson = @'
-{
-  "schema": "rayman.model_routing.v1",
-  "defaults": {
-    "route": "ui_selected",
-    "fallback_behavior": "next_route_then_manual",
-    "route_fallback_order": [
-      "gemini_latest_pro",
-      "claude_latest_opus",
-      "gpt_latest"
-    ],
-    "manual_fallback_route": "ui_selected"
-  },
-  "task_aliases": {
-    "bugfix": "fix",
-    "general": "code",
-    "refactor": "code",
-    "tests": "code"
-  },
-  "providers": {
-    "ui_selected": {
-      "provider": "ui_selected",
-      "selector": "ui_selected"
-    },
-    "gemini_latest_pro": {
-      "provider": "gemini",
-      "selector": "latest_pro"
-    },
-    "claude_latest_opus": {
-      "provider": "claude",
-      "selector": "latest_opus"
-    },
-    "gpt_latest": {
-      "provider": "gpt",
-      "selector": "latest"
-    }
-  },
-  "tasks": {
-    "code": {
-      "model": "ui_selected"
-    },
-    "fix": {
-      "model": "ui_selected"
-    },
-    "review": {
-      "mode": "prompt_rotation",
-      "prompt_keys": [
-        "review.initial",
-        "review.counter",
-        "review.final"
-      ]
-    }
-  },
-  "prompt_routes": {
-    "review.initial": "gemini_latest_pro",
-    "review.counter": "claude_latest_opus",
-    "review.final": "gpt_latest"
-  }
+$reviewPromptRoutes = [ordered]@{}
+foreach ($prompt in $reviewPromptManifest) {
+  $reviewPromptRoutes[[string]$prompt.key] = [string]$prompt.route
 }
-'@
+
+$modelRoutingJson = ([ordered]@{
+    schema = 'rayman.model_routing.v1'
+    defaults = [ordered]@{
+      route = 'ui_selected'
+      fallback_behavior = 'next_route_then_manual'
+      route_fallback_order = @(
+        'gemini_latest_pro'
+        'claude_latest_opus'
+        'gpt_latest'
+      )
+      manual_fallback_route = 'ui_selected'
+    }
+    task_aliases = [ordered]@{
+      bugfix = 'fix'
+      general = 'code'
+      refactor = 'code'
+      tests = 'code'
+    }
+    providers = [ordered]@{
+      ui_selected = [ordered]@{
+        provider = 'ui_selected'
+        selector = 'ui_selected'
+      }
+      gemini_latest_pro = [ordered]@{
+        provider = 'gemini'
+        selector = 'latest_pro'
+      }
+      claude_latest_opus = [ordered]@{
+        provider = 'claude'
+        selector = 'latest_opus'
+      }
+      gpt_latest = [ordered]@{
+        provider = 'gpt'
+        selector = 'latest'
+      }
+    }
+    tasks = [ordered]@{
+      code = [ordered]@{
+        model = 'ui_selected'
+      }
+      fix = [ordered]@{
+        model = 'ui_selected'
+      }
+      review = [ordered]@{
+        mode = 'prompt_rotation'
+        prompt_keys = @($reviewPromptManifest | ForEach-Object { [string]$_.key })
+      }
+    }
+    prompt_routes = $reviewPromptRoutes
+  } | ConvertTo-Json -Depth 8)
 
 $systemSlimPolicyJson = @'
 {
@@ -296,11 +313,11 @@ $systemSlimPolicyJson = @'
 }
 '@
 
-[void](Ensure-FileIfMissing -Path $routerJsonPath -Content $routerJson)
-[void](Ensure-FileIfMissing -Path $policyJsonPath -Content $policyJson)
-[void](Ensure-FileIfMissing -Path $reviewJsonPath -Content $reviewJson)
-[void](Ensure-FileIfMissing -Path $modelRoutingJsonPath -Content $modelRoutingJson)
-[void](Ensure-FileIfMissing -Path $systemSlimPolicyPath -Content $systemSlimPolicyJson)
+[void](Ensure-ManagedFile -Path $routerJsonPath -Content $routerJson)
+[void](Ensure-ManagedFile -Path $policyJsonPath -Content $policyJson)
+[void](Ensure-ManagedFile -Path $reviewJsonPath -Content $reviewJson)
+[void](Ensure-ManagedFile -Path $modelRoutingJsonPath -Content $modelRoutingJson)
+[void](Ensure-ManagedFile -Path $systemSlimPolicyPath -Content $systemSlimPolicyJson)
 
 $generalInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\general.instructions.md'
 $backendInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\backend.instructions.md'
@@ -317,8 +334,11 @@ description: "Use when working on Rayman governance files, AGENTS.md, copilot-in
 - Keep source and `.Rayman/.dist` mirrors aligned for shared runtime and agent assets whenever copied distributions depend on the same behavior.
 - Prefer small, verifiable contracts over broad prose; when adding a rule, also add a report, script check, or validation note when practical.
 - If you touch `.github/`, `.Rayman/config/`, `AGENTS.md`, or governance docs, call out which downstream files must stay in sync.
-- Agent capabilities are declared in `.Rayman/config/agent_capabilities.json`; `.codex/config.toml` is a generated workspace artifact and must stay consistent with that registry.
-- OpenAI/API/model/docs tasks should prefer OpenAI Docs MCP; browser/web/e2e tasks should prefer Playwright MCP and document the Rayman fallback path when MCP is unavailable.
+- Agent capabilities are declared in `.Rayman/config/agent_capabilities.json`; `.codex/config.toml` is a generated workspace artifact and now carries Rayman-managed capability, project-doc, profile, and subagent blocks.
+- Rayman-managed subagent roles are fixed to `rayman_explorer`, `rayman_reviewer`, `rayman_docs_researcher`, `rayman_browser_debugger`, `rayman_winapp_debugger`, and `rayman_worker`.
+- OpenAI/API/model/docs tasks should prefer OpenAI Docs MCP; browser/web/e2e tasks should prefer Playwright MCP; WinForms / MAUI(Windows) / desktop / UIA tasks should prefer Rayman WinApp MCP. Document the Rayman fallback path when MCP is unavailable.
+- `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, and `.github/prompts/*.prompt.md` are Rayman-managed capability assets; keep them aligned with `dispatch`, `review_loop`, and the capability report.
+- GitHub-only features such as Copilot Memory and GitHub.com auto-model picker may be documented or detected, but are not treated as repo-enforced runtime guarantees.
 - Do not silently weaken requirements-reading, full-auto, release-gate, or rollback guarantees.
 '@
 
@@ -352,16 +372,23 @@ description: "Use when editing frontend, prompt UI, browser-facing assets, Playw
 - Minimize one-off style drift; prefer shared primitives and consistent component states.
 '@
 
-[void](Ensure-FileIfMissing -Path $generalInstructionsPath -Content $generalInstructions)
-[void](Ensure-FileIfMissing -Path $backendInstructionsPath -Content $backendInstructions)
-[void](Ensure-FileIfMissing -Path $frontendInstructionsPath -Content $frontendInstructions)
+[void](Ensure-ManagedFile -Path $generalInstructionsPath -Content $generalInstructions)
+[void](Ensure-ManagedFile -Path $backendInstructionsPath -Content $backendInstructions)
+[void](Ensure-ManagedFile -Path $frontendInstructionsPath -Content $frontendInstructions)
 
 $promptBugfixPath = Join-Path $WorkspaceRoot '.github\prompts\bugfix.prompt.md'
 $promptRefactorPath = Join-Path $WorkspaceRoot '.github\prompts\refactor.prompt.md'
 $promptTestsPath = Join-Path $WorkspaceRoot '.github\prompts\tests.prompt.md'
 $promptReleasePath = Join-Path $WorkspaceRoot '.github\prompts\release-triage.prompt.md'
+$promptReviewInitialPath = Join-Path $WorkspaceRoot '.github\prompts\review.initial.prompt.md'
+$promptReviewCounterPath = Join-Path $WorkspaceRoot '.github\prompts\review.counter.prompt.md'
+$promptReviewFinalPath = Join-Path $WorkspaceRoot '.github\prompts\review.final.prompt.md'
 
 $promptBugfix = @'
+---
+description: "Generate a Rayman bugfix packet with root cause, validation, and rollback expectations."
+---
+
 # Bugfix Task Packet
 
 - Task: {{TASK}}
@@ -379,6 +406,10 @@ $promptBugfix = @'
 '@
 
 $promptRefactor = @'
+---
+description: "Generate a Rayman refactor packet focused on bounded change and regression control."
+---
+
 # Refactor Task Packet
 
 - Task: {{TASK}}
@@ -395,6 +426,10 @@ $promptRefactor = @'
 '@
 
 $promptTests = @'
+---
+description: "Generate a Rayman test-closure packet for gaps, evidence, and residual risk."
+---
+
 # Test Gap Closure Packet
 
 - Task: {{TASK}}
@@ -411,6 +446,10 @@ $promptTests = @'
 '@
 
 $promptRelease = @'
+---
+description: "Generate a Rayman release-triage packet with blockers, evidence, and go/no-go framing."
+---
+
 # Release Triage Packet
 
 - Task: {{TASK}}
@@ -426,10 +465,241 @@ $promptRelease = @'
 3. Go/No-Go recommendation with evidence
 '@
 
-[void](Ensure-FileIfMissing -Path $promptBugfixPath -Content $promptBugfix)
-[void](Ensure-FileIfMissing -Path $promptRefactorPath -Content $promptRefactor)
-[void](Ensure-FileIfMissing -Path $promptTestsPath -Content $promptTests)
-[void](Ensure-FileIfMissing -Path $promptReleasePath -Content $promptRelease)
+$promptReviewInitial = @'
+---
+description: "Round 1 review packet for broad risk discovery and first-pass findings."
+---
+
+# Review Initial Packet
+
+- Task: {{TASK}}
+- Acceptance Criteria: {{ACCEPTANCE_CRITERIA}}
+- Notes: {{NOTES}}
+- Generated At: {{TIMESTAMP}}
+- Workspace: {{WORKSPACE_ROOT}}
+
+## Review Focus
+
+1. Identify correctness, security, and regression risks
+2. Call out missing tests and evidence gaps
+3. Prefer concrete findings over style commentary
+'@
+
+$promptReviewCounter = @'
+---
+description: "Round 2 review packet for counter-review, disagreement handling, and evidence strengthening."
+---
+
+# Review Counter Packet
+
+- Task: {{TASK}}
+- Acceptance Criteria: {{ACCEPTANCE_CRITERIA}}
+- Notes: {{NOTES}}
+- Generated At: {{TIMESTAMP}}
+- Workspace: {{WORKSPACE_ROOT}}
+
+## Review Focus
+
+1. Challenge the first-pass assumptions
+2. Re-check changed files for hidden regressions
+3. Tighten reproduction steps and failure evidence
+'@
+
+$promptReviewFinal = @'
+---
+description: "Final review packet for merge readiness, residual risk, and release posture."
+---
+
+# Review Final Packet
+
+- Task: {{TASK}}
+- Acceptance Criteria: {{ACCEPTANCE_CRITERIA}}
+- Notes: {{NOTES}}
+- Generated At: {{TIMESTAMP}}
+- Workspace: {{WORKSPACE_ROOT}}
+
+## Review Focus
+
+1. Summarize blocking findings first
+2. State residual risk and testing gaps
+3. Give a clear ship / no-ship recommendation
+'@
+
+[void](Ensure-ManagedFile -Path $promptBugfixPath -Content $promptBugfix)
+[void](Ensure-ManagedFile -Path $promptRefactorPath -Content $promptRefactor)
+[void](Ensure-ManagedFile -Path $promptTestsPath -Content $promptTests)
+[void](Ensure-ManagedFile -Path $promptReleasePath -Content $promptRelease)
+[void](Ensure-ManagedFile -Path $promptReviewInitialPath -Content $promptReviewInitial)
+[void](Ensure-ManagedFile -Path $promptReviewCounterPath -Content $promptReviewCounter)
+[void](Ensure-ManagedFile -Path $promptReviewFinalPath -Content $promptReviewFinal)
+
+$agentExplorerPath = Join-Path $WorkspaceRoot '.github\agents\rayman-explorer.agent.md'
+$agentReviewerPath = Join-Path $WorkspaceRoot '.github\agents\rayman-reviewer.agent.md'
+$agentWorkerPath = Join-Path $WorkspaceRoot '.github\agents\rayman-worker.agent.md'
+$agentDocsPath = Join-Path $WorkspaceRoot '.github\agents\rayman-docs.agent.md'
+$agentBrowserPath = Join-Path $WorkspaceRoot '.github\agents\rayman-browser.agent.md'
+$agentWinAppPath = Join-Path $WorkspaceRoot '.github\agents\rayman-winapp.agent.md'
+
+$agentExplorer = @'
+---
+name: rayman-explorer
+description: Read-only explorer for ambiguous or multi-file tasks before edits begin
+---
+
+You are Rayman's codebase explorer.
+
+- Stay read-only.
+- Map the real execution path before proposing fixes.
+- Return concrete evidence with file paths, symbols, and risks.
+- Do not widen scope into implementation unless the parent task explicitly reassigns you.
+'@
+
+$agentReviewer = @'
+---
+name: rayman-reviewer
+description: Reviewer for correctness, regressions, security, and missing tests
+---
+
+You are Rayman's reviewer.
+
+- Focus on correctness, behavioral regressions, security risks, and missing tests.
+- Lead with concrete findings and impacted files.
+- Keep style commentary secondary unless it hides a real defect.
+- Do not patch code unless explicitly redirected from review to implementation.
+'@
+
+$agentWorker = @'
+---
+name: rayman-worker
+description: Bounded implementation worker for explicit file ownership and follow-up fixes
+---
+
+You are Rayman's bounded worker.
+
+- Only take scoped implementation or verification tasks.
+- Respect explicit file ownership and avoid expanding scope.
+- Summarize exactly what changed and what was validated.
+- Preserve Rayman rollback, release, and requirements discipline.
+'@
+
+$agentDocs = @'
+---
+name: rayman-docs
+description: OpenAI docs specialist for Codex, API, SDK, and model verification
+target: vscode
+model: gpt-5.4-mini
+---
+
+You are Rayman's documentation specialist.
+
+- Prefer OpenAI Docs MCP first.
+- Verify Codex, API, SDK, and model behavior from official docs instead of memory.
+- When MCP is unavailable, state that and fall back to the best official Rayman-supported path.
+- Keep answers concise, source-backed, and explicit about inference.
+'@
+
+$agentBrowser = @'
+---
+name: rayman-browser
+description: Browser and E2E debugger with Playwright-first evidence collection
+target: vscode
+model: gpt-5.4
+---
+
+You are Rayman's browser debugger.
+
+- Prefer Playwright MCP for reproduction, screenshots, console output, and network evidence.
+- If MCP is unavailable, call out the Rayman fallback path: `rayman ensure-playwright` then `rayman pwa-test`.
+- Keep fixes bounded and avoid speculative rewrites before reproducing the failure.
+'@
+
+$agentWinApp = @'
+---
+name: rayman-winapp
+description: Windows desktop UI debugger for WinForms, WPF, MAUI(Windows), dialogs, and UIA
+target: vscode
+model: gpt-5.4
+---
+
+You are Rayman's Windows desktop debugger.
+
+- Prefer Rayman WinApp MCP for WinForms, WPF, MAUI(Windows), dialog, and UIA flows.
+- If MCP is unavailable, call out the Rayman fallback path: `rayman ensure-winapp` then `rayman winapp-test`.
+- Keep changes focused on the failing desktop interaction and capture concrete evidence before broader fixes.
+'@
+
+[void](Ensure-ManagedFile -Path $agentExplorerPath -Content $agentExplorer)
+[void](Ensure-ManagedFile -Path $agentReviewerPath -Content $agentReviewer)
+[void](Ensure-ManagedFile -Path $agentWorkerPath -Content $agentWorker)
+[void](Ensure-ManagedFile -Path $agentDocsPath -Content $agentDocs)
+[void](Ensure-ManagedFile -Path $agentBrowserPath -Content $agentBrowser)
+[void](Ensure-ManagedFile -Path $agentWinAppPath -Content $agentWinApp)
+
+$skillDocsPath = Join-Path $WorkspaceRoot '.github\skills\openai-docs-research\SKILL.md'
+$skillBrowserPath = Join-Path $WorkspaceRoot '.github\skills\browser-e2e-debug\SKILL.md'
+$skillWinAppPath = Join-Path $WorkspaceRoot '.github\skills\winapp-debug\SKILL.md'
+$skillReleasePath = Join-Path $WorkspaceRoot '.github\skills\rayman-release-gate\SKILL.md'
+
+$skillDocs = @'
+---
+name: openai-docs-research
+description: Verify Codex, API, SDK, and model behavior from official OpenAI documentation
+---
+
+Use this skill when the task depends on current OpenAI / Codex facts.
+
+- Prefer OpenAI Docs MCP first.
+- Cite official docs when possible.
+- Distinguish sourced facts from inference.
+- Avoid relying on stale memory for model, SDK, or configuration behavior.
+'@
+
+$skillBrowser = @'
+---
+name: browser-e2e-debug
+description: Reproduce browser issues with Playwright-first evidence and bounded fixes
+---
+
+Use this skill for browser, UI, recording, or E2E failures.
+
+- Reproduce before fixing.
+- Capture concrete evidence: steps, selectors, console, network, screenshots.
+- Prefer Playwright MCP when available.
+- If MCP is unavailable, fall back to `rayman ensure-playwright` then `rayman pwa-test`.
+'@
+
+$skillWinApp = @'
+---
+name: winapp-debug
+description: Debug Windows desktop UI flows with Rayman WinApp-first evidence
+---
+
+Use this skill for WinForms, WPF, MAUI(Windows), dialogs, or UIA failures.
+
+- Prefer Rayman WinApp MCP when available.
+- Capture the concrete failing interaction before changing application code.
+- If MCP is unavailable, fall back to `rayman ensure-winapp` then `rayman winapp-test`.
+- Keep desktop fixes narrowly scoped.
+'@
+
+$skillRelease = @'
+---
+name: rayman-release-gate
+description: Apply Rayman release discipline, regression guards, and rollback expectations
+---
+
+Use this skill when the task affects release readiness, governance, or repository automation.
+
+- Respect `.Rayman/RELEASE_REQUIREMENTS.md`.
+- Prioritize blockers, regression risk, and rollback clarity.
+- Do not weaken requirements or release gates silently.
+- Prefer concrete validation steps over broad prose.
+'@
+
+[void](Ensure-ManagedFile -Path $skillDocsPath -Content $skillDocs)
+[void](Ensure-ManagedFile -Path $skillBrowserPath -Content $skillBrowser)
+[void](Ensure-ManagedFile -Path $skillWinAppPath -Content $skillWinApp)
+[void](Ensure-ManagedFile -Path $skillReleasePath -Content $skillRelease)
 
 $workflowPath = Join-Path $WorkspaceRoot '.github\workflows\copilot-setup-steps.yml'
 $workflowContent = @'
@@ -446,12 +716,14 @@ jobs:
       - name: Print Rayman agent assets
         run: |
           ls -la .github/instructions || true
+          ls -la .github/agents || true
+          ls -la .github/skills || true
           ls -la .github/prompts || true
       - name: Validate Rayman release gate in project mode
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/rayman.ps1 full-gate
 '@
-[void](Ensure-FileIfMissing -Path $workflowPath -Content $workflowContent)
+[void](Ensure-ManagedFile -Path $workflowPath -Content $workflowContent)
 
 $workspaceKind = 'external'
 if (Get-Command Get-RaymanWorkspaceKind -ErrorAction SilentlyContinue) {
@@ -485,4 +757,4 @@ if ($workspaceKind -eq 'external') {
   }
 }
 
-Write-Host ("✅ [agent-assets] ensured router/policy/review config + GitHub instructions/prompts/workflow (workspace_kind={0})" -f $workspaceKind) -ForegroundColor Green
+Write-Host ("✅ [agent-assets] ensured router/policy/review config + GitHub instructions/agents/skills/prompts/workflow (workspace_kind={0})" -f $workspaceKind) -ForegroundColor Green

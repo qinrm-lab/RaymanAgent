@@ -1,4 +1,4 @@
-name: copilot-setup-steps
+﻿name: copilot-setup-steps
 
 on:
   workflow_dispatch:
@@ -11,7 +11,9 @@ jobs:
       - name: Print Rayman agent assets
         run: |
           ls -la .github/instructions || true
+          ls -la .github/agents || true
+          ls -la .github/skills || true
           ls -la .github/prompts || true
       - name: Validate Rayman release gate in project mode
         run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/release/release_gate.ps1 -WorkspaceRoot "$PWD" -Mode project -SkipAutoDistSync
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/rayman.ps1 full-gate

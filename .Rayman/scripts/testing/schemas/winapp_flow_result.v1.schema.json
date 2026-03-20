@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/winapp_flow_result.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_root",
+    "flow_file",
+    "default_timeout_ms",
+    "success",
+    "degraded",
+    "degraded_reason",
+    "error_message",
+    "detail_log",
+    "artifacts",
+    "steps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.winapp.flow.result.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "flow_file": {
+      "type": "string"
+    },
+    "default_timeout_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "degraded_reason": {
+      "type": "string"
+    },
+    "error_message": {
+      "type": "string"
+    },
+    "detail_log": {
+      "type": "string"
+    },
+    "launch": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "window": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "last_result_json",
+        "readiness_json",
+        "screenshots_dir"
+      ],
+      "properties": {
+        "last_result_json": {
+          "type": "string"
+        },
+        "readiness_json": {
+          "type": "string"
+        },
+        "screenshots_dir": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "steps": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

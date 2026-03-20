@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayman.local/schemas/winapp_ready.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_root",
+    "host_is_windows",
+    "desktop_session_available",
+    "desktop_session_reason",
+    "desktop_session_name",
+    "user_interactive",
+    "uia_available",
+    "screenshot_available",
+    "ready",
+    "reason",
+    "detail",
+    "error_message"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rayman.winapp.ready.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "host_is_windows": {
+      "type": "boolean"
+    },
+    "desktop_session_available": {
+      "type": "boolean"
+    },
+    "desktop_session_reason": {
+      "type": "string"
+    },
+    "desktop_session_name": {
+      "type": "string"
+    },
+    "user_interactive": {
+      "type": "boolean"
+    },
+    "uia_available": {
+      "type": "boolean"
+    },
+    "screenshot_available": {
+      "type": "boolean"
+    },
+    "ready": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "error_message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

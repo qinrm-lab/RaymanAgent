@@ -121,6 +121,36 @@ function Test-AttentionNotificationEnabled {
   return $true
 }
 
+function Resolve-AttentionSurface {
+  param([string]$WorkspaceRoot)
+
+  if (Get-Command Get-RaymanAttentionSurface -ErrorAction SilentlyContinue) {
+    try { return (Get-RaymanAttentionSurface -WorkspaceRoot $WorkspaceRoot -Default 'log') } catch {}
+  }
+
+  return 'log'
+}
+
+function Write-AttentionStateRecord {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$Kind,
+    [string]$Title,
+    [string]$Message,
+    [string]$Surface,
+    [bool]$AlertEnabled,
+    [bool]$SpeechEnabled,
+    [bool]$Suppressed
+  )
+
+  if (Get-Command Write-RaymanAttentionState -ErrorAction SilentlyContinue) {
+    try {
+      Write-RaymanAttentionState -WorkspaceRoot $WorkspaceRoot -Kind $Kind -Title $Title -Message $Message -Surface $Surface -AlertEnabled $AlertEnabled -SpeechEnabled $SpeechEnabled -Suppressed $Suppressed
+      return
+    } catch {}
+  }
+}
+
 function Resolve-AttentionSpeechEnabled {
   param(
     [string]$Kind,
@@ -156,16 +186,41 @@ if ($PSBoundParameters.ContainsKey('DisableSpeech')) {
   $speechOverride['DisableSpeech'] = $DisableSpeech
 }
 $speechEnabled = Resolve-AttentionSpeechEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot @speechOverride
+$surface = Resolve-AttentionSurface -WorkspaceRoot $workspaceRoot
 
 try {
   if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
     $diagKind = if ($notificationEnabled) { 'request_attention' } else { 'request_attention_suppressed' }
-    Write-RaymanDiag -Scope 'attention' -Message ("{0} ({1}): {2}" -f $diagKind, $Kind, $fullMessage) -WorkspaceRoot $workspaceRoot
+    Write-RaymanDiag -Scope 'attention' -Message ("{0} ({1}, surface={2}): {3}" -f $diagKind, $Kind, $surface, $fullMessage) -WorkspaceRoot $workspaceRoot
   }
 } catch {}
 
+Write-AttentionStateRecord `
+  -WorkspaceRoot $workspaceRoot `
+  -Kind $Kind `
+  -Title $Title `
+  -Message $fullMessage `
+  -Surface $surface `
+  -AlertEnabled $notificationEnabled `
+  -SpeechEnabled $(if ($surface -eq 'toast') { $speechEnabled } else { $false }) `
+  -Suppressed (-not $notificationEnabled)
+
 if (-not $notificationEnabled) {
   return
+}
+
+switch ($surface) {
+  'silent' {
+    return
+  }
+  'log' {
+    if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+      Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
+    } else {
+      Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+    }
+    return
+  }
 }
 
 try {
@@ -173,11 +228,17 @@ try {
   if ($toastDelivered) {
   } elseif (Get-Command notify-send -ErrorAction SilentlyContinue) {
     & (Get-Command notify-send -ErrorAction SilentlyContinue).Source $Title $fullMessage | Out-Null
+  } elseif (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+    Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
   } else {
     Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
   }
 } catch {
-  Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+  if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+    Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
+  } else {
+    Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+  }
 }
 
 if ($speechEnabled) {

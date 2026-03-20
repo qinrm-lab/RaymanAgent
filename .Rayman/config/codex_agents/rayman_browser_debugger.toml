@@ -1,0 +1,15 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+name = "rayman_browser_debugger"
+description = "Browser debugger that uses Playwright-first evidence before changing application code."
+model = "gpt-5.4"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "high"
+developer_instructions = '''
+Role: rayman_browser_debugger
+Use Playwright MCP first for browser, UI, recording, and E2E issues. Keep evidence concrete, keep fixes bounded, and report the Rayman fallback command if MCP is unavailable.
+'''
+mcp_servers.openaiDeveloperDocs.enabled = false
+mcp_servers.playwright.enabled = true
+mcp_servers.raymanWinApp.enabled = false
+[[skills.config]]
+path = "../../../.github/skills/browser-e2e-debug"

@@ -326,57 +326,10 @@ function Invoke-RaymanErrorAlert([string]$Reason = 'Rayman 初始化失败，需
   } catch {}
 }
 
-function Start-RaymanAttentionWatch([string]$WorkspaceRoot) {
-  $enabled = Get-RaymanBoolEnv -Name 'RAYMAN_ALERT_WATCH_ENABLED' -Default $true
-  if (-not $enabled) {
-    Write-Info "[alert-watch] 已禁用自动启动（RAYMAN_ALERT_WATCH_ENABLED=0）。"
-    return
-  }
-
-  $watchScript = Join-Path $PSScriptRoot 'scripts\alerts\attention_watch.ps1'
-  if (-not (Test-Path -LiteralPath $watchScript -PathType Leaf)) {
-    Write-Warn ("[alert-watch] 缺少脚本：{0}" -f $watchScript)
-    return
-  }
-
-  $runtimeDir = Join-Path $WorkspaceRoot '.Rayman\runtime'
-  if (-not (Test-Path -LiteralPath $runtimeDir)) {
-    New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
-  }
-  $pidFile = Join-Path $runtimeDir 'attention_watch.pid'
-
-  if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
-    $oldPid = Get-RaymanPidFromFile -PidFilePath $pidFile
-    if ($oldPid -gt 0 -and (Test-RaymanPidFileProcess -PidFilePath $pidFile -AllowedProcessNames @('powershell', 'pwsh'))) {
-      Write-Info ("[alert-watch] 已在运行（PID={0}），跳过重复启动。" -f $oldPid)
-      return
-    }
-    if ($oldPid -gt 0) {
-      Write-Warn ("[alert-watch] 检测到失效 pid 文件（PID={0}），准备重启监控。" -f $oldPid)
-    }
-    try { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue } catch {}
-  }
-
-  try {
-    $psHost = Resolve-RaymanPowerShellHost
-    if ([string]::IsNullOrWhiteSpace($psHost)) {
-      throw "cannot find PowerShell host (pwsh/powershell) in PATH"
-    }
-
-    $proc = Start-RaymanProcessHiddenCompat -FilePath $psHost -ArgumentList @(
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      $watchScript,
-      '-WorkspaceRoot',
-      $WorkspaceRoot,
-      '-PidFile',
-      $pidFile
-    )
-    Write-Info ("[alert-watch] 已启动后台监控（PID={0}, host={1}）。" -f $proc.Id, $psHost)
-  } catch {
-    Write-Warn ("[alert-watch] 启动失败：{0}" -f $_.Exception.Message)
+function Write-RaymanAttentionAutoStartMode() {
+  $enabled = Get-RaymanBoolEnv -Name 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' -Default $false
+  if ($enabled) {
+    Write-Info '[alert-watch] detached auto-start removed; shared win-watch.ps1 will enable embedded attention scan when background watchers start.'
   }
 }
 
@@ -481,8 +434,6 @@ function Write-RaymanSystemSlimAuditSummary([object]$AuditResult) {
   }
 }
 
-$script:RaymanSandboxProxyBridge = $null
-$script:RaymanKeepSandboxProxyBridge = $false
 
 function Get-RaymanProxyValueByPriority {
   foreach ($name in @('https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'all_proxy', 'ALL_PROXY')) {
@@ -550,226 +501,8 @@ function Remove-RaymanFileBestEffort([string]$Path) {
   try { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue } catch {}
 }
 
-function Stop-RaymanSandboxProxyBridgeProcess([int]$ProcessId) {
-  if ($ProcessId -le 0) { return }
-  try {
-    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($p) { Stop-Process -Id $ProcessId -Force -ErrorAction Stop }
-  } catch {}
-}
-
-function Add-RaymanProxyBridgeFirewallRule([string]$RuleName, [int]$Port) {
-  if ([string]::IsNullOrWhiteSpace($RuleName)) { return $false }
-  if ($Port -lt 1 -or $Port -gt 65535) { return $false }
-  try {
-    & netsh advfirewall firewall delete rule name="$RuleName" protocol=TCP localport=$Port | Out-Null
-  } catch {}
-  try {
-    $out = (& netsh advfirewall firewall add rule name="$RuleName" dir=in action=allow protocol=TCP localport=$Port profile=any 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0) {
-      Write-Info ("[sandbox-proxy] firewall allow rule added: {0} (tcp/{1})" -f $RuleName, $Port)
-      return $true
-    }
-    Write-Warn ("[sandbox-proxy] firewall rule add failed (exit={0}): {1}" -f $LASTEXITCODE, $out)
-    Write-Warn ("[sandbox-proxy] 建议以管理员执行：netsh advfirewall firewall add rule name=""{0}"" dir=in action=allow protocol=TCP localport={1} profile=any" -f $RuleName, $Port)
-    return $false
-  } catch {}
-  Write-Warn ("[sandbox-proxy] firewall rule add failed: {0} (tcp/{1}); sandbox may not reach host bridge." -f $RuleName, $Port)
-  return $false
-}
-
-function Remove-RaymanProxyBridgeFirewallRule([string]$RuleName, [int]$Port) {
-  if ([string]::IsNullOrWhiteSpace($RuleName)) { return }
-  if ($Port -lt 1 -or $Port -gt 65535) { return }
-  try {
-    & netsh advfirewall firewall delete rule name="$RuleName" protocol=TCP localport=$Port | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Write-Info ("[sandbox-proxy] firewall rule removed: {0} (tcp/{1})" -f $RuleName, $Port)
-    }
-  } catch {}
-}
-
-function Start-RaymanSandboxProxyBridge([string]$WorkspaceRoot) {
-  $runtimeDir = Join-Path $WorkspaceRoot '.Rayman\runtime'
-  if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
-    New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
-  }
-
-  $overrideFile = Join-Path $runtimeDir 'sandbox.proxy.override.json'
-  $pidFile = Join-Path $runtimeDir 'sandbox_proxy_bridge.pid'
-  $stateFile = Join-Path $runtimeDir 'sandbox_proxy_bridge.state.json'
-  $logFile = Join-Path $runtimeDir 'sandbox_proxy_bridge.log'
-  $oldPid = 0
-  if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
-    try {
-      $oldRaw = (Get-Content -LiteralPath $pidFile -Raw -ErrorAction Stop).Trim()
-      [void][int]::TryParse($oldRaw, [ref]$oldPid)
-    } catch {}
-  }
-
-  if (-not (Get-RaymanBoolEnv -Name 'RAYMAN_SANDBOX_PROXY_BRIDGE_ENABLED' -Default $true)) {
-    if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-    Remove-RaymanFileBestEffort -Path $pidFile
-    Remove-RaymanFileBestEffort -Path $stateFile
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  $proxyRaw = Get-RaymanProxyValueByPriority
-  $proxyUri = Get-RaymanProxyUri -Value $proxyRaw
-  if ($null -eq $proxyUri) {
-    if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-    Remove-RaymanFileBestEffort -Path $pidFile
-    Remove-RaymanFileBestEffort -Path $stateFile
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  if (-not (Test-RaymanLoopbackHost -HostName $proxyUri.Host)) {
-    if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-    Remove-RaymanFileBestEffort -Path $pidFile
-    Remove-RaymanFileBestEffort -Path $stateFile
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  if ($proxyUri.Port -le 0) {
-    Write-Warn ("[sandbox-proxy] loopback proxy missing port: {0}" -f $proxyRaw)
-    if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-    Remove-RaymanFileBestEffort -Path $pidFile
-    Remove-RaymanFileBestEffort -Path $stateFile
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  $scheme = $proxyUri.Scheme.ToLowerInvariant()
-  if ($scheme -ne 'http' -and $scheme -ne 'https') {
-    Write-Warn ("[sandbox-proxy] unsupported proxy scheme for bridge: {0}" -f $proxyRaw)
-    if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-    Remove-RaymanFileBestEffort -Path $pidFile
-    Remove-RaymanFileBestEffort -Path $stateFile
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  if ($oldPid -gt 0) { Stop-RaymanSandboxProxyBridgeProcess -ProcessId $oldPid }
-
-  $bridgeScript = Join-Path $PSScriptRoot 'scripts\proxy\run_tcp_bridge.ps1'
-  if (-not (Test-Path -LiteralPath $bridgeScript -PathType Leaf)) {
-    Write-Warn ("[sandbox-proxy] bridge script missing: {0}" -f $bridgeScript)
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  $defaultPort = $proxyUri.Port + 10000
-  if ($defaultPort -gt 65535) { $defaultPort = 18988 }
-  $preferredPort = Get-RaymanIntEnv -Name 'RAYMAN_SANDBOX_PROXY_BRIDGE_PORT' -Default $defaultPort -Min 1025 -Max 65535
-  $listenPort = Get-RaymanAvailableTcpPort -PreferredPort $preferredPort
-  if ($listenPort -le 0) {
-    Write-Warn "[sandbox-proxy] cannot allocate listen port for bridge."
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-
-  try {
-    $psHost = Resolve-RaymanPowerShellHost
-    if ([string]::IsNullOrWhiteSpace($psHost)) {
-      throw "cannot find PowerShell host (pwsh/powershell) in PATH"
-    }
-
-    $proc = Start-RaymanProcessHiddenCompat -FilePath $psHost -ArgumentList @(
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      $bridgeScript,
-      '-ListenAddress',
-      '0.0.0.0',
-      '-ListenPort',
-      $listenPort,
-      '-TargetHost',
-      $proxyUri.Host,
-      '-TargetPort',
-      $proxyUri.Port,
-      '-PidFile',
-      $pidFile,
-      '-LogFile',
-      $logFile,
-      '-StateFile',
-      $stateFile
-    )
-    Write-Info ("[sandbox-proxy] bridge host={0} pid={1}" -f $psHost, $proc.Id)
-
-    Start-Sleep -Milliseconds 700
-    $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-    if (-not $alive) {
-      Write-Warn ("[sandbox-proxy] bridge process exited immediately; check {0}" -f $logFile)
-      Remove-RaymanFileBestEffort -Path $overrideFile
-      return $null
-    }
-
-    $overrideProxy = ("{0}://127.0.0.1:{1}" -f $scheme, $listenPort)
-    $firewallRuleName = $null
-    $firewallRuleAdded = $false
-    if (Get-RaymanBoolEnv -Name 'RAYMAN_SANDBOX_PROXY_BRIDGE_FIREWALL_RULE_ENABLED' -Default $true) {
-      $workspaceLeaf = Split-Path -Path $WorkspaceRoot -Leaf
-      if ([string]::IsNullOrWhiteSpace($workspaceLeaf)) { $workspaceLeaf = 'workspace' }
-      $firewallRuleName = ("Rayman Sandbox Proxy Bridge {0} {1}" -f $workspaceLeaf, $listenPort)
-      $firewallRuleAdded = Add-RaymanProxyBridgeFirewallRule -RuleName $firewallRuleName -Port $listenPort
-    }
-
-    $payload = [ordered]@{
-      proxy        = $overrideProxy
-      source       = 'host-loopback-bridge'
-      bridgePid    = $proc.Id
-      bridgeListen = ('0.0.0.0:{0}' -f $listenPort)
-      bridgeTarget = ('{0}:{1}' -f $proxyUri.Host, $proxyUri.Port)
-      firewallRule = $firewallRuleName
-      firewallOpen = $firewallRuleAdded
-      generatedAt  = (Get-Date).ToString('o')
-    }
-    ($payload | ConvertTo-Json -Depth 6) | Out-File -FilePath $overrideFile -Encoding utf8
-
-    Write-Info ("[sandbox-proxy] bridge started pid={0} listen=0.0.0.0:{1} -> {2}:{3}" -f $proc.Id, $listenPort, $proxyUri.Host, $proxyUri.Port)
-    Write-Info ("[sandbox-proxy] override file: {0}" -f $overrideFile)
-
-    return [pscustomobject]@{
-      Pid          = $proc.Id
-      PidFile      = $pidFile
-      StateFile    = $stateFile
-      LogFile      = $logFile
-      OverrideFile = $overrideFile
-      ListenPort   = $listenPort
-      FirewallRuleName = $firewallRuleName
-      FirewallRuleAdded = $firewallRuleAdded
-    }
-  } catch {
-    Write-Warn ("[sandbox-proxy] start bridge failed: {0}" -f $_.Exception.Message)
-    Remove-RaymanFileBestEffort -Path $overrideFile
-    return $null
-  }
-}
-
-function Stop-RaymanSandboxProxyBridge([object]$BridgeInfo, [bool]$KeepRunning = $false) {
-  if ($null -eq $BridgeInfo) { return }
-  if ($KeepRunning) {
-    Write-Info ("[sandbox-proxy] keep running pid={0} (auto-close disabled)." -f $BridgeInfo.Pid)
-    return
-  }
-
-  Stop-RaymanSandboxProxyBridgeProcess -ProcessId ([int]$BridgeInfo.Pid)
-  if ($BridgeInfo.PSObject.Properties['FirewallRuleAdded'] -and $BridgeInfo.FirewallRuleAdded -and
-      $BridgeInfo.PSObject.Properties['FirewallRuleName'] -and -not [string]::IsNullOrWhiteSpace([string]$BridgeInfo.FirewallRuleName)) {
-    Remove-RaymanProxyBridgeFirewallRule -RuleName ([string]$BridgeInfo.FirewallRuleName) -Port ([int]$BridgeInfo.ListenPort)
-  }
-  Remove-RaymanFileBestEffort -Path ([string]$BridgeInfo.PidFile)
-  Remove-RaymanFileBestEffort -Path ([string]$BridgeInfo.OverrideFile)
-  Remove-RaymanFileBestEffort -Path ([string]$BridgeInfo.StateFile)
-  Write-Info "[sandbox-proxy] bridge stopped and override removed."
-}
-
 Write-Info ("Windows Init ({0})" -f $RaymanVersion)
-Start-RaymanAttentionWatch -WorkspaceRoot $WorkspaceRoot
+Write-RaymanAttentionAutoStartMode
 Install-RaymanVscodeAutoStart -WorkspaceRoot $WorkspaceRoot
 $systemSlimAuditResult = Invoke-RaymanSystemSlimAuditSafe -WorkspaceRoot $WorkspaceRoot -Source 'init'
 Write-RaymanSystemSlimAuditSummary -AuditResult $systemSlimAuditResult
@@ -817,7 +550,6 @@ try {
   $StatusFile = Join-Path $StatusDir 'bootstrap_status.json'
 
   $LogFile = Join-Path $StatusDir 'bootstrap.log'
-  $script:RaymanSandboxProxyBridge = Start-RaymanSandboxProxyBridge -WorkspaceRoot $WorkspaceRoot
 
   function Get-RaymanSandboxHostAclIssue([string]$hostFolder) {
     try {
@@ -1002,12 +734,12 @@ try {
     return $filtered
   }
 
-  function Register-RaymanSandboxOwner([int]$Pid, [object]$OwnerContext, [string]$WsbPath, [string]$StatePath) {
-    if ($Pid -le 0 -or $null -eq $OwnerContext) { return }
+  function Register-RaymanSandboxOwner([int]$OwnerPid, [object]$OwnerContext, [string]$WsbPath, [string]$StatePath) {
+    if ($OwnerPid -le 0 -or $null -eq $OwnerContext) { return }
     $entries = @(Sync-RaymanSandboxOwnerRegistry)
-    $remaining = @($entries | Where-Object { [int]$_.pid -ne $Pid })
+    $remaining = @($entries | Where-Object { [int]$_.pid -ne $OwnerPid })
     $record = [pscustomobject]@{
-      pid           = $Pid
+      pid           = $OwnerPid
       workspaceRoot = [string]$OwnerContext.WorkspaceRoot
       workspaceHash = [string]$OwnerContext.WorkspaceHash
       ownerSource   = [string]$OwnerContext.OwnerSource
@@ -1181,7 +913,7 @@ try {
 
     $proc = Start-Process -FilePath $exe -ArgumentList @($wsbPath) -PassThru
     Write-Info ("[sandbox] WindowsSandbox PID={0}" -f $proc.Id)
-    Register-RaymanSandboxOwner -Pid $proc.Id -OwnerContext $SandboxOwnerContext -WsbPath $wsbPath -StatePath $SandboxOwnerStatePath
+    Register-RaymanSandboxOwner -OwnerPid $proc.Id -OwnerContext $SandboxOwnerContext -WsbPath $wsbPath -StatePath $SandboxOwnerStatePath
     Write-Info ("[sandbox] owner registered: {0}" -f $SandboxOwnerContext.OwnerDisplay)
 
     return $proc
@@ -1486,12 +1218,6 @@ try {
 
   }
 
-  if ($script:RaymanSandboxProxyBridge) {
-    $script:RaymanKeepSandboxProxyBridge = ($sandboxStartState -eq 'ready' -and -not $autoClose)
-    Stop-RaymanSandboxProxyBridge -BridgeInfo $script:RaymanSandboxProxyBridge -KeepRunning:$script:RaymanKeepSandboxProxyBridge
-    $script:RaymanSandboxProxyBridge = $null
-  }
-
 
 
   
@@ -1562,15 +1288,6 @@ catch {
 }
 
 finally {
-
-  try {
-    if ($script:RaymanSandboxProxyBridge) {
-      Stop-RaymanSandboxProxyBridge -BridgeInfo $script:RaymanSandboxProxyBridge -KeepRunning:$script:RaymanKeepSandboxProxyBridge
-      if (-not $script:RaymanKeepSandboxProxyBridge) {
-        $script:RaymanSandboxProxyBridge = $null
-      }
-    }
-  } catch {}
 
   try { Stop-Transcript | Out-Null } catch {}
 

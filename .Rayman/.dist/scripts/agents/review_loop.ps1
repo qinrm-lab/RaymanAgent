@@ -44,6 +44,33 @@ function Get-JsonOrNull([string]$Path) {
   }
 }
 
+function Resolve-PromptTemplateKey {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$PromptKeyText
+  )
+
+  $normalizedPromptKey = ([string]$PromptKeyText).Trim()
+  if ([string]::IsNullOrWhiteSpace($normalizedPromptKey)) { return '' }
+
+  $promptDir = Join-Path $WorkspaceRoot '.github\prompts'
+  if (-not (Test-Path -LiteralPath $promptDir -PathType Container)) {
+    return $normalizedPromptKey
+  }
+
+  $candidates = @(Get-ChildItem -LiteralPath $promptDir -Filter '*.prompt.md' -File -ErrorAction SilentlyContinue)
+  foreach ($candidate in $candidates) {
+    if ($candidate.Name.Equals($normalizedPromptKey, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $candidate.Name
+    }
+    if ($candidate.BaseName.Equals($normalizedPromptKey, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $candidate.Name
+    }
+  }
+
+  return $normalizedPromptKey
+}
+
 function Get-PropValue([object]$Object, [string]$Name, $Default = $null) {
   if ($null -eq $Object) { return $Default }
   $prop = $Object.PSObject.Properties[$Name]
@@ -63,13 +90,14 @@ function Convert-ToStringArray([object]$Value) {
 
 function Get-ReviewPromptKey {
   param(
+    [string]$WorkspaceRoot,
     [object]$ModelRoutingConfig,
     [string]$ExplicitPromptKey,
     [int]$RoundNumber
   )
 
   if (-not [string]::IsNullOrWhiteSpace([string]$ExplicitPromptKey)) {
-    return ([string]$ExplicitPromptKey).Trim()
+    return Resolve-PromptTemplateKey -WorkspaceRoot $WorkspaceRoot -PromptKeyText $ExplicitPromptKey
   }
   if ($null -eq $ModelRoutingConfig) { return '' }
   $tasks = Get-PropValue -Object $ModelRoutingConfig -Name 'tasks' -Default $null
@@ -78,7 +106,7 @@ function Get-ReviewPromptKey {
   if ($promptKeys.Count -eq 0) { return '' }
   $index = ($RoundNumber - 1) % $promptKeys.Count
   if ($index -lt 0) { $index = 0 }
-  return [string]$promptKeys[$index]
+  return Resolve-PromptTemplateKey -WorkspaceRoot $WorkspaceRoot -PromptKeyText ([string]$promptKeys[$index])
 }
 
 function Write-LoopLog([string]$Path, [string]$Message) {
@@ -463,7 +491,7 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
 
   if (Test-Path -LiteralPath $dispatchScript -PathType Leaf) {
     if ($TaskKind -eq 'review') {
-      $roundPromptKey = Get-ReviewPromptKey -ModelRoutingConfig $modelRoutingConfig -ExplicitPromptKey $PromptKey -RoundNumber $round
+      $roundPromptKey = Get-ReviewPromptKey -WorkspaceRoot $WorkspaceRoot -ModelRoutingConfig $modelRoutingConfig -ExplicitPromptKey $PromptKey -RoundNumber $round
     } elseif (-not [string]::IsNullOrWhiteSpace($PromptKey)) {
       $roundPromptKey = $PromptKey.Trim()
     }

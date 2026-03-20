@@ -6,7 +6,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $WorkspaceRoot '.Rayman\common.ps1')
 . (Join-Path $WorkspaceRoot '.Rayman\scripts\utils\command_catalog.ps1')
+. (Join-Path $WorkspaceRoot '.Rayman\scripts\testing\host_smoke.lib.ps1')
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $checks = New-Object 'System.Collections.Generic.List[object]'
@@ -88,7 +90,7 @@ function Parse-CommandMapFromTaggedLines {
 
   $map = @{}
   foreach ($line in @($Text -split "`r?`n")) {
-    if ($line -match '^\s{2}([a-z0-9-]+)\s+\[(all|pwsh-only|windows-only)\]\s+') {
+    if ($line -match '^\s{2}(\S+)\s+\[(all|pwsh-only|windows-only)\]\s+') {
       $map[$matches[1]] = $matches[2]
       continue
     }
@@ -146,24 +148,57 @@ function Get-CommandMapDiffText {
   return ($parts -join ' | ')
 }
 
+function Parse-BashEntrypointMap {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw ("missing file: {0}" -f $Path)
+  }
+
+  $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+  $outerMatch = [regex]::Match($raw, '(?s)case "\$cmd" in(?<body>.*)\nesac\s*\r?\n\s*rayman_emit_done_alert')
+  if (-not $outerMatch.Success) {
+    throw ("main case block not found: {0}" -f $Path)
+  }
+
+  $map = @{}
+  foreach ($line in @($outerMatch.Groups['body'].Value -split "`r?`n")) {
+    if ($line -match '^\s{2}([^)]+)\)\s*$') {
+      foreach ($label in @($matches[1] -split '\|')) {
+        $name = [string]$label.Trim()
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -eq '*') { continue }
+        $map[$name] = 'all'
+      }
+    }
+  }
+
+  return $map
+}
+
+function Get-MissingCommandText {
+  param(
+    [string[]]$ExpectedNames,
+    [hashtable]$Actual
+  )
+
+  $missing = @($ExpectedNames | Sort-Object | Where-Object { -not $Actual.ContainsKey([string]$_) })
+  if ($missing.Count -eq 0) {
+    return 'ok'
+  }
+  return ('missing={0}' -f ($missing -join ', '))
+}
+
 function Invoke-CommandText {
   param(
     [string]$FilePath,
-    [string[]]$Arguments
+    [string[]]$Arguments,
+    [string]$WorkingDirectory = ''
   )
 
-  try {
-    $output = & $FilePath @Arguments 2>&1 | Out-String
-    $exitCode = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($?) { 0 } else { 1 }
-    return [pscustomobject]@{
-      exit_code = $exitCode
-      output = $output.TrimEnd("`r", "`n")
-    }
-  } catch {
-    return [pscustomobject]@{
-      exit_code = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
-      output = $_.Exception.ToString()
-    }
+  $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  return [pscustomobject]@{
+    exit_code = if ([bool]$capture.started) { [int]$capture.exit_code } else { -1 }
+    output = (Get-RaymanHostSmokeMergedOutput -Capture $capture).TrimEnd("`r", "`n")
   }
 }
 
@@ -180,11 +215,11 @@ $expectedPwsh = Get-ExpectedCommandMap -Kind pwsh
 $expectedRecommended = Get-ExpectedCommandMap -Kind recommended
 $expectedFull = Get-ExpectedCommandMap -Kind pwsh
 
-$bashCmd = Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($null -eq $bashCmd) {
+$bashInvocation = New-RaymanHostSmokeBashInvocation -WorkspaceRoot $WorkspaceRoot -CommandText 'bash ./.Rayman/rayman help'
+if ($null -eq $bashInvocation) {
   Add-Check -Name 'bash_help' -Status FAIL -Detail 'bash not found'
 } else {
-  $bashResult = Invoke-CommandText -FilePath $bashCmd.Source -Arguments @('-lc', "cd '$WorkspaceRoot' && bash ./.Rayman/rayman help")
+  $bashResult = Invoke-CommandText -FilePath ([string]$bashInvocation.path) -Arguments @($bashInvocation.argument_list)
   if ($bashResult.exit_code -ne 0) {
     Add-Check -Name 'bash_help' -Status FAIL -Detail ("bash help failed (exit={0})" -f $bashResult.exit_code)
   } else {
@@ -194,11 +229,19 @@ if ($null -eq $bashCmd) {
   }
 }
 
-$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($null -eq $pwshCmd) {
+try {
+  $actualBashEntrypoints = Parse-BashEntrypointMap -Path (Join-Path $WorkspaceRoot '.Rayman\rayman')
+  $bashEntrypointDiff = Get-MissingCommandText -ExpectedNames @($expectedBash.Keys) -Actual $actualBashEntrypoints
+  Add-Check -Name 'bash_entrypoints' -Status $(if ($bashEntrypointDiff -eq 'ok') { 'PASS' } else { 'FAIL' }) -Detail $bashEntrypointDiff
+} catch {
+  Add-Check -Name 'bash_entrypoints' -Status FAIL -Detail $_.Exception.Message
+}
+
+$pwshPath = Resolve-RaymanHostSmokeCommandPath -Names @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')
+if ([string]::IsNullOrWhiteSpace($pwshPath)) {
   Add-Check -Name 'pwsh_help' -Status FAIL -Detail 'pwsh not found'
 } else {
-  $pwshResult = Invoke-CommandText -FilePath $pwshCmd.Source -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $WorkspaceRoot '.Rayman\rayman.ps1'), 'help')
+  $pwshResult = Invoke-CommandText -FilePath $pwshPath -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $WorkspaceRoot '.Rayman\rayman.ps1'), 'help') -WorkingDirectory $WorkspaceRoot
   if ($pwshResult.exit_code -ne 0) {
     Add-Check -Name 'pwsh_help' -Status FAIL -Detail ("pwsh help failed (exit={0})" -f $pwshResult.exit_code)
   } else {
