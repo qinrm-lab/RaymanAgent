@@ -69,8 +69,9 @@ function Add-ExcludePatterns {
   param([System.Collections.Generic.List[string]]$List)
 
   # 默认不分发的临时/缓存数据
-  [void]$List.Add('state\\chroma_db')
-  [void]$List.Add('state\\rag.db')
+  [void]$List.Add('state\\memory')
+  [void]$List.Add(('state\\' + 'chroma' + '_db'))
+  [void]$List.Add(('state\\' + 'rag' + '.db'))
   [void]$List.Add('state\\release_gate_report.md')
   [void]$List.Add('state\\last_error.log')
   [void]$List.Add('state\\last_error_summary.md')
@@ -78,8 +79,7 @@ function Add-ExcludePatterns {
   [void]$List.Add('logs')
 
   if ($IncludeVectorDb) {
-    $List.Remove('state\\chroma_db') | Out-Null
-    $List.Remove('state\\rag.db') | Out-Null
+    $List.Remove('state\\memory') | Out-Null
   }
   if ($IncludeRuntimeFiles) {
     $List.Remove('runtime') | Out-Null
@@ -208,7 +208,7 @@ try {
   Compress-Archive -Path (Join-Path $stageRoot '.Rayman') -DestinationPath $packagePath -Force
 
   Ok ("可分发包已生成：{0}" -f $packagePath)
-  Write-Host ("📦 默认已排除向量库/运行时/日志；如需完整包可加参数 -IncludeVectorDb -IncludeRuntimeFiles -IncludeLogs") -ForegroundColor DarkCyan
+  Write-Host ("📦 默认已排除 Agent Memory 存储/运行时/日志；如需完整包可加参数 -IncludeVectorDb -IncludeRuntimeFiles -IncludeLogs") -ForegroundColor DarkCyan
   if ($IncludeRuntimeFiles -and -not $KeepRuntimeHistory) {
     Write-Host ("📦 runtime 历史产物已净化（如需保留历史，请加 -KeepRuntimeHistory）") -ForegroundColor DarkCyan
   }

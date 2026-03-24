@@ -8,13 +8,15 @@ obj/
 bin/
 gtp_logs/
 .ci/
-.rag/
+.Rayman/state/memory/
 .playwright-mcp/
 App_Data/
 .vs/
 .Rayman/state/
 .Rayman/runtime/
 .Rayman/logs/
+.Rayman/temp/
+.Rayman/tmp/
 .Rayman/context/skills.auto.md
 .Rayman/mcp/*.bak
 .Rayman/release/delivery-pack-*.md
@@ -52,6 +54,9 @@ restore_server_diag.log
 /to_delete.txt
 /wsl_curl_lan.txt
 /wsl_proxy_result.txt
+/clash_report_README.txt
+/funcs.txt
+/isredirected.txt
 /testResults.xml
 __pycache__/
 *.pyc

@@ -41,20 +41,17 @@ if ($raw -notmatch '-Name ''发布包版本一致性'' -Status PASS -Detail \("p
 if ($raw -notmatch '-Status FAIL -Detail \$artifactDetail') {
   throw "missing standard-mode FAIL branch for release artifacts"
 }
-if ($raw -notmatch "MCP/RAG最小可用性") {
-  throw "missing MCP/RAG minimal availability gate"
+if ($raw -notmatch "Agent Memory 存储有效") {
+  throw "missing Agent Memory storage gate"
 }
-if ($raw -notmatch "project 模式初始化豁免") {
-  throw "missing project-mode pass waiver marker for MCP/RAG minimal availability"
+if ($raw -notmatch "Agent Memory 检索有效") {
+  throw "missing Agent Memory retrieval gate"
 }
-if ($raw -notmatch 'Name ''MCP/RAG最小可用性'' -Status PASS -Detail \("project 模式初始化豁免：\{0\}" -f \$mcpFailDetail\)') {
-  throw "missing PASS waiver result for project-mode MCP/RAG status failure"
+if ($raw -notmatch 'Name ''Agent Memory 检索有效'' -Status PASS -Detail \("project 模式初始化豁免：\{0\}" -f \$detail\)') {
+  throw "missing PASS waiver result for project-mode Agent Memory retrieval failure"
 }
-if ($raw -notmatch 'Name ''MCP/RAG最小可用性'' -Status PASS -Detail \("project 模式初始化豁免：\{0\}" -f \$detail\)') {
-  throw "missing PASS waiver result for project-mode RAG dependency warning"
-}
-if ($raw -notmatch 'Name ''MCP/RAG最小可用性'' -Status FAIL -Detail \$mcpFailDetail') {
-  throw "missing FAIL result for standard-mode MCP/RAG status failure"
+if ($raw -notmatch 'Name ''Agent Memory 检索有效'' -Status FAIL -Detail \$detail') {
+  throw "missing FAIL result for standard-mode Agent Memory retrieval failure"
 }
 if ($raw -notmatch "单仓库增强风险快照") {
   throw "missing single-repo risk snapshot gate"

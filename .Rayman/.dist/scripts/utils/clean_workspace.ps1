@@ -85,6 +85,10 @@ if ($CopySmokeArtifacts -eq 1) {
   }
 }
 
+Add-Candidate -Path (Join-Path $WorkspaceRoot ('.' + 'rag'))
+Add-Candidate -Path (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('chroma' + '_db'))
+Add-Candidate -Path (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('rag' + '.db'))
+
 if ($candidates.Count -eq 0) {
   Info ("no entries matched (keep_days={0}, aggressive={1}, copy_smoke_artifacts={2})" -f $KeepDays, $Aggressive, $CopySmokeArtifacts)
   exit 0

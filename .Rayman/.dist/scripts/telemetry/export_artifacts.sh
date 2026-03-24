@@ -109,6 +109,20 @@ fi
 bundle_dir="${out_root}/${bundle_id}"
 mkdir -p "${bundle_dir}"
 
+if [[ -f "./.Rayman/scripts/memory/manage_memory.ps1" ]]; then
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/memory/manage_memory.ps1 -Action summarize -WorkspaceRoot "$(pwd)" -DrainPending -Json >/dev/null 2>&1 || true
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    mem_script="./.Rayman/scripts/memory/manage_memory.ps1"
+    mem_root="$(pwd)"
+    if command -v wslpath >/dev/null 2>&1; then
+      mem_script="$(wslpath -w "${mem_script}")"
+      mem_root="$(wslpath -w "${mem_root}")"
+    fi
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${mem_script}" -Action summarize -WorkspaceRoot "${mem_root}" -DrainPending -Json >/dev/null 2>&1 || true
+  fi
+fi
+
 metrics_json="${bundle_dir}/metrics.json"
 metrics_txt="${bundle_dir}/metrics.txt"
 trend_md="${bundle_dir}/daily_trend.md"

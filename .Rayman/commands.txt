@@ -23,8 +23,9 @@ Platform tags:
 [Core]
 - `[ all ]` `rayman fast-init`: Generate missing requirements only (no installs).
 - `[ all ]` `rayman migrate`: Migrate legacy requirements into the standard layout.
-- `[ pwsh-only ]` `rayman.ps1 migrate-rag`: Migrate legacy RAG data into .rag/<namespace>.
-- `[ pwsh-only ]` `rayman.ps1 rag-bootstrap`: Probe and prepare the RAG Python runtime.
+- `[ pwsh-only ]` `rayman.ps1 memory-bootstrap`: Probe and prepare the Agent Memory Python runtime.
+- `[ pwsh-only ]` `rayman.ps1 memory-summarize`: Drain pending episodic summaries into task summaries and semantic memory.
+- `[ pwsh-only ]` `rayman.ps1 memory-search`: Query Agent Memory hints and recent summaries.
 
 [Diagnostics]
 - `[ all ]` `rayman doctor`: Run read-only health checks.

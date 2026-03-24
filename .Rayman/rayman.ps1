@@ -783,12 +783,16 @@ switch ($cmd) {
     break
   }
 
-  "migrate-rag" {
-    & "$PSScriptRoot\scripts\rag\migrate_legacy_rag.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs
+  "memory-bootstrap" {
+    & "$PSScriptRoot\scripts\memory\memory_bootstrap.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action ensure -Prewarm @CliArgs
     break
   }
-  "rag-bootstrap" {
-    & "$PSScriptRoot\scripts\rag\rag_bootstrap.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action ensure @CliArgs
+  "memory-summarize" {
+    & "$PSScriptRoot\scripts\memory\manage_memory.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action summarize -DrainPending @CliArgs
+    break
+  }
+  "memory-search" {
+    & "$PSScriptRoot\scripts\memory\manage_memory.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action search @CliArgs
     break
   }
 

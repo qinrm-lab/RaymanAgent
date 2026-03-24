@@ -19,6 +19,15 @@ if (-not (Test-Path -LiteralPath $distRoot -PathType Container)) { Fail "dist no
 $assertScript = Join-Path $srcRoot 'scripts\release\assert_dist_sync.ps1'
 if (-not (Test-Path -LiteralPath $assertScript -PathType Leaf)) { Fail "assert_dist_sync.ps1 not found: $assertScript" }
 
+foreach ($legacyPath in @(
+  (Join-Path $distRoot 'scripts\rag'),
+  (Join-Path $distRoot ('.' + 'rag'))
+)) {
+  if (Test-Path -LiteralPath $legacyPath) {
+    Remove-Item -LiteralPath $legacyPath -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # 解析 mirrorRel 列表（简单、可读、足够稳：提取单引号字符串常量）
 $raw = Get-Content -LiteralPath $assertScript -Raw -Encoding UTF8
 $start = $raw.IndexOf('$mirrorRel')

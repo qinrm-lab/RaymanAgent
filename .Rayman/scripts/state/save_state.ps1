@@ -4,6 +4,10 @@ param(
 
 $WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $StateDir = Join-Path $WorkspaceRoot ".Rayman\state"
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path $memoryHelperPath) {
+    . $memoryHelperPath
+}
 
 if (-not (Test-Path $StateDir)) {
     New-Item -ItemType Directory -Path $StateDir | Out-Null
@@ -23,6 +27,14 @@ $TaskDescription
 
 Set-Content -Path $PendingFile -Value $Content -Encoding UTF8
 Write-Host "✅ 状态已保存到 $PendingFile" -ForegroundColor Green
+
+if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
+    $memoryRunId = [Guid]::NewGuid().ToString('n')
+    $memoryTaskKey = Get-RaymanMemoryTaskKey -TaskKind 'handover' -Task $TaskDescription -WorkspaceRoot $WorkspaceRoot
+    Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $memoryRunId -TaskKey $memoryTaskKey -TaskKind 'handover' -Stage 'handover' -Success $true -ArtifactRefs @($PendingFile) -SummaryText 'state-save handover created' -ExtraPayload @{
+        action = 'state-save'
+    } | Out-Null
+}
 
 # Git Stash (硬状态保存)
 if (Get-Command git -ErrorAction SilentlyContinue) {

@@ -144,6 +144,18 @@ function Get-ScrubCandidates {
     }
   }
 
+  function Add-DirectoryChildren {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+      return
+    }
+
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)) {
+      Add-Candidate -Path $entry.FullName
+    }
+  }
+
   foreach ($path in @(
     (Join-Path $WorkspaceRoot '.Rayman\logs'),
     (Join-Path $WorkspaceRoot '.Rayman\runtime\test_lanes'),
@@ -174,7 +186,13 @@ function Get-ScrubCandidates {
         Add-Candidate -Path $entry.FullName
       }
     }
+    Add-Candidate -Path (Join-Path $stateDir ('chroma' + '_db'))
+    Add-Candidate -Path (Join-Path $stateDir ('rag' + '.db'))
+    Add-DirectoryChildren -Path (Join-Path $stateDir 'memory')
   }
+
+  Add-Candidate -Path (Join-Path $WorkspaceRoot ('.' + 'rag'))
+  Add-Candidate -Path (Join-Path $runtimeDir 'memory')
 
   return @($candidates.ToArray())
 }

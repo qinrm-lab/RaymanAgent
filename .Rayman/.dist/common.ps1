@@ -2018,37 +2018,34 @@ function ConvertTo-RaymanSafeNamespace([string]$Value) {
     return $name
 }
 
-function Get-RaymanRagPaths {
+function Get-RaymanMemoryPaths {
     param([string]$WorkspaceRoot)
 
     $resolvedRoot = Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
-
-    $ragRootRaw = [string][Environment]::GetEnvironmentVariable('RAYMAN_RAG_ROOT')
-    if ([string]::IsNullOrWhiteSpace($ragRootRaw)) {
-        $ragRoot = Join-Path $resolvedRoot '.rag'
-    } elseif ([System.IO.Path]::IsPathRooted($ragRootRaw)) {
-        $ragRoot = $ragRootRaw
-    } else {
-        $ragRoot = Join-Path $resolvedRoot $ragRootRaw
-    }
-
-    $namespaceRaw = [string][Environment]::GetEnvironmentVariable('RAYMAN_RAG_NAMESPACE')
-    if ([string]::IsNullOrWhiteSpace($namespaceRaw)) {
-        $namespaceRaw = Split-Path -Leaf $resolvedRoot
-    }
-    $namespace = ConvertTo-RaymanSafeNamespace -Value $namespaceRaw
-
-    $projectRoot = Join-Path $ragRoot $namespace
-    $chromaDbPath = Join-Path $projectRoot 'chroma_db'
-    $indexRoot = Join-Path $projectRoot 'index'
+    $memoryRoot = Join-Path $resolvedRoot '.Rayman\state\memory'
+    $runtimeRoot = Join-Path $resolvedRoot '.Rayman\runtime\memory'
 
     return [pscustomobject]@{
         WorkspaceRoot = $resolvedRoot
-        RagRoot = $ragRoot
-        Namespace = $namespace
-        ProjectRoot = $projectRoot
-        ChromaDbPath = $chromaDbPath
-        IndexRoot = $indexRoot
+        MemoryRoot = $memoryRoot
+        RuntimeRoot = $runtimeRoot
+        PendingRoot = Join-Path $runtimeRoot 'pending'
+        DatabasePath = Join-Path $memoryRoot 'memory.sqlite3'
+        StatusPath = Join-Path $runtimeRoot 'status.json'
+    }
+}
+
+function Get-RaymanLegacyMemoryPaths {
+    param([string]$WorkspaceRoot)
+
+    $resolvedRoot = Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
+    $stateRoot = Join-Path $resolvedRoot '.Rayman\state'
+
+    return [pscustomobject]@{
+        WorkspaceRoot = $resolvedRoot
+        LegacyRoot = Join-Path $resolvedRoot ('.' + 'rag')
+        LegacyStateDirectory = Join-Path $stateRoot ('chroma' + '_db')
+        LegacyStateFile = Join-Path $stateRoot ('rag' + '.db')
     }
 }
 
@@ -2127,10 +2124,17 @@ function Get-RaymanScmTrackedNoiseRules {
         [pscustomobject]@{ Key = 'rayman_logs'; Label = '.Rayman/logs/**'; QueryRoot = '.Rayman/logs'; Path = '.Rayman/logs'; Recursive = $true; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'rayman_runtime'; Label = '.Rayman/runtime/**'; QueryRoot = '.Rayman/runtime'; Path = '.Rayman/runtime'; Recursive = $true; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'rayman_state'; Label = '.Rayman/state/**'; QueryRoot = '.Rayman/state'; Path = '.Rayman/state'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'rayman_temp'; Label = '.Rayman/temp/**'; QueryRoot = '.Rayman/temp'; Path = '.Rayman/temp'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'rayman_tmp'; Label = '.Rayman/tmp/**'; QueryRoot = '.Rayman/tmp'; Path = '.Rayman/tmp'; Recursive = $true; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'mcp_backup'; Label = '.Rayman/mcp/*.bak'; QueryRoot = '.Rayman/mcp'; Path = '.Rayman/mcp/*.bak'; Pattern = '^\.Rayman/mcp/.*\.bak$'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'release_delivery_pack'; Label = '.Rayman/release/delivery-pack-*.md'; QueryRoot = '.Rayman/release'; Path = '.Rayman/release/delivery-pack-*.md'; Pattern = '^\.Rayman/release/delivery-pack-.*\.md$'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'release_public_notes'; Label = '.Rayman/release/public-release-notes-*.md'; QueryRoot = '.Rayman/release'; Path = '.Rayman/release/public-release-notes-*.md'; Pattern = '^\.Rayman/release/public-release-notes-.*\.md$'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'release_notes'; Label = '.Rayman/release/release-notes-*.md'; QueryRoot = '.Rayman/release'; Path = '.Rayman/release/release-notes-*.md'; Pattern = '^\.Rayman/release/release-notes-.*\.md$'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'release_zip'; Label = '.Rayman/release/*.zip'; QueryRoot = '.Rayman/release'; Path = '.Rayman/release/*.zip'; Pattern = '^\.Rayman/release/.*\.zip$'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'release_tar_gz'; Label = '.Rayman/release/*.tar.gz'; QueryRoot = '.Rayman/release'; Path = '.Rayman/release/*.tar.gz'; Pattern = '^\.Rayman/release/.*\.tar\.gz$'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'full_copy_dir'; Label = '.Rayman_full_for_copy/**'; QueryRoot = '.Rayman_full_for_copy'; Path = '.Rayman_full_for_copy'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'full_bundle_dir'; Label = 'Rayman_full_bundle/**'; QueryRoot = 'Rayman_full_bundle'; Path = 'Rayman_full_bundle'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'sandbox_verify_dir'; Label = '.tmp_sandbox_verify_*/**'; QueryRoot = ':(glob).tmp_sandbox_verify_*'; Path = '.tmp_sandbox_verify_*/'; Pattern = '^\.tmp_sandbox_verify_[^/]+(?:/.*)?$'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'cursor_rules'; Label = '.cursorrules'; QueryRoot = '.cursorrules'; Path = '.cursorrules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'cline_rules'; Label = '.clinerules'; QueryRoot = '.clinerules'; Path = '.clinerules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'workspace_env'; Label = '.rayman.env.ps1'; QueryRoot = '.rayman.env.ps1'; Path = '.rayman.env.ps1'; Recursive = $false; Kind = 'rayman' },
@@ -2146,9 +2150,22 @@ function Get-RaymanScmTrackedNoiseRules {
         [pscustomobject]@{ Key = 'cursor_rules'; Label = '.cursorrules'; QueryRoot = '.cursorrules'; Path = '.cursorrules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'cline_rules'; Label = '.clinerules'; QueryRoot = '.clinerules'; Path = '.clinerules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'workspace_env'; Label = '.rayman.env.ps1'; QueryRoot = '.rayman.env.ps1'; Path = '.rayman.env.ps1'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'workspace_project'; Label = '.rayman.project.json'; QueryRoot = '.rayman.project.json'; Path = '.rayman.project.json'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'codex_config'; Label = '.codex/config.toml'; QueryRoot = '.codex/config.toml'; Path = '.codex/config.toml'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'copilot_instructions'; Label = '.github/copilot-instructions.md'; QueryRoot = '.github/copilot-instructions.md'; Path = '.github/copilot-instructions.md'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'model_policy'; Label = '.github/model-policy.md'; QueryRoot = '.github/model-policy.md'; Path = '.github/model-policy.md'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'github_instructions'; Label = '.github/instructions/**'; QueryRoot = '.github/instructions'; Path = '.github/instructions'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'github_agents'; Label = '.github/agents/**'; QueryRoot = '.github/agents'; Path = '.github/agents'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'github_skills'; Label = '.github/skills/**'; QueryRoot = '.github/skills'; Path = '.github/skills'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'github_prompts'; Label = '.github/prompts/**'; QueryRoot = '.github/prompts'; Path = '.github/prompts'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'project_fast_gate'; Label = '.github/workflows/rayman-project-fast-gate.yml'; QueryRoot = '.github/workflows/rayman-project-fast-gate.yml'; Path = '.github/workflows/rayman-project-fast-gate.yml'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'project_browser_gate'; Label = '.github/workflows/rayman-project-browser-gate.yml'; QueryRoot = '.github/workflows/rayman-project-browser-gate.yml'; Path = '.github/workflows/rayman-project-browser-gate.yml'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'project_full_gate'; Label = '.github/workflows/rayman-project-full-gate.yml'; QueryRoot = '.github/workflows/rayman-project-full-gate.yml'; Path = '.github/workflows/rayman-project-full-gate.yml'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_tasks'; Label = '.vscode/tasks.json'; QueryRoot = '.vscode/tasks.json'; Path = '.vscode/tasks.json'; Recursive = $false; Kind = 'rayman' },
-        [pscustomobject]@{ Key = 'vscode_settings'; Label = '.vscode/settings.json'; QueryRoot = '.vscode/settings.json'; Path = '.vscode/settings.json'; Recursive = $false; Kind = 'rayman' }
+        [pscustomobject]@{ Key = 'vscode_settings'; Label = '.vscode/settings.json'; QueryRoot = '.vscode/settings.json'; Path = '.vscode/settings.json'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'full_copy_dir'; Label = '.Rayman_full_for_copy/**'; QueryRoot = '.Rayman_full_for_copy'; Path = '.Rayman_full_for_copy'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'full_bundle_dir'; Label = 'Rayman_full_bundle/**'; QueryRoot = 'Rayman_full_bundle'; Path = 'Rayman_full_bundle'; Recursive = $true; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'sandbox_verify_dir'; Label = '.tmp_sandbox_verify_*/**'; QueryRoot = ':(glob).tmp_sandbox_verify_*'; Path = '.tmp_sandbox_verify_*/'; Pattern = '^\.tmp_sandbox_verify_[^/]+(?:/.*)?$'; Recursive = $false; Kind = 'rayman' }
     )
 
     $raymanManaged = if ($workspaceKind -eq 'source') { $sourceLocalRayman } else { $externalRayman }

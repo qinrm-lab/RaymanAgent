@@ -3,14 +3,20 @@ $StateDir = Join-Path $WorkspaceRoot ".Rayman\state"
 $PendingFile = Join-Path $StateDir "pending_task.md"
 $AutoSavePatch = Join-Path $StateDir "auto_save.patch"
 $AutoSaveMeta = Join-Path $StateDir "auto_save_meta.json"
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path $memoryHelperPath) {
+    . $memoryHelperPath
+}
 
 if (Test-Path $PendingFile) {
     Write-Host "📄 发现挂起的任务：" -ForegroundColor Cyan
+    $pendingContent = Get-Content $PendingFile -Raw
     Get-Content $PendingFile | Write-Host
     Remove-Item $PendingFile -Force
     Write-Host "✅ 状态文件已清理" -ForegroundColor Green
 } else {
     Write-Host "ℹ️ 没有找到挂起的任务状态文件。" -ForegroundColor Cyan
+    $pendingContent = ''
 }
 
 # 恢复自动保存的 Patch (应对断电/崩溃)
@@ -53,3 +59,12 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 }
 
 & "$PSScriptRoot\..\utils\request_attention.ps1" -Message "欢迎回来，状态已恢复，请继续工作"
+
+if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
+    $memoryRunId = [Guid]::NewGuid().ToString('n')
+    $resumeTask = if ([string]::IsNullOrWhiteSpace($pendingContent)) { 'resume-state' } else { $pendingContent }
+    $memoryTaskKey = Get-RaymanMemoryTaskKey -TaskKind 'handover' -Task $resumeTask -WorkspaceRoot $WorkspaceRoot
+    Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $memoryRunId -TaskKey $memoryTaskKey -TaskKind 'handover' -Stage 'handover' -Success $true -ArtifactRefs @($AutoSavePatch, $AutoSaveMeta) -SummaryText 'state-resume handover restored' -ExtraPayload @{
+        action = 'state-resume'
+    } | Out-Null
+}

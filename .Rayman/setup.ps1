@@ -2,17 +2,9 @@ param(
     [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\.." | Select-Object -ExpandProperty Path),
     [switch]$SkipReleaseGate,
     [switch]$ForceReindex,
-    [switch]$AutoMigrateLegacyRag,
-    [switch]$NoAutoMigrateLegacyRag,
     [switch]$SelfCheck,
     [switch]$StrictCheck
 )
-$autoMigrateLegacyRagEffective = $true
-if ($NoAutoMigrateLegacyRag) {
-    $autoMigrateLegacyRagEffective = $false
-} elseif ($PSBoundParameters.ContainsKey('AutoMigrateLegacyRag')) {
-    $autoMigrateLegacyRagEffective = $AutoMigrateLegacyRag.IsPresent
-}
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $raymanCommonPath = Join-Path $PSScriptRoot "common.ps1"
@@ -262,59 +254,27 @@ function Test-PathInsideCompat([string]$PathValue, [string]$RootValue) {
     return $pathNorm.StartsWith($rootNorm + '/')
 }
 
-function Normalize-WorkspaceRagEnv {
+function Normalize-WorkspaceMemoryEnv {
     param(
-        [string]$WorkspaceRoot,
-        [string]$DefaultNamespace = ''
+        [string]$WorkspaceRoot
     )
 
     if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) { return }
     $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-    $expectedRagRoot = Join-Path $resolvedWorkspaceRoot '.rag'
-    $allowExternalRagRoot = Get-EnvBoolCompat -Name 'RAYMAN_ALLOW_EXTERNAL_RAG_ROOT' -Default $false
-    $preserveRagNamespace = Get-EnvBoolCompat -Name 'RAYMAN_PRESERVE_RAG_NAMESPACE' -Default $false
-
-    $ragRoot = [string]$env:RAYMAN_RAG_ROOT
-    if ([string]::IsNullOrWhiteSpace($ragRoot)) {
-        $ragRoot = $expectedRagRoot
-    } elseif (-not [System.IO.Path]::IsPathRooted($ragRoot)) {
-        $ragRoot = Join-Path $resolvedWorkspaceRoot $ragRoot
+    $memoryRoot = Join-Path $resolvedWorkspaceRoot '.Rayman\state\memory'
+    if (-not (Test-Path -LiteralPath $memoryRoot -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
     }
 
-    if (-not $allowExternalRagRoot -and -not (Test-PathInsideCompat -PathValue $ragRoot -RootValue $expectedRagRoot)) {
-        Write-Host ("⚠️ [RAG] 检测到跨工作区 RAYMAN_RAG_ROOT={0}，已自动重置为 {1}" -f [string]$env:RAYMAN_RAG_ROOT, $expectedRagRoot) -ForegroundColor Yellow
-        $ragRoot = $expectedRagRoot
-    }
-
-    $resolvedDefaultNamespace = ''
-    if ([string]::IsNullOrWhiteSpace($DefaultNamespace)) {
-        $resolvedDefaultNamespace = Split-Path -Leaf $resolvedWorkspaceRoot
-    } else {
-        $resolvedDefaultNamespace = [string]$DefaultNamespace
-    }
-    if ([string]::IsNullOrWhiteSpace($resolvedDefaultNamespace)) {
-        $resolvedDefaultNamespace = 'default'
-    }
-
-    $ragNamespaceRaw = [string]$env:RAYMAN_RAG_NAMESPACE
-    if ($preserveRagNamespace -and -not [string]::IsNullOrWhiteSpace($ragNamespaceRaw)) {
-        $ragNamespace = $ragNamespaceRaw
-    } else {
-        if (-not $preserveRagNamespace -and -not [string]::IsNullOrWhiteSpace($ragNamespaceRaw) -and ($ragNamespaceRaw -ne $resolvedDefaultNamespace)) {
-            Write-Host ("⚠️ [RAG] 检测到跨工作区 RAYMAN_RAG_NAMESPACE={0}，已重置为 {1}（如需保留请设置 RAYMAN_PRESERVE_RAG_NAMESPACE=1）" -f $ragNamespaceRaw, $resolvedDefaultNamespace) -ForegroundColor Yellow
+    if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_MEMORY_PYTHON)) {
+        $venvWinPython = Join-Path $resolvedWorkspaceRoot '.venv\Scripts\python.exe'
+        $venvPosixPython = Join-Path $resolvedWorkspaceRoot '.venv/bin/python'
+        if (Test-Path -LiteralPath $venvWinPython -PathType Leaf) {
+            $env:RAYMAN_MEMORY_PYTHON = $venvWinPython
+        } elseif (Test-Path -LiteralPath $venvPosixPython -PathType Leaf) {
+            $env:RAYMAN_MEMORY_PYTHON = $venvPosixPython
         }
-        $ragNamespace = $resolvedDefaultNamespace
     }
-
-    foreach ($invalidCh in [System.IO.Path]::GetInvalidFileNameChars()) {
-        $ragNamespace = $ragNamespace.Replace([string]$invalidCh, '_')
-    }
-    if ([string]::IsNullOrWhiteSpace($ragNamespace)) {
-        $ragNamespace = 'default'
-    }
-
-    $env:RAYMAN_RAG_ROOT = $ragRoot
-    $env:RAYMAN_RAG_NAMESPACE = $ragNamespace
 }
 
 function Get-LastExitCodeCompat([int]$Default = 0) {
@@ -527,10 +487,13 @@ function Ensure-WorkspaceEnvDefaults {
     if (-not (Test-Path -LiteralPath $EnvFilePath -PathType Leaf)) { return }
 
     $defaults = [ordered]@{
+        'RAYMAN_HEARTBEAT_SECONDS' = '30'
+        'RAYMAN_HEARTBEAT_VERBOSE' = '1'
+        'RAYMAN_HEARTBEAT_SMART_SILENCE_ENABLED' = '1'
+        'RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS' = '15'
         'RAYMAN_AUTO_INSTALL_TEST_DEPS' = '1'
         'RAYMAN_REQUIRE_TEST_DEPS' = '1'
         'RAYMAN_SELF_HEAL_AUTO_DEP_INSTALL' = '1'
-        'RAYMAN_PRESERVE_RAG_NAMESPACE' = '0'
         'RAYMAN_PLAYWRIGHT_REQUIRE' = '1'
         'RAYMAN_PLAYWRIGHT_AUTO_INSTALL' = '1'
         'RAYMAN_PLAYWRIGHT_SETUP_SCOPE' = 'wsl'
@@ -551,6 +514,9 @@ function Ensure-WorkspaceEnvDefaults {
         'RAYMAN_AGENT_DEFAULT_BACKEND' = 'local'
         'RAYMAN_AGENT_FALLBACK_ORDER' = 'codex,local'
         'RAYMAN_AGENT_CLOUD_ENABLED' = '0'
+        'RAYMAN_AGENT_PIPELINE' = 'planner_v1'
+        'RAYMAN_AGENT_DOC_GATE' = '1'
+        'RAYMAN_AGENT_OPENAI_OPTIONAL' = 'auto'
         'RAYMAN_AGENT_CAPABILITIES_ENABLED' = '1'
         'RAYMAN_AGENT_CAP_OPENAI_DOCS_ENABLED' = '1'
         'RAYMAN_AGENT_CAP_WEB_AUTO_TEST_ENABLED' = '1'
@@ -571,6 +537,10 @@ function Ensure-WorkspaceEnvDefaults {
         'RAYMAN_VSCODE_BOOTSTRAP_PROFILE' = 'conservative'
         'RAYMAN_SCM_CHANGE_SOFT_LIMIT' = '100'
         'RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS' = '0'
+    }
+    $expressionDefaults = [ordered]@{
+        'RAYMAN_SANDBOX_HEARTBEAT_SECONDS' = '[string]$env:RAYMAN_HEARTBEAT_SECONDS'
+        'RAYMAN_MCP_HEARTBEAT_SECONDS' = '[string]$env:RAYMAN_HEARTBEAT_SECONDS'
     }
 
     $raw = ''
@@ -593,6 +563,17 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:$key)) {
 "@
         $missingBlocks.Add($block) | Out-Null
     }
+    foreach ($entry in $expressionDefaults.GetEnumerator()) {
+        $key = [string]$entry.Key
+        $expression = [string]$entry.Value
+        if ($raw -match [regex]::Escape("env:$key")) { continue }
+        $block = @"
+if ([string]::IsNullOrWhiteSpace([string]`$env:$key)) {
+    `$env:$key = $expression
+}
+"@
+        $missingBlocks.Add($block) | Out-Null
+    }
 
     if ($missingBlocks.Count -le 0) { return }
 
@@ -609,6 +590,183 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:$key)) {
         Write-Host ("✅ 已补齐 .rayman.env.ps1 默认依赖策略（新增 {0} 项）" -f $missingBlocks.Count) -ForegroundColor Green
     } catch {
         Write-Host ("⚠️ 补齐 .rayman.env.ps1 默认依赖策略失败: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
+function Clear-SetupDirectoryContents {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return 0
+    }
+
+    $items = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+    foreach ($item in $items) {
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return $items.Count
+}
+
+function Get-SetupLegacyMemoryPaths {
+    param([string]$WorkspaceRoot)
+
+    if ($raymanCommonImported -and (Get-Command Get-RaymanLegacyMemoryPaths -ErrorAction SilentlyContinue)) {
+        try {
+            return (Get-RaymanLegacyMemoryPaths -WorkspaceRoot $WorkspaceRoot)
+        } catch {}
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $stateRoot = Join-Path $resolvedRoot '.Rayman\state'
+    return [pscustomobject]@{
+        WorkspaceRoot = $resolvedRoot
+        LegacyRoot = Join-Path $resolvedRoot ('.' + 'rag')
+        LegacyStateDirectory = Join-Path $stateRoot ('chroma' + '_db')
+        LegacyStateFile = Join-Path $stateRoot ('rag' + '.db')
+    }
+}
+
+function Get-SetupMemoryPaths {
+    param([string]$WorkspaceRoot)
+
+    if ($raymanCommonImported -and (Get-Command Get-RaymanMemoryPaths -ErrorAction SilentlyContinue)) {
+        try {
+            return (Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot)
+        } catch {}
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $memoryRoot = Join-Path $resolvedRoot '.Rayman\state\memory'
+    $runtimeRoot = Join-Path $resolvedRoot '.Rayman\runtime\memory'
+    return [pscustomobject]@{
+        WorkspaceRoot = $resolvedRoot
+        MemoryRoot = $memoryRoot
+        RuntimeRoot = $runtimeRoot
+    }
+}
+
+function Get-SetupLegacySnapshotArtifacts {
+    param([string]$WorkspaceRoot)
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $snapshotRoot = Join-Path $resolvedRoot '.Rayman\runtime\snapshots'
+    $artifacts = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $snapshotRoot -PathType Container)) {
+        return @($artifacts.ToArray())
+    }
+
+    $markers = @(
+        ('.' + 'rag'),
+        ('.Rayman/state/' + ('chroma' + '_db')),
+        ('.Rayman/state/' + ('rag' + '.db'))
+    )
+
+    foreach ($manifest in @(Get-ChildItem -LiteralPath $snapshotRoot -File -Filter '*.manifest.json' -ErrorAction SilentlyContinue)) {
+        $raw = ''
+        try {
+            $raw = Get-Content -LiteralPath $manifest.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        $hasLegacyMarker = $false
+        foreach ($marker in $markers) {
+            if ($raw -like ('*' + $marker + '*')) {
+                $hasLegacyMarker = $true
+                break
+            }
+        }
+        if (-not $hasLegacyMarker) {
+            continue
+        }
+
+        if (-not $artifacts.Contains($manifest.FullName)) {
+            $artifacts.Add($manifest.FullName) | Out-Null
+        }
+
+        if ($manifest.Name.EndsWith('.manifest.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $archiveStem = $manifest.Name.Substring(0, $manifest.Name.Length - '.manifest.json'.Length)
+            $archivePath = Join-Path $manifest.DirectoryName ($archiveStem + '.tar.gz')
+            if ((Test-Path -LiteralPath $archivePath -PathType Leaf) -and -not $artifacts.Contains($archivePath)) {
+                $artifacts.Add($archivePath) | Out-Null
+            }
+        }
+    }
+
+    return @($artifacts.ToArray())
+}
+
+function Invoke-SetupLegacyMemoryCleanup {
+    param(
+        [string]$WorkspaceRoot,
+        [switch]$ResetAgentMemoryData
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot) -or -not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
+        return $null
+    }
+
+    $legacyPaths = Get-SetupLegacyMemoryPaths -WorkspaceRoot $WorkspaceRoot
+    $memoryPaths = Get-SetupMemoryPaths -WorkspaceRoot $WorkspaceRoot
+    $removed = New-Object System.Collections.Generic.List[string]
+
+    foreach ($path in @(
+        [string]$legacyPaths.LegacyRoot,
+        [string]$legacyPaths.LegacyStateDirectory,
+        [string]$legacyPaths.LegacyStateFile
+    )) {
+        if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            $removed.Add($path) | Out-Null
+        } catch {
+            Write-Host ("⚠️ [setup] 清理 legacy 记忆残留失败: {0} ({1})" -f $path, $_.Exception.Message) -ForegroundColor Yellow
+        }
+    }
+
+    foreach ($path in @(Get-SetupLegacySnapshotArtifacts -WorkspaceRoot $WorkspaceRoot)) {
+        if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            $removed.Add($path) | Out-Null
+        } catch {
+            Write-Host ("⚠️ [setup] 清理 legacy 快照残留失败: {0} ({1})" -f $path, $_.Exception.Message) -ForegroundColor Yellow
+        }
+    }
+
+    $memoryReset = $false
+    if ($ResetAgentMemoryData) {
+        $memoryReset = ((Clear-SetupDirectoryContents -Path ([string]$memoryPaths.MemoryRoot)) -gt 0)
+        if (Test-Path -LiteralPath ([string]$memoryPaths.RuntimeRoot) -PathType Container) {
+            try {
+                Remove-Item -LiteralPath ([string]$memoryPaths.RuntimeRoot) -Recurse -Force -ErrorAction Stop
+                $removed.Add([string]$memoryPaths.RuntimeRoot) | Out-Null
+                $memoryReset = $true
+            } catch {
+                Write-Host ("⚠️ [setup] 清理 Agent Memory runtime 失败: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+            }
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath ([string]$memoryPaths.MemoryRoot) -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path ([string]$memoryPaths.MemoryRoot) | Out-Null
+    }
+
+    if ($removed.Count -gt 0) {
+        Write-Host ("🧹 [setup] 已清理 legacy 记忆残留: {0}" -f $removed.Count) -ForegroundColor DarkCyan
+    }
+    if ($memoryReset) {
+        Write-Host "🧹 [setup] 检测到跨工作区复制，已重置 Agent Memory 数据库与 runtime。" -ForegroundColor DarkCyan
+    }
+
+    return [pscustomobject]@{
+        RemovedCount = $removed.Count
+        RemovedPaths = @($removed.ToArray())
+        ResetAgentMemoryData = [bool]$memoryReset
     }
 }
 
@@ -833,11 +991,24 @@ function Get-RaymanScmIgnoreRules {
             '.Rayman/'
             '.SolutionName'
             '.rayman.env.ps1'
+            '.rayman.project.json'
             '.cursorrules'
             '.clinerules'
+            '.codex/config.toml'
             '.github/copilot-instructions.md'
+            '.github/model-policy.md'
+            '.github/instructions/'
+            '.github/agents/'
+            '.github/skills/'
+            '.github/prompts/'
+            '.github/workflows/rayman-project-fast-gate.yml'
+            '.github/workflows/rayman-project-browser-gate.yml'
+            '.github/workflows/rayman-project-full-gate.yml'
             '.vscode/tasks.json'
             '.vscode/settings.json'
+            '.Rayman_full_for_copy/'
+            'Rayman_full_bundle/'
+            '.tmp_sandbox_verify_*/'
             '.artifacts/'
             'obj/'
             'bin/'
@@ -850,10 +1021,17 @@ function Get-RaymanScmIgnoreRules {
         '.Rayman/logs/'
         '.Rayman/runtime/'
         '.Rayman/state/'
+        '.Rayman/temp/'
+        '.Rayman/tmp/'
+        '.Rayman/release/*.zip'
+        '.Rayman/release/*.tar.gz'
         '.Rayman/mcp/*.bak'
         '.Rayman/release/delivery-pack-*.md'
         '.Rayman/release/public-release-notes-*.md'
         '.Rayman/release/release-notes-*.md'
+        '.Rayman_full_for_copy/'
+        'Rayman_full_bundle/'
+        '.tmp_sandbox_verify_*/'
         '.cursorrules'
         '.clinerules'
         '.vscode/tasks.json'
@@ -1124,9 +1302,9 @@ function Write-RaymanScmTrackedNoiseDiagnostics {
         }
         Write-Host "   说明: ignore 规则（.gitignore / .git/info/exclude）仅对 untracked 生效；tracked 文件必须先从 Git 索引移除。" -ForegroundColor DarkYellow
         if ($workspaceKind -eq 'external') {
-            Write-Host "   external workspace 只建议提交业务源码与 .<SolutionName>/；.Rayman/ 与根级 Rayman 元数据应保持未跟踪。" -ForegroundColor DarkYellow
+            Write-Host "   external workspace 只建议提交业务源码、业务文档，以及 .<SolutionName>/ 下的 requirements / agentic 文档；Rayman 生成的 workflow / 配置应保持未跟踪。" -ForegroundColor DarkYellow
         } else {
-            Write-Host "   source workspace 可跟踪 authored .Rayman/ 与 .SolutionName，但本地/生成资产不应入库。" -ForegroundColor DarkYellow
+            Write-Host "   source workspace 可跟踪 authored .Rayman/ 与 .SolutionName，但 state/runtime/cache/temp/backup/package 与编辑器本地配置不应入库。" -ForegroundColor DarkYellow
         }
         Write-Host "   如需明确允许当前仓库跟踪 Rayman 资产，请在 .rayman.env.ps1 中设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1。" -ForegroundColor DarkYellow
     } elseif ([int]$Analysis.raymanTrackedCount -gt 0 -and [bool]$Analysis.allowTrackedRaymanAssets) {
@@ -1201,10 +1379,6 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_HEARTBEAT_SILENT_WINDOW_SE
     `$env:RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS = '15'
 }
 
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_RAG_HEARTBEAT_SECONDS)) {
-    `$env:RAYMAN_RAG_HEARTBEAT_SECONDS = [string]`$env:RAYMAN_HEARTBEAT_SECONDS
-}
-
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_SANDBOX_HEARTBEAT_SECONDS)) {
     `$env:RAYMAN_SANDBOX_HEARTBEAT_SECONDS = [string]`$env:RAYMAN_HEARTBEAT_SECONDS
 }
@@ -1213,25 +1387,13 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_MCP_HEARTBEAT_SECONDS)) {
     `$env:RAYMAN_MCP_HEARTBEAT_SECONDS = [string]`$env:RAYMAN_HEARTBEAT_SECONDS
 }
 
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_RAG_ROOT)) {
-    `$env:RAYMAN_RAG_ROOT = Join-Path `$PSScriptRoot '.rag'
-}
-
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_RAG_NAMESPACE)) {
-    `$env:RAYMAN_RAG_NAMESPACE = Split-Path -Leaf `$PSScriptRoot
-}
-
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_PRESERVE_RAG_NAMESPACE)) {
-    `$env:RAYMAN_PRESERVE_RAG_NAMESPACE = '0'
-}
-
-if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_RAG_PYTHON)) {
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_MEMORY_PYTHON)) {
     `$venvWinPython = Join-Path `$PSScriptRoot '.venv\Scripts\python.exe'
     `$venvPosixPython = Join-Path `$PSScriptRoot '.venv/bin/python'
     if (Test-Path -LiteralPath `$venvWinPython -PathType Leaf) {
-        `$env:RAYMAN_RAG_PYTHON = `$venvWinPython
+        `$env:RAYMAN_MEMORY_PYTHON = `$venvWinPython
     } elseif (Test-Path -LiteralPath `$venvPosixPython -PathType Leaf) {
-        `$env:RAYMAN_RAG_PYTHON = `$venvPosixPython
+        `$env:RAYMAN_MEMORY_PYTHON = `$venvPosixPython
     }
 }
 
@@ -1337,6 +1499,18 @@ if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_FALLBACK_ORDER)) {
 
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CLOUD_ENABLED)) {
     `$env:RAYMAN_AGENT_CLOUD_ENABLED = '0'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_PIPELINE)) {
+    `$env:RAYMAN_AGENT_PIPELINE = 'planner_v1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_DOC_GATE)) {
+    `$env:RAYMAN_AGENT_DOC_GATE = '1'
+}
+
+if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_OPENAI_OPTIONAL)) {
+    `$env:RAYMAN_AGENT_OPENAI_OPTIONAL = 'auto'
 }
 
 if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_AGENT_CAPABILITIES_ENABLED)) {
@@ -1504,6 +1678,15 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_FALLBACK_ORDER)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CLOUD_ENABLED)) {
     $env:RAYMAN_AGENT_CLOUD_ENABLED = '0'
 }
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_PIPELINE)) {
+    $env:RAYMAN_AGENT_PIPELINE = 'planner_v1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_DOC_GATE)) {
+    $env:RAYMAN_AGENT_DOC_GATE = '1'
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_OPENAI_OPTIONAL)) {
+    $env:RAYMAN_AGENT_OPENAI_OPTIONAL = 'auto'
+}
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_AGENT_CAPABILITIES_ENABLED)) {
     $env:RAYMAN_AGENT_CAPABILITIES_ENABLED = '1'
 }
@@ -1567,10 +1750,9 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_SCM_CHANGE_SOFT_LIMIT)) {
 if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS)) {
     $env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS = '0'
 }
-if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_PRESERVE_RAG_NAMESPACE)) {
-    $env:RAYMAN_PRESERVE_RAG_NAMESPACE = '0'
-}
 
+$resetAgentMemoryOnCopy = ($null -ne $workspaceStateGuardResult -and [bool]$workspaceStateGuardResult.scrubbed)
+Invoke-SetupLegacyMemoryCleanup -WorkspaceRoot $WorkspaceRoot -ResetAgentMemoryData:$resetAgentMemoryOnCopy | Out-Null
 $script:ScmTrackedNoiseAnalysis = $null
 if (-not $raymanCommonImported) {
     if (Test-Path -LiteralPath $raymanCommonPath -PathType Leaf) {
@@ -1727,7 +1909,7 @@ if ($hasCurrentSolutionName -and ($currentSolutionName -eq $targetSolutionName))
 
 # 1.1 requirements 结构补齐（统一到 .<SolutionName>/ 布局）
 Sync-RaymanAssetsFromDistIfMissing -WorkspaceRoot $WorkspaceRoot
-Normalize-WorkspaceRagEnv -WorkspaceRoot $WorkspaceRoot -DefaultNamespace $solutionName
+Normalize-WorkspaceMemoryEnv -WorkspaceRoot $WorkspaceRoot
 Invoke-EnsureRequirementsLayout -WorkspaceRoot $WorkspaceRoot
 
 # 2. 生成 .github/copilot-instructions.md
@@ -1820,124 +2002,35 @@ if (-not (Test-Path -LiteralPath $generateContextScript -PathType Leaf)) {
     Write-Host ("⚠️ [context] 缺少脚本：{0}" -f $generateContextScript) -ForegroundColor Yellow
 }
 
-# 3. 初始化高级模块 (Docker Sandbox, RAG, MCP)
+# 3. 初始化高级模块 (Agent Memory, MCP)
 $skipAdvancedModules = Get-EnvBoolCompat -Name 'RAYMAN_SETUP_SKIP_ADVANCED_MODULES' -Default $false
 if ($skipAdvancedModules) {
     Write-Host "⏭️ [setup] 已按环境变量跳过高级模块初始化（RAYMAN_SETUP_SKIP_ADVANCED_MODULES=1）" -ForegroundColor Yellow
 } else {
-    Write-Host "🧠 [RAG] 正在初始化向量记忆库..." -ForegroundColor Cyan
-    $RagScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\manage_rag.ps1"
-    $ragDecisionSummary = "未执行（RAG 脚本不存在）"
-    $ragDbPath = ''
-    if (Test-Path $RagScript) {
-    $ragRoot = [string]$env:RAYMAN_RAG_ROOT
-    if ([string]::IsNullOrWhiteSpace($ragRoot)) {
-        $ragRoot = Join-Path $WorkspaceRoot ".rag"
-    } elseif (-not [System.IO.Path]::IsPathRooted($ragRoot)) {
-        $ragRoot = Join-Path $WorkspaceRoot $ragRoot
-    }
-
-    $ragNamespace = [string]$env:RAYMAN_RAG_NAMESPACE
-    if ([string]::IsNullOrWhiteSpace($ragNamespace)) {
-        $ragNamespace = $solutionName
-    }
-
-    foreach ($invalidCh in [System.IO.Path]::GetInvalidFileNameChars()) {
-        $ragNamespace = $ragNamespace.Replace([string]$invalidCh, '_')
-    }
-    if ([string]::IsNullOrWhiteSpace($ragNamespace)) {
-        $ragNamespace = "default"
-    }
-
-    $env:RAYMAN_RAG_ROOT = $ragRoot
-    $env:RAYMAN_RAG_NAMESPACE = $ragNamespace
-
-    $ragProjectPath = Join-Path $ragRoot $ragNamespace
-    $ragDbPath = Join-Path $ragProjectPath "chroma_db"
-    $legacyRagDbPath = Join-Path $WorkspaceRoot ".Rayman\state\chroma_db"
-    $ragMigrateScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\migrate_legacy_rag.ps1"
-    $ragBootstrapScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\rag_bootstrap.ps1"
-
-    if (Test-Path -LiteralPath $ragBootstrapScript -PathType Leaf) {
+    Write-Host "🧠 [Agent Memory] 正在初始化本地记忆..." -ForegroundColor Cyan
+    $memoryBootstrapScript = Join-Path $WorkspaceRoot ".Rayman\scripts\memory\memory_bootstrap.ps1"
+    $memoryManageScript = Join-Path $WorkspaceRoot ".Rayman\scripts\memory\manage_memory.ps1"
+    $memoryDecisionSummary = "未执行（Agent Memory 脚本不存在）"
+    if ((Test-Path -LiteralPath $memoryBootstrapScript -PathType Leaf) -and (Test-Path -LiteralPath $memoryManageScript -PathType Leaf)) {
         try {
-            . $ragBootstrapScript
-            $ragProbe = Invoke-RaymanRagBootstrap -WorkspaceRoot $WorkspaceRoot -EnsureDeps:$false -NoInstallDeps -Quiet
-            if ($ragProbe.Success) {
-                Write-Host ("✅ [RAG] 预检通过（解释器: {0}）" -f [string]$ragProbe.PythonLabel) -ForegroundColor Green
+            $memoryProbeRaw = & $memoryBootstrapScript -WorkspaceRoot $WorkspaceRoot -Action ensure -Prewarm -Json
+            $memoryProbeText = ($memoryProbeRaw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            $memoryProbe = $memoryProbeText | ConvertFrom-Json -ErrorAction Stop
+            if ([bool]$memoryProbe.Success) {
+                $memoryDecisionSummary = "bootstrap ready; backend=$([string]$memoryProbe.SearchBackend); status=$([string]$memoryProbe.StatusPath)"
+                Write-Host ("✅ [Agent Memory] 预热完成（解释器: {0}）" -f [string]$memoryProbe.PythonLabel) -ForegroundColor Green
             } else {
-                Write-Host ("⚠️ [RAG] 预检提示：{0}" -f [string]$ragProbe.Message) -ForegroundColor Yellow
+                $memoryDecisionSummary = [string]$memoryProbe.Message
+                Write-Host ("⚠️ [Agent Memory] 预热提示：{0}" -f [string]$memoryProbe.Message) -ForegroundColor Yellow
             }
         } catch {
-            Write-Host ("⚠️ [RAG] 预检执行失败：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
+            $memoryDecisionSummary = $_.Exception.Message
+            Write-Host ("⚠️ [Agent Memory] 预热执行失败：{0}" -f $_.Exception.Message) -ForegroundColor Yellow
         }
     } else {
-        Write-Host "⚠️ [RAG] 缺少 rag_bootstrap.ps1，跳过 RAG 预检。" -ForegroundColor Yellow
+        Write-Host "⚠️ [Agent Memory] 缺少 memory_bootstrap.ps1 或 manage_memory.ps1，跳过 Agent Memory 预热。" -ForegroundColor Yellow
     }
-
-    $hasExistingRagDb = $false
-    if (Test-Path -LiteralPath $ragDbPath -PathType Container) {
-        try {
-            $hasExistingRagDb = $null -ne (Get-ChildItem -LiteralPath $ragDbPath -Recurse -File -ErrorAction Stop | Select-Object -First 1)
-        } catch {
-            $hasExistingRagDb = $false
-        }
-    }
-
-    $hasLegacyRagDb = $false
-    if (Test-Path -LiteralPath $legacyRagDbPath -PathType Container) {
-        try {
-            $hasLegacyRagDb = $null -ne (Get-ChildItem -LiteralPath $legacyRagDbPath -Recurse -File -ErrorAction Stop | Select-Object -First 1)
-        } catch {
-            $hasLegacyRagDb = $false
-        }
-    }
-
-    if ($hasLegacyRagDb -and -not $hasExistingRagDb -and -not $ForceReindex) {
-        Write-Host "⚠️ [RAG] 检测到旧向量库路径：$legacyRagDbPath" -ForegroundColor Yellow
-        if ($autoMigrateLegacyRagEffective) {
-            if (Test-Path -LiteralPath $ragMigrateScript -PathType Leaf) {
-                Write-Host "🚚 [RAG] 自动迁移已开启（默认）：开始迁移旧向量库..." -ForegroundColor Yellow
-                Reset-LastExitCodeCompat
-                & $ragMigrateScript -WorkspaceRoot $WorkspaceRoot -RagRoot $ragRoot -Namespace $ragNamespace
-                $ragMigrateExitCode = Get-LastExitCodeCompat -Default 0
-                if ($ragMigrateExitCode -eq 0) {
-                    try {
-                        $hasExistingRagDb = $null -ne (Get-ChildItem -LiteralPath $ragDbPath -Recurse -File -ErrorAction Stop | Select-Object -First 1)
-                    } catch {
-                        $hasExistingRagDb = $false
-                    }
-                    if ($hasExistingRagDb) {
-                        Write-Host "✅ [RAG] 自动迁移完成，已切换复用新路径向量库。" -ForegroundColor Green
-                    }
-                } else {
-                    Write-Host ("⚠️ [RAG] 自动迁移失败（exit={0}），将继续按默认流程处理。" -f $ragMigrateExitCode) -ForegroundColor Yellow
-                }
-            } else {
-                Write-Host "⚠️ [RAG] 未找到迁移脚本: $ragMigrateScript" -ForegroundColor Yellow
-            }
-        } else {
-            Write-Host "💡 [RAG] 建议迁移到新路径后再复用：$ragDbPath" -ForegroundColor Yellow
-            Write-Host "   可使用自动迁移：.\.Rayman\setup.ps1" -ForegroundColor DarkYellow
-            Write-Host "   或手动执行：.\.Rayman\rayman.ps1 migrate-rag" -ForegroundColor DarkYellow
-            Write-Host "   迁移命令（PowerShell）：" -ForegroundColor DarkYellow
-            Write-Host "   New-Item -ItemType Directory -Force -Path '$ragDbPath' | Out-Null" -ForegroundColor DarkGray
-            Write-Host "   robocopy '$legacyRagDbPath' '$ragDbPath' /E /COPY:DAT /R:1 /W:1 | Out-Null" -ForegroundColor DarkGray
-        }
-    }
-
-    if ($ForceReindex) {
-        Write-Host "♻️ [RAG] 已启用 -ForceReindex：将重建向量库（Reset）" -ForegroundColor Yellow
-        & $RagScript -Action build -Reset
-        $ragDecisionSummary = "强制重建（ForceReindex=1, Reset=1） -> $ragDbPath"
-    } elseif ($hasExistingRagDb) {
-        Write-Host "✅ [RAG] 检测到已有向量库，默认复用并跳过重建（如需重建请使用 -ForceReindex）" -ForegroundColor Green
-        $ragDecisionSummary = "复用已有向量库（跳过重建） -> $ragDbPath"
-    } else {
-        & $RagScript -Action build
-        $ragDecisionSummary = "首次构建（未检测到可复用向量库） -> $ragDbPath"
-    }
-    }
-    Write-Host "🧾 [RAG] 本次策略：$ragDecisionSummary" -ForegroundColor DarkCyan
+    Write-Host "🧾 [Agent Memory] 本次策略：$memoryDecisionSummary" -ForegroundColor DarkCyan
 
     $McpScript = Join-Path $WorkspaceRoot ".Rayman\scripts\mcp\manage_mcp.ps1"
     if (Test-Path $McpScript) {
@@ -2444,7 +2537,7 @@ obj/
 bin/
 gtp_logs/
 .ci/
-.rag/
+.Rayman/state/memory/
 .playwright-mcp/
 App_Data/
 .vs/
@@ -2487,7 +2580,7 @@ restore_server_diag.log
         "**/obj",
         "**/bin",
         "**/gtp_logs",
-        "**/.rag",
+        "**/.Rayman/state/memory",
         "**/.Rayman/state",
         "**/.Rayman/runtime"
     )
@@ -2497,7 +2590,7 @@ restore_server_diag.log
         "**/obj/**",
         "**/bin/**",
         "**/gtp_logs/**",
-        "**/.rag/**",
+        "**/.Rayman/state/memory/**",
         "**/.git/objects/**",
         "**/.playwright-mcp/**",
         "**/.Rayman/state/**",
@@ -2750,8 +2843,9 @@ function Get-ReleaseGateMissingBootstrapAssets {
     $requiredRelPaths = @(
         '.Rayman\common.ps1',
         '.Rayman\scripts\mcp\manage_mcp.ps1',
-        '.Rayman\scripts\rag\manage_rag.ps1',
-        '.Rayman\scripts\rag\build_index.py',
+        '.Rayman\scripts\memory\memory_bootstrap.ps1',
+        '.Rayman\scripts\memory\manage_memory.ps1',
+        '.Rayman\scripts\memory\manage_memory.py',
         '.Rayman\mcp\mcp_servers.json'
     )
 

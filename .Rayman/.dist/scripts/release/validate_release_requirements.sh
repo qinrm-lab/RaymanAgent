@@ -116,7 +116,8 @@ need_scripts=(
   "./.Rayman/scripts/agents/review_loop.ps1"
   "./.Rayman/scripts/agents/first_pass_report.ps1"
   "./.Rayman/scripts/agents/prompts_catalog.ps1"
-  "./.Rayman/scripts/rag/rag_bootstrap.ps1"
+  "./.Rayman/scripts/memory/memory_bootstrap.ps1"
+  "./.Rayman/scripts/memory/manage_memory.ps1"
 )
 for s in "${need_scripts[@]}"; do
   [[ -f "$s" ]] || fail "Rayman 脚本缺失：$s（请同步完整 .Rayman 目录）"

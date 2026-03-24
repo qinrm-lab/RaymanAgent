@@ -9,8 +9,9 @@ alert-watch	windows-only	watchers	Start the foreground attention watcher.	0
 alert-stop	windows-only	watchers	Stop the background attention watcher.	0
 fast-init	all	core	Generate missing requirements only (no installs).	0
 migrate	all	core	Migrate legacy requirements into the standard layout.	0
-migrate-rag	pwsh-only	core	Migrate legacy RAG data into .rag/<namespace>.	0
-rag-bootstrap	pwsh-only	core	Probe and prepare the RAG Python runtime.	0
+memory-bootstrap	pwsh-only	core	Probe and prepare the Agent Memory Python runtime.	0
+memory-summarize	pwsh-only	core	Drain pending episodic summaries into task summaries and semantic memory.	0
+memory-search	pwsh-only	core	Query Agent Memory hints and recent summaries.	0
 doctor	all	diagnostics	Run read-only health checks.	0
 copy-self-check	all	diagnostics	Run copy-initialization smoke verification.	0
 self-check	pwsh-only	diagnostics	Alias of `copy-self-check`.	0

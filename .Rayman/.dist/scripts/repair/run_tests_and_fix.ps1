@@ -32,6 +32,13 @@ if (Test-Path $WorkspaceProcessOwnershipPath) {
     . $WorkspaceProcessOwnershipPath -NoMain
 }
 
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path $memoryHelperPath) {
+    . $memoryHelperPath
+}
+
+$testFixStartedAt = Get-Date
+
 function Get-EnvInt([string]$Name, [int]$Default) {
     $raw = [Environment]::GetEnvironmentVariable($Name)
     $val = 0
@@ -1031,6 +1038,24 @@ if ($null -eq $primary) {
     exit 0
 }
 
+$memoryRunId = [string][Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_RUN_ID')
+if ([string]::IsNullOrWhiteSpace($memoryRunId)) {
+    $memoryRunId = [Guid]::NewGuid().ToString('n')
+}
+$memoryTaskKind = [string][Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_TASK_KIND')
+if ([string]::IsNullOrWhiteSpace($memoryTaskKind)) {
+    $memoryTaskKind = 'test-fix'
+}
+$memoryTaskKey = [string][Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_TASK_KEY')
+if ([string]::IsNullOrWhiteSpace($memoryTaskKey) -and (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue)) {
+    $memoryTaskKey = Get-RaymanMemoryTaskKey -TaskKind $memoryTaskKind -Task ([string]$primary.Command) -WorkspaceRoot $WorkspaceRoot
+}
+$memoryRound = 0
+$memoryRoundRaw = [string][Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_ROUND')
+if (-not [string]::IsNullOrWhiteSpace($memoryRoundRaw)) {
+    [void][int]::TryParse($memoryRoundRaw, [ref]$memoryRound)
+}
+
 $depsScript = Join-Path $WorkspaceRoot ".Rayman\scripts\utils\ensure_project_test_deps.ps1"
 $depsScriptSh = Join-Path $WorkspaceRoot ".Rayman/scripts/utils/ensure_project_test_deps.sh"
 $autoInstallTestDeps = Get-EnvBoolCompat -Name 'RAYMAN_AUTO_INSTALL_TEST_DEPS' -Default $true
@@ -1091,6 +1116,16 @@ if ((Test-Path -LiteralPath $depsScript -PathType Leaf) -or (Test-Path -LiteralP
         $msg = "测试依赖未满足，请先安装缺失 SDK / workload。"
         Set-Content -LiteralPath $LogFile -Value $msg -Encoding UTF8
         Write-Host ("❌ {0}" -f $msg) -ForegroundColor Red
+        if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+            $depsDurationMs = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $testFixStartedAt).TotalMilliseconds))
+            Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $memoryRunId -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -Stage 'repair_attempt' -Round $memoryRound -Success $false -ErrorKind 'missing_test_dependencies' -DurationMs $depsDurationMs -ArtifactRefs @($LogFile) -SummaryText $msg -ExtraPayload @{
+                command = [string]$primary.Command
+                project_kind = [string]$primary.Kind
+            } | Out-Null
+            if (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue) {
+                Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -RunId $memoryRunId | Out-Null
+            }
+        }
         exit 1
     }
 }
@@ -1148,31 +1183,30 @@ if ($ErrorFound) {
             $refsBlock = ($refsLines -join "`r`n")
         }
         
-        # 2. 尝试使用 RAG 搜索相关错误解决方案
-        $RagScript = Join-Path $WorkspaceRoot ".Rayman\scripts\rag\manage_rag.ps1"
-        $RagContext = ""
-        if (Test-Path $RagScript) {
-            Write-Host "🧠 [RAG] 正在搜索历史记忆库以寻找解决方案..." -ForegroundColor Cyan
-            # 提取最后若干行错误信息作为查询词
+        $MemoryContext = ""
+        if (Get-Command Invoke-RaymanMemoryAction -ErrorAction SilentlyContinue) {
+            Write-Host "🧠 [Agent Memory] 正在搜索历史经验以寻找解决方案..." -ForegroundColor Cyan
             $QueryText = ($tail | Select-Object -Last 20) -join " "
             if (-not [string]::IsNullOrWhiteSpace($QueryText)) {
-                # 截断查询词，避免过长
                 if ($QueryText.Length -gt 400) { $QueryText = $QueryText.Substring(0, 400) }
-                $RagResult = & $RagScript -Action search -Query $QueryText -TopK 8 2>&1
-                if ($RagResult) {
-                    $ragFetchedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssK')
-                    $ragFetchedUnix = [DateTimeOffset]::Now.ToUnixTimeSeconds()
-                    $ragLines = @(
-                        '',
-                        '## 🧠 RAG 记忆库相关参考',
-                        "- fetched_at_iso: $ragFetchedAt",
-                        "- fetched_at_unix: $ragFetchedUnix",
-                        '',
-                        '```text',
-                        ($RagResult -join "`r`n"),
-                        '```'
-                    )
-                    $RagContext = ($ragLines -join "`r`n")
+                $MemoryResult = Invoke-RaymanMemoryAction -WorkspaceRoot $WorkspaceRoot -Action 'search' -Query $QueryText -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -Limit 5 -RecentLimit 2 -Quiet
+                if ($null -ne $MemoryResult) {
+                    $memoryFetchedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssK')
+                    $memoryFetchedUnix = [DateTimeOffset]::Now.ToUnixTimeSeconds()
+                    $memoryLines = New-Object System.Collections.Generic.List[string]
+                    $memoryLines.Add('') | Out-Null
+                    $memoryLines.Add('## 🧠 Agent Memory') | Out-Null
+                    $memoryLines.Add("- fetched_at_iso: $memoryFetchedAt") | Out-Null
+                    $memoryLines.Add("- fetched_at_unix: $memoryFetchedUnix") | Out-Null
+                    $memoryLines.Add("- search_backend: $([string]$MemoryResult.search_backend)") | Out-Null
+                    $memoryLines.Add('') | Out-Null
+                    foreach ($hint in @($MemoryResult.memory_hints)) {
+                        $memoryLines.Add(("- [{0}] {1}" -f [string]$hint.kind, [string]$hint.content)) | Out-Null
+                    }
+                    foreach ($recent in @($MemoryResult.recent_task_summaries)) {
+                        $memoryLines.Add(("- [recent:{0}] {1}" -f [string]$recent.outcome, [string]$recent.summary_text)) | Out-Null
+                    }
+                    $MemoryContext = ($memoryLines -join "`r`n")
                 }
             }
         }
@@ -1218,7 +1252,7 @@ if ($ErrorFound) {
             $cmdBlock,
             $fixBlock,
             $refsBlock,
-            $RagContext,
+            $MemoryContext,
             '',
             '---',
             '',
@@ -1226,9 +1260,19 @@ if ($ErrorFound) {
         )
         $md = ($mdLines -join "`r`n")
         Set-Content -LiteralPath $summaryFile -Value $md -Encoding UTF8
-        Write-Host "📄 已生成错误摘要 (含 RAG 上下文): $summaryFile" -ForegroundColor Yellow
+        Write-Host "📄 已生成错误摘要 (含 Agent Memory 上下文): $summaryFile" -ForegroundColor Yellow
     } catch {
         Write-Host "⚠️ 生成错误摘要失败: $_" -ForegroundColor Yellow
+    }
+    if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+        $failureDurationMs = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $testFixStartedAt).TotalMilliseconds))
+        Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $memoryRunId -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -Stage 'repair_attempt' -Round $memoryRound -Success $false -ErrorKind 'test_fix_failed' -DurationMs $failureDurationMs -ArtifactRefs @($LogFile, $summaryFile) -SummaryText 'test-fix failed; see last_error_summary.md' -ExtraPayload @{
+            command = [string]$primary.Command
+            project_kind = [string]$primary.Kind
+        } | Out-Null
+        if (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue) {
+            Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -RunId $memoryRunId | Out-Null
+        }
     }
     if (Get-Command Invoke-RaymanAttentionAlert -ErrorAction SilentlyContinue) {
         Invoke-RaymanAttentionAlert -Kind 'error' -Reason '构建或测试失败，请让 AI 查看错误日志' -WorkspaceRoot $WorkspaceRoot | Out-Null
@@ -1242,6 +1286,16 @@ if ($ErrorFound) {
 } else {
     Write-Host "✅ 所有检查通过！" -ForegroundColor Green
     if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
+    if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+        $successDurationMs = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $testFixStartedAt).TotalMilliseconds))
+        Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $memoryRunId -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -Stage 'repair_attempt' -Round $memoryRound -Success $true -ErrorKind 'ok' -DurationMs $successDurationMs -ArtifactRefs @($script:DotNetExecSummaryPath) -SummaryText 'test-fix succeeded' -ExtraPayload @{
+            command = [string]$primary.Command
+            project_kind = [string]$primary.Kind
+        } | Out-Null
+        if (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue) {
+            Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $memoryTaskKind -RunId $memoryRunId | Out-Null
+        }
+    }
     if (Get-Command Invoke-RaymanAttentionAlert -ErrorAction SilentlyContinue) {
         Invoke-RaymanAttentionAlert -Kind 'done' -Reason '项目编译和测试通过' -WorkspaceRoot $WorkspaceRoot | Out-Null
     }

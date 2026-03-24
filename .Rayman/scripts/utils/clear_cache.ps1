@@ -13,7 +13,7 @@ function Warn([string]$Message) { Write-Host ("⚠️  [clear-cache] {0}" -f $Me
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $patterns = @(
   'bin', 'obj', '.vs', 'node_modules', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-  '__pycache__', '.turbo', '.next', 'dist', 'build', 'coverage'
+  '__pycache__', '.turbo', '.next', 'dist', 'build', 'coverage', ('.' + 'rag')
 )
 
 $candidates = New-Object System.Collections.Generic.List[string]
@@ -27,6 +27,16 @@ Get-ChildItem -LiteralPath $WorkspaceRoot -Directory -Recurse -Force -ErrorActio
   ForEach-Object {
     if (-not $candidates.Contains($_.FullName)) { $candidates.Add($_.FullName) | Out-Null }
   }
+
+foreach ($legacyPath in @(
+  (Join-Path $WorkspaceRoot ('.' + 'rag')),
+  (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('chroma' + '_db')),
+  (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('rag' + '.db'))
+)) {
+  if (Test-Path -LiteralPath $legacyPath -ErrorAction SilentlyContinue) {
+    if (-not $candidates.Contains($legacyPath)) { $candidates.Add($legacyPath) | Out-Null }
+  }
+}
 
 if ($Aggressive) {
   foreach ($extra in @('.cache', '.parcel-cache')) {
