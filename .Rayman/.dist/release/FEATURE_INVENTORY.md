@@ -34,6 +34,7 @@
 | Cluster | Public entrypoints | Default behavior | Runtime / host dependencies | Existing coverage | Status |
 | --- | --- | --- | --- | --- | --- |
 | Capability registry | `rayman agent-capabilities`, `.codex/config.toml` managed slices | OpenAI Docs MCP、Playwright MCP、Rayman WinApp MCP 可选启用；multi-agent 可降级 | Codex runtime, MCP availability, local capability probes | `check_agent_contract.ps1`, capability report, JSON schemas | `stable` |
+| Agentic planner pipeline | `dispatch`, `review-loop`, `.RaymanAgent/agentic/*` | 默认 `planner_v1` 会先写 plan/tool-policy，再把它们收敛成实际 execution contract；review-loop 写 reflection，并以 doc gate + acceptance close 作为成功条件；`legacy` 仍可回滚 | local shell, capability registry, delegated Codex optional features, requirements gate | `agentic_pipeline.Tests`, `validate_requirements.sh`, `first_pass_report.ps1` | `under-tested` |
 | Prompt / agent assets | `.github/agents`, `.github/skills`, `.github/prompts`, `dispatch`, `review_loop` | capability 资产由 Rayman 管理，路由与 report 需一致 | repo docs + Codex/Copilot consumption | `agent_asset_manifest.ps1`, `check_agent_contract.ps1` | `drifting` |
 | Model routing and policy | `.Rayman/config/model_routing.json`, `.Rayman/config/codex_agents/*.toml` | review prompts 和 Codex roles 已有默认模型，但 hosted model selection 仍主要靠文档治理 | Hosted platform features, human operator choice | route config tests partial, no single human-readable policy before this change | `platform-opportunity` |
 

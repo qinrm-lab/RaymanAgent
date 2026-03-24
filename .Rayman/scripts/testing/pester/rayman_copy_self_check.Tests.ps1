@@ -54,8 +54,7 @@ Describe 'copy_smoke strict nested setup audit' {
       Set-Content -LiteralPath (Join-Path $root '.Rayman\setup.ps1') -Encoding UTF8 -Value @'
 param(
   [string]$WorkspaceRoot,
-  [switch]$SkipReleaseGate,
-  [switch]$NoAutoMigrateLegacyRag
+  [switch]$SkipReleaseGate
 )
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
@@ -79,6 +78,37 @@ if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '.rayman.env.ps1') -P
 }
 if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '.github\\copilot-instructions.md') -PathType Leaf)) {
   Set-Content -LiteralPath (Join-Path $WorkspaceRoot '.github\\copilot-instructions.md') -Encoding UTF8 -Value '# instructions'
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $WorkspaceRoot '.github\\workflows') | Out-Null
+$solutionDir = Join-Path $WorkspaceRoot '.CopySmokeTest'
+New-Item -ItemType Directory -Force -Path $solutionDir | Out-Null
+if (-not (Test-Path -LiteralPath (Join-Path $solutionDir '.CopySmokeTest.requirements.md') -PathType Leaf)) {
+  Set-Content -LiteralPath (Join-Path $solutionDir '.CopySmokeTest.requirements.md') -Encoding UTF8 -Value '# requirements'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '.rayman.project.json') -PathType Leaf)) {
+  Set-Content -LiteralPath (Join-Path $WorkspaceRoot '.rayman.project.json') -Encoding UTF8 -Value '{"solution":"CopySmokeTest"}'
+}
+foreach ($workflowName in @('rayman-project-fast-gate.yml', 'rayman-project-browser-gate.yml', 'rayman-project-full-gate.yml')) {
+  $workflowPath = Join-Path $WorkspaceRoot ('.github\\workflows\\' + $workflowName)
+  if (-not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
+    Set-Content -LiteralPath $workflowPath -Encoding UTF8 -Value ('name: ' + $workflowName)
+  }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '.gitignore') -PathType Leaf)) {
+  Set-Content -LiteralPath (Join-Path $WorkspaceRoot '.gitignore') -Encoding UTF8 -Value @(
+    '# RAYMAN:GENERATED:BEGIN',
+    '/.Rayman/',
+    '/.SolutionName',
+    '/.cursorrules',
+    '/.clinerules',
+    '/.rayman.env.ps1',
+    '/.rayman.project.json',
+    '/.github/copilot-instructions.md',
+    '/.github/workflows/rayman-project-fast-gate.yml',
+    '/.github/workflows/rayman-project-browser-gate.yml',
+    '/.github/workflows/rayman-project-full-gate.yml',
+    '# RAYMAN:GENERATED:END'
+  )
 }
 
 $auditPath = Join-Path $runtimeDir 'stub.setup.invocations.jsonl'

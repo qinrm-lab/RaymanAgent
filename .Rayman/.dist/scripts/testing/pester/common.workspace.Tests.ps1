@@ -49,6 +49,31 @@ exec "$pwshPath" -NoProfile -Command "& '$psCommandPath' @args" -- "$@"
   return $wrapperPath
 }
 
+function script:Import-FunctionFromFile {
+  param(
+    [string]$Path,
+    [string]$FunctionName
+  )
+
+  $tokens = $null
+  $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+  if ($null -ne $errors -and $errors.Count -gt 0) {
+    throw ("failed to parse {0}: {1}" -f $Path, ($errors | ForEach-Object { $_.Message } | Select-Object -First 1))
+  }
+
+  $functionAst = $ast.Find({
+      param($node)
+      $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      [string]::Equals($node.Name, $FunctionName, [System.StringComparison]::Ordinal)
+    }, $true)
+  if ($null -eq $functionAst) {
+    throw ("function not found: {0}" -f $FunctionName)
+  }
+
+  Set-Item -Path ("Function:\script:{0}" -f $FunctionName) -Value ([scriptblock]::Create($functionAst.Body.Extent.Text))
+}
+
 Describe 'common workspace helpers' {
   It 'classifies a copied business workspace as external without Rayman source workflows' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_external_' + [Guid]::NewGuid().ToString('N'))
@@ -110,6 +135,110 @@ Describe 'common workspace helpers' {
     }
   }
 
+  It 'keeps external requirements and agentic docs trackable while matching generated workflow and config assets' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_external_allowlist_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\scripts\testing') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\scripts\testing\run_fast_contract.sh') -Value '#!/usr/bin/env bash' -Encoding UTF8
+
+      $solutionDir = Join-Path $root '.SampleExternal'
+      $agenticDir = Join-Path $solutionDir 'agentic'
+      New-Item -ItemType Directory -Force -Path $agenticDir | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\workflows') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\agents') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\skills\demo') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\prompts') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\instructions') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.codex') | Out-Null
+
+      Set-Content -LiteralPath (Join-Path $solutionDir '.SampleExternal.requirements.md') -Value '# requirements' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $agenticDir 'plan.md') -Value '# plan' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $agenticDir 'contract.json') -Value '{"ok":true}' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.rayman.project.json') -Value '{"solution":"SampleExternal"}' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.codex\config.toml') -Value 'model = "gpt-5"' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\model-policy.md') -Value '# model policy' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\workflows\rayman-project-fast-gate.yml') -Value 'name: fast' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\agents\rayman_worker.agent.md') -Value '# worker' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\skills\demo\SKILL.md') -Value '# skill' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\prompts\rayman.prompt.md') -Value '# prompt' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\instructions\workspace.instructions.md') -Value '# instructions' -Encoding UTF8
+
+      $rules = Get-RaymanScmTrackedNoiseRules -WorkspaceRoot $root
+
+      $rules.WorkspaceKind | Should -Be 'external'
+      foreach ($blockedPath in @(
+          '.rayman.project.json',
+          '.codex/config.toml',
+          '.github/model-policy.md',
+          '.github/workflows/rayman-project-fast-gate.yml',
+          '.github/agents/rayman_worker.agent.md',
+          '.github/skills/demo/SKILL.md',
+          '.github/prompts/rayman.prompt.md',
+          '.github/instructions/workspace.instructions.md'
+        )) {
+        $matches = @($rules.RaymanManaged | Where-Object { Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath $blockedPath -Rule $_ })
+        $matches.Count | Should -BeGreaterThan 0
+      }
+
+      foreach ($allowedPath in @(
+          '.SampleExternal/.SampleExternal.requirements.md',
+          '.SampleExternal/agentic/plan.md',
+          '.SampleExternal/agentic/contract.json'
+        )) {
+        $matches = @($rules.RaymanManaged | Where-Object { Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath $allowedPath -Rule $_ })
+        $matches.Count | Should -Be 0
+      }
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'matches source temp and package artifacts while keeping authored Rayman files clear' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_source_artifacts_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\scripts\testing') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.github\workflows') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\temp') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\tmp') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\release') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman_full_for_copy') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root 'Rayman_full_bundle') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.tmp_sandbox_verify_case') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\scripts\testing\run_fast_contract.sh') -Value '#!/usr/bin/env bash' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.github\workflows\rayman-test-lanes.yml') -Value 'name: rayman-test-lanes' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\temp\cache.txt') -Value 'temp' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\tmp\scratch.txt') -Value 'tmp' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\release\bundle.zip') -Value 'zip' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\release\bundle.tar.gz') -Value 'tar' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman_full_for_copy\manifest.txt') -Value 'copy' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root 'Rayman_full_bundle\bundle.txt') -Value 'bundle' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.tmp_sandbox_verify_case\trace.txt') -Value 'trace' -Encoding UTF8
+
+      $rules = Get-RaymanScmTrackedNoiseRules -WorkspaceRoot $root
+
+      $rules.WorkspaceKind | Should -Be 'source'
+      foreach ($blockedPath in @(
+          '.Rayman/temp/cache.txt',
+          '.Rayman/tmp/scratch.txt',
+          '.Rayman/release/bundle.zip',
+          '.Rayman/release/bundle.tar.gz',
+          '.Rayman_full_for_copy/manifest.txt',
+          'Rayman_full_bundle/bundle.txt',
+          '.tmp_sandbox_verify_case/trace.txt'
+        )) {
+        $matches = @($rules.RaymanManaged | Where-Object { Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath $blockedPath -Rule $_ })
+        $matches.Count | Should -BeGreaterThan 0
+      }
+
+      $authoredMatches = @($rules.RaymanManaged | Where-Object {
+          Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath '.Rayman/scripts/testing/run_fast_contract.sh' -Rule $_
+        })
+      $authoredMatches.Count | Should -Be 0
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'updates the tracked-assets flag in place without duplicating assignments' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_env_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -144,6 +273,113 @@ if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS
     $assertPsRaw | Should -Match 'workspace kind is \{0\}; skip trackedness validation'
     $assertShRaw | Should -Match 'detect_workspace_kind'
     $assertShRaw | Should -Match 'workspace kind is \$\{workspace_kind\}; skip trackedness validation'
+  }
+
+  It 'backfills heartbeat defaults into an existing workspace env file without overwriting existing values' {
+    $setupPath = Join-Path $PSScriptRoot '..\..\..\setup.ps1'
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_env_defaults_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $envFile = Join-Path $root '.rayman.env.ps1'
+      Set-Content -LiteralPath $envFile -Encoding UTF8 -Value @'
+if ([string]::IsNullOrWhiteSpace([string]$env:RAYMAN_HEARTBEAT_SECONDS)) {
+    $env:RAYMAN_HEARTBEAT_SECONDS = '45'
+}
+'@
+
+      $pwsh = Get-TestPowerShellPath
+      $setupPathEscaped = $setupPath.Replace("'", "''")
+      $envFileEscaped = $envFile.Replace("'", "''")
+      $command = @"
+`$setupPath = '$setupPathEscaped'
+`$envFile = '$envFileEscaped'
+`$tokens = `$null
+`$errors = `$null
+`$ast = [System.Management.Automation.Language.Parser]::ParseFile(`$setupPath, [ref]`$tokens, [ref]`$errors)
+if (`$errors.Count -gt 0) { throw `$errors[0].Message }
+`$functionAst = `$ast.Find({ param(`$node) `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and `$node.Name -eq 'Ensure-WorkspaceEnvDefaults' }, `$true)
+if (`$null -eq `$functionAst) { throw 'Ensure-WorkspaceEnvDefaults not found' }
+. ([scriptblock]::Create(`$functionAst.Extent.Text))
+Ensure-WorkspaceEnvDefaults -EnvFilePath `$envFile
+"@
+      & $pwsh -NoProfile -ExecutionPolicy Bypass -Command $command | Out-Null
+      $LASTEXITCODE | Should -Be 0
+
+      $raw = Get-Content -LiteralPath $envFile -Raw -Encoding UTF8
+
+      ([regex]::Matches($raw, '(?m)^\s*\$env:RAYMAN_HEARTBEAT_SECONDS\s*=\s*''45''\s*$')).Count | Should -Be 1
+      foreach ($name in @(
+        'RAYMAN_HEARTBEAT_VERBOSE',
+        'RAYMAN_HEARTBEAT_SMART_SILENCE_ENABLED',
+        'RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS',
+        'RAYMAN_SANDBOX_HEARTBEAT_SECONDS',
+        'RAYMAN_MCP_HEARTBEAT_SECONDS'
+      )) {
+        [regex]::IsMatch($raw, [regex]::Escape("env:$name")) | Should -BeTrue
+      }
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'removes legacy snapshot artifacts during setup cleanup without resetting current memory by default' {
+    $setupPath = Join-Path $PSScriptRoot '..\..\..\setup.ps1'
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_setup_cleanup_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      $snapshotRoot = Join-Path $root '.Rayman\runtime\snapshots'
+      $memoryRoot = Join-Path $root '.Rayman\state\memory'
+      New-Item -ItemType Directory -Force -Path $snapshotRoot | Out-Null
+      New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
+
+      $legacyManifest = Join-Path $snapshotRoot 'legacy.manifest.json'
+      $legacyArchive = Join-Path $snapshotRoot 'legacy.tar.gz'
+      $keepManifest = Join-Path $snapshotRoot 'keep.manifest.json'
+      $memoryDb = Join-Path $memoryRoot 'memory.sqlite3'
+      $legacyMarker = '.Rayman/state/' + ('chroma' + '_db')
+      Set-Content -LiteralPath $legacyManifest -Encoding UTF8 -Value ('{{"excluded_paths":["{0}"]}}' -f $legacyMarker)
+      Set-Content -LiteralPath $legacyArchive -Encoding UTF8 -Value 'snapshot'
+      Set-Content -LiteralPath $keepManifest -Encoding UTF8 -Value '{"excluded_paths":[".Rayman/state/memory"]}'
+      Set-Content -LiteralPath $memoryDb -Encoding UTF8 -Value 'current'
+
+      $pwsh = Get-TestPowerShellPath
+      $setupPathEscaped = $setupPath.Replace("'", "''")
+      $rootEscaped = $root.Replace("'", "''")
+      $command = @"
+`$raymanCommonImported = `$false
+`$setupPath = '$setupPathEscaped'
+`$root = '$rootEscaped'
+`$tokens = `$null
+`$errors = `$null
+`$ast = [System.Management.Automation.Language.Parser]::ParseFile(`$setupPath, [ref]`$tokens, [ref]`$errors)
+if (`$errors.Count -gt 0) { throw `$errors[0].Message }
+`$functionMap = @{}
+foreach (`$fn in `$ast.FindAll({ param(`$node) `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, `$true)) {
+  `$functionMap[[string]`$fn.Name] = `$fn
+}
+foreach (`$name in @(
+  'Clear-SetupDirectoryContents',
+  'Get-SetupLegacyMemoryPaths',
+  'Get-SetupMemoryPaths',
+  'Get-SetupLegacySnapshotArtifacts',
+  'Invoke-SetupLegacyMemoryCleanup'
+)) {
+  `$functionAst = `$functionMap[[string]`$name]
+  if (`$null -eq `$functionAst) { throw ('function not found: ' + `$name) }
+  . ([scriptblock]::Create(`$functionAst.Extent.Text))
+}
+Invoke-SetupLegacyMemoryCleanup -WorkspaceRoot `$root | Out-Null
+"@
+      & $pwsh -NoProfile -ExecutionPolicy Bypass -Command $command | Out-Null
+      $LASTEXITCODE | Should -Be 0
+
+      Test-Path -LiteralPath $legacyManifest | Should -BeFalse
+      Test-Path -LiteralPath $legacyArchive | Should -BeFalse
+      Test-Path -LiteralPath $keepManifest | Should -BeTrue
+      Test-Path -LiteralPath $memoryDb | Should -BeTrue
+      Test-Path -LiteralPath $memoryRoot -PathType Container | Should -BeTrue
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
 }
 

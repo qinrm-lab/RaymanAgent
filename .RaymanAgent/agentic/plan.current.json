@@ -1,0 +1,97 @@
+{
+  "schema": "rayman.agentic.plan.v1",
+  "plan_id": "69ebdcf6141e4e4fb9b419386504fbb8",
+  "generated_at": "2026-03-24T08:26:43.9120879+08:00",
+  "workspace_root": "E:\\rayman\\software\\RaymanAgent",
+  "task_kind": "review",
+  "task": "OpenAI docs prompt review",
+  "command": "",
+  "prompt_key": "review.initial.prompt.md",
+  "preferred_backend": "",
+  "pipeline": "planner_v1",
+  "requirements_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
+  "constraints": [
+    "Follow solution requirements: E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
+    "Follow release discipline: E:\\rayman\\software\\RaymanAgent\\.Rayman\\RELEASE_REQUIREMENTS.md",
+    "本文件为 Solution 级强制约束，必须执行。",
+    "本文件必须包含全部 Project requirements（按路径文本列出）。",
+    "(none detected)",
+    "CI 会校验：此文件必须包含上述每一条路径文本。",
+    "约定：Solution/Project requirements 均在 .RaymanAgent/ 下，不应在根目录出现 .*.requirements.md。"
+  ],
+  "acceptance_criteria": [
+    "Task goal remains: OpenAI docs prompt review",
+    "Reflection outcome must be `done` before the run is treated as successful.",
+    "Doc gate must pass with current plan/tool-policy/reflection artifacts.",
+    "Review-loop success still requires `test-fix` to pass."
+  ],
+  "tool_budget": {
+    "max_selected_tools": 4,
+    "max_fallbacks": 3,
+    "max_subagents": 2
+  },
+  "allowed_subagents": [
+    "rayman_explorer",
+    "rayman_reviewer",
+    "rayman_docs_researcher",
+    "rayman_browser_debugger",
+    "rayman_winapp_debugger",
+    "rayman_worker"
+  ],
+  "selected_subagents": [
+    "rayman_reviewer",
+    "rayman_docs_researcher"
+  ],
+  "selected_tool_keys": [
+    "openai_docs_mcp",
+    "rayman_docs_researcher",
+    "rayman_reviewer",
+    "local_shell"
+  ],
+  "stop_conditions": [
+    "Stop immediately on policy block or missing required artifacts.",
+    "Keep the run in planner_v1 only when the doc gate remains satisfied.",
+    "Use local fallback when optional OpenAI runtime features are unavailable."
+  ],
+  "required_docs": [
+    "plan.current.md",
+    "plan.current.json",
+    "tool-policy.md",
+    "tool-policy.json",
+    "evals.md"
+  ],
+  "openai_optional": {
+    "mode": "auto",
+    "codex_available": true,
+    "openai_docs_active": true,
+    "features": [
+      {
+        "name": "background_mode",
+        "enabled": true,
+        "available": false,
+        "support_mode": "disabled_until_supported",
+        "support_reason": "delegated_codex_executor_not_implemented",
+        "reason": "disabled_until_supported",
+        "fallback": "local_review_loop"
+      },
+      {
+        "name": "compaction",
+        "enabled": true,
+        "available": false,
+        "support_mode": "disabled_until_supported",
+        "support_reason": "delegated_codex_executor_not_implemented",
+        "reason": "disabled_until_supported",
+        "fallback": "local_context_files"
+      },
+      {
+        "name": "prompt_optimizer",
+        "enabled": true,
+        "available": false,
+        "support_mode": "disabled_until_supported",
+        "support_reason": "delegated_codex_executor_not_implemented",
+        "reason": "disabled_until_supported",
+        "fallback": "manual_evals_index"
+      }
+    ]
+  }
+}

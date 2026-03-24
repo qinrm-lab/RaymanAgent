@@ -1,0 +1,165 @@
+{
+  "schema": "rayman.agentic.tool_policy.v1",
+  "task_kind": "review",
+  "prompt_key": "review.initial.prompt.md",
+  "preferred_backend": "",
+  "budget": {
+    "max_selected_tools": 4,
+    "max_fallbacks": 3,
+    "max_subagents": 2
+  },
+  "selected_tools": [
+    {
+      "key": "openai_docs_mcp",
+      "kind": "capability",
+      "score": 95,
+      "matched_triggers": [
+        "openai",
+        "docs"
+      ],
+      "reason": "Official OpenAI docs are the primary source for platform-specific guidance.",
+      "expected_evidence": [
+        "official doc references",
+        "verified model/platform notes"
+      ],
+      "fallback_chain": [
+        "local_shell"
+      ]
+    },
+    {
+      "key": "rayman_docs_researcher",
+      "kind": "subagent",
+      "score": 55,
+      "matched_triggers": [
+        "delegation_rule"
+      ],
+      "reason": "Multi-agent registry marks this role as relevant for the task shape.",
+      "expected_evidence": [
+        "scoped findings",
+        "role-specific notes"
+      ],
+      "fallback_chain": [
+        "single_agent"
+      ]
+    },
+    {
+      "key": "rayman_reviewer",
+      "kind": "subagent",
+      "score": 55,
+      "matched_triggers": [
+        "delegation_rule"
+      ],
+      "reason": "Multi-agent registry marks this role as relevant for the task shape.",
+      "expected_evidence": [
+        "scoped findings",
+        "role-specific notes"
+      ],
+      "fallback_chain": [
+        "single_agent"
+      ]
+    },
+    {
+      "key": "local_shell",
+      "kind": "shell",
+      "score": 25,
+      "matched_triggers": [
+        "default"
+      ],
+      "reason": "Local shell remains the universal fallback and evidence collector.",
+      "expected_evidence": [
+        "workspace diff and local logs"
+      ],
+      "fallback_chain": []
+    }
+  ],
+  "ranked_candidates": [
+    {
+      "key": "openai_docs_mcp",
+      "kind": "capability",
+      "score": 95,
+      "matched_triggers": [
+        "openai",
+        "docs"
+      ],
+      "reason": "Official OpenAI docs are the primary source for platform-specific guidance.",
+      "expected_evidence": [
+        "official doc references",
+        "verified model/platform notes"
+      ],
+      "fallback_chain": [
+        "local_shell"
+      ]
+    },
+    {
+      "key": "rayman_docs_researcher",
+      "kind": "subagent",
+      "score": 55,
+      "matched_triggers": [
+        "delegation_rule"
+      ],
+      "reason": "Multi-agent registry marks this role as relevant for the task shape.",
+      "expected_evidence": [
+        "scoped findings",
+        "role-specific notes"
+      ],
+      "fallback_chain": [
+        "single_agent"
+      ]
+    },
+    {
+      "key": "rayman_reviewer",
+      "kind": "subagent",
+      "score": 55,
+      "matched_triggers": [
+        "delegation_rule"
+      ],
+      "reason": "Multi-agent registry marks this role as relevant for the task shape.",
+      "expected_evidence": [
+        "scoped findings",
+        "role-specific notes"
+      ],
+      "fallback_chain": [
+        "single_agent"
+      ]
+    },
+    {
+      "key": "local_shell",
+      "kind": "shell",
+      "score": 25,
+      "matched_triggers": [
+        "default"
+      ],
+      "reason": "Local shell remains the universal fallback and evidence collector.",
+      "expected_evidence": [
+        "workspace diff and local logs"
+      ],
+      "fallback_chain": []
+    }
+  ],
+  "fallback_chain": [
+    "local_shell",
+    "single_agent"
+  ],
+  "allowed_subagents": [
+    "rayman_explorer",
+    "rayman_reviewer",
+    "rayman_docs_researcher",
+    "rayman_browser_debugger",
+    "rayman_winapp_debugger",
+    "rayman_worker"
+  ],
+  "selected_subagents": [
+    "rayman_reviewer",
+    "rayman_docs_researcher"
+  ],
+  "subagent_notes": [
+    "rayman_reviewer: required",
+    "rayman_docs_researcher: required"
+  ],
+  "selected_tool_keys": [
+    "openai_docs_mcp",
+    "rayman_docs_researcher",
+    "rayman_reviewer",
+    "local_shell"
+  ]
+}

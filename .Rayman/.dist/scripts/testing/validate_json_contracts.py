@@ -72,6 +72,24 @@ CONTRACTS = [
         "fixture": "codex.auth.status.sample.json",
         "runtime": ".Rayman/runtime/codex.auth.status.json",
     },
+    {
+        "name": "agent_memory_status",
+        "schema": "agent_memory_status.v1.schema.json",
+        "fixture": "agent_memory.status.sample.json",
+        "runtime": ".Rayman/runtime/memory/status.json",
+    },
+    {
+        "name": "agent_memory_search_result",
+        "schema": "agent_memory_search_result.v1.schema.json",
+        "fixture": "agent_memory.search.sample.json",
+        "runtime": ".Rayman/runtime/memory/search.last.json",
+    },
+    {
+        "name": "agent_memory_summarize_result",
+        "schema": "agent_memory_summarize_result.v1.schema.json",
+        "fixture": "agent_memory.summarize.sample.json",
+        "runtime": ".Rayman/runtime/memory/summarize.last.json",
+    },
 ]
 
 

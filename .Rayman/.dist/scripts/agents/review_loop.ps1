@@ -18,6 +18,16 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
 }
 . $commonPath
 
+$agenticHelperPath = Join-Path $PSScriptRoot 'agentic_pipeline.ps1'
+if (Test-Path -LiteralPath $agenticHelperPath -PathType Leaf) {
+  . $agenticHelperPath
+}
+
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
+  . $memoryHelperPath
+}
+
 function Ensure-Dir([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
@@ -332,6 +342,11 @@ $diffReportPath = Join-Path $runtimeDir 'review_loop.last.diff.md'
 $firstPassTsv = Join-Path $telemetryDir 'first_pass_runs.tsv'
 $dispatchLastPath = Join-Path $runtimeDir 'agent_runs\last.json'
 $startedAt = Get-Date
+$memoryTaskKey = if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
+  Get-RaymanMemoryTaskKey -TaskKind $TaskKind -Task $Task -PromptKey $PromptKey -WorkspaceRoot $WorkspaceRoot
+} else {
+  ''
+}
 
 $dispatchScript = Join-Path $raymanDir 'scripts\agents\dispatch.ps1'
 $testFixScript = Join-Path $raymanDir 'scripts\repair\run_tests_and_fix.ps1'
@@ -341,6 +356,17 @@ $modelRoutingPath = Join-Path $raymanDir 'config\model_routing.json'
 $reviewConfig = Get-JsonOrNull -Path $reviewConfigPath
 $policyConfig = Get-JsonOrNull -Path $policyConfigPath
 $modelRoutingConfig = Get-JsonOrNull -Path $modelRoutingPath
+$agenticConfigInfo = $null
+$agenticConfig = $null
+$agenticEnabled = $false
+if (Get-Command Get-RaymanAgenticPipelineConfig -ErrorAction SilentlyContinue) {
+  $agenticConfigInfo = Get-RaymanAgenticPipelineConfig -WorkspaceRoot $WorkspaceRoot
+  $agenticConfig = $agenticConfigInfo.data
+  $agenticEnabled = (-not [string]::Equals([string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1'), [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'legacy_pipeline_name' -Default 'legacy'), [System.StringComparison]::OrdinalIgnoreCase))
+  if ($agenticEnabled) {
+    Ensure-RaymanAgenticArtifacts -WorkspaceRoot $WorkspaceRoot | Out-Null
+  }
+}
 
 if ($MaxRounds -le 0) {
   if ($null -ne $reviewConfig -and $null -ne $reviewConfig.PSObject.Properties['max_rounds']) {
@@ -460,6 +486,14 @@ if ($null -ne $reviewConfig -and $null -ne $reviewConfig.PSObject.Properties['di
   }
 }
 
+if ($agenticEnabled -and (Get-Command Get-RaymanAgenticArtifactPaths -ErrorAction SilentlyContinue)) {
+  $agenticPaths = Get-RaymanAgenticArtifactPaths -WorkspaceRoot $WorkspaceRoot
+  $agenticIgnorePrefix = ('{0}/agentic' -f [string]$agenticPaths.solution_dir_name).Replace('\', '/')
+  if (-not [string]::IsNullOrWhiteSpace($agenticIgnorePrefix)) {
+    $diffIgnorePrefixes = @($diffIgnorePrefixes + $agenticIgnorePrefix | Select-Object -Unique)
+  }
+}
+
 Write-LoopLog -Path $detailLogPath -Message ("review-loop start run_id={0} task_kind={1} max_rounds={2}" -f $runId, $TaskKind, $MaxRounds)
 if ($diffSummaryEnabled) {
   Write-LoopLog -Path $detailLogPath -Message ("diff-summary enabled max_files={0}" -f $diffMaxFiles)
@@ -471,6 +505,14 @@ $firstPass = $false
 $finalExitCode = 1
 $finalErrorKind = 'unknown'
 $round1Backend = 'local'
+$agenticPlan = $null
+$agenticToolPolicy = $null
+$agenticReflection = $null
+$agenticSelectedTools = @()
+$agenticFallbackCount = 0
+$agenticAcceptanceClosed = $false
+$agenticDocGatePass = $false
+$replanCount = 0
 $snapshotBeforeRound = $null
 if ($diffSummaryEnabled) {
   $snapshotBeforeRound = Get-WorkspaceSnapshot -Root $WorkspaceRoot -IgnorePrefixes $diffIgnorePrefixes -TextExtensions $diffTextExtensions
@@ -546,6 +588,20 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
         if ($null -ne $dispatchObj.PSObject.Properties['policy_block_reason']) {
           $roundPolicyBlockedReason = [string]$dispatchObj.policy_block_reason
         }
+        if ($agenticEnabled) {
+          if ($null -ne $dispatchObj.PSObject.Properties['agentic_plan']) {
+            $agenticPlan = $dispatchObj.agentic_plan
+          }
+          if ($null -ne $dispatchObj.PSObject.Properties['agentic_tool_policy']) {
+            $agenticToolPolicy = $dispatchObj.agentic_tool_policy
+          }
+          if ($null -ne $dispatchObj.PSObject.Properties['selected_tools']) {
+            $agenticSelectedTools = @($dispatchObj.selected_tools | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+          if ($null -ne $dispatchObj.PSObject.Properties['fallback_count']) {
+            $agenticFallbackCount = [int]$dispatchObj.fallback_count
+          }
+        }
       }
     }
   }
@@ -556,11 +612,33 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
 
   if ($dispatchExit -ne 0 -and $roundBackend -eq 'blocked') {
     $finalExitCode = $dispatchExit
-    $finalErrorKind = 'dispatch_policy_blocked'
+    if ($agenticEnabled -and (Get-Command Resolve-RaymanDispatchBlockedErrorKind -ErrorAction SilentlyContinue) -and $null -ne $dispatchObj) {
+      $finalErrorKind = Resolve-RaymanDispatchBlockedErrorKind -DispatchSummary $dispatchObj
+    } elseif (-not [string]::IsNullOrWhiteSpace($roundDispatchReason)) {
+      $finalErrorKind = $roundDispatchReason
+    } else {
+      $finalErrorKind = 'dispatch_policy_blocked'
+    }
     if ($diffSummaryEnabled) {
       $snapshotAfterRound = Get-WorkspaceSnapshot -Root $WorkspaceRoot -IgnorePrefixes $diffIgnorePrefixes -TextExtensions $diffTextExtensions
       $roundDiffSummary = Get-SnapshotDiffSummary -Before $snapshotBeforeRound -After $snapshotAfterRound -MaxFiles $diffMaxFiles
       $snapshotBeforeRound = $snapshotAfterRound
+    }
+    $roundReflectionOutcome = ''
+    $roundDocGatePass = $false
+    $roundAcceptanceClosed = $false
+    if ($agenticEnabled -and $null -ne $agenticPlan -and $null -ne $agenticToolPolicy) {
+      $reflectionWriteStarted = Get-Date
+      $provisionalReflection = New-RaymanReflection -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -TaskKind $TaskKind -Task $Task -Plan $agenticPlan -ToolPolicy $agenticToolPolicy -Round $round -MaxRounds $MaxRounds -TestExit $dispatchExit -ErrorKind $finalErrorKind -PolicyOk $false -DiffSummary $roundDiffSummary -FallbackCount $agenticFallbackCount -ReplanCount $replanCount -DocGate ([pscustomobject]@{ pass = $true })
+      Write-RaymanReflectionArtifacts -WorkspaceRoot $WorkspaceRoot -Reflection $provisionalReflection | Out-Null
+      $roundDocGate = Test-RaymanAgenticDocGate -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -Stage 'review_loop' -UpdatedAfter $reflectionWriteStarted -UpdatedDocNames @('reflection.current.md', 'reflection.current.json')
+      $agenticReflection = New-RaymanReflection -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -TaskKind $TaskKind -Task $Task -Plan $agenticPlan -ToolPolicy $agenticToolPolicy -Round $round -MaxRounds $MaxRounds -TestExit $dispatchExit -ErrorKind $finalErrorKind -PolicyOk $false -DiffSummary $roundDiffSummary -FallbackCount $agenticFallbackCount -ReplanCount $replanCount -DocGate $roundDocGate
+      Write-RaymanReflectionArtifacts -WorkspaceRoot $WorkspaceRoot -Reflection $agenticReflection | Out-Null
+      $roundReflectionOutcome = [string]$agenticReflection.outcome
+      $roundDocGatePass = [bool]$agenticReflection.doc_gate_pass
+      $roundAcceptanceClosed = [bool]$agenticReflection.acceptance_closed
+      $agenticDocGatePass = $roundDocGatePass
+      $agenticAcceptanceClosed = $roundAcceptanceClosed
     }
     $rounds.Add([pscustomobject]@{
       round = $round
@@ -577,14 +655,36 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
       policy_bypassed = $roundPolicyBypassed
       policy_bypass_reason = $roundPolicyBypassReason
       policy_block_reason = $roundPolicyBlockedReason
+      plan_id = if ($null -ne $agenticPlan) { [string]$agenticPlan.plan_id } else { '' }
+      selected_tools = @($agenticSelectedTools)
+      fallback_count = $agenticFallbackCount
+      replan_count = $replanCount
+      reflection_outcome = $roundReflectionOutcome
+      doc_gate_pass = $roundDocGatePass
+      acceptance_closed = $roundAcceptanceClosed
       diff_summary = $roundDiffSummary
     }) | Out-Null
-    Write-LoopLog -Path $detailLogPath -Message ("round={0} blocked by dispatch policy" -f $round)
+    if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+      Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'review_round' -Round $round -Success $false -ErrorKind $finalErrorKind -SelectedTools @($agenticSelectedTools) -DiffSummary $roundDiffSummary -ArtifactRefs @($detailLogPath, $dispatchLastPath) -SummaryText ("dispatch blocked: {0}" -f [string]$finalErrorKind) -ExtraPayload @{
+        backend = $roundBackend
+        dispatch_exit = $dispatchExit
+        policy_ok = $false
+      } | Out-Null
+    }
+    Write-LoopLog -Path $detailLogPath -Message ("round={0} blocked by dispatch: {1}" -f $round, $finalErrorKind)
     break
   }
 
   $testExit = 1
   $testException = ''
+  $prevMemoryRunId = [Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_RUN_ID')
+  $prevMemoryTaskKey = [Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_TASK_KEY')
+  $prevMemoryTaskKind = [Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_TASK_KIND')
+  $prevMemoryRound = [Environment]::GetEnvironmentVariable('RAYMAN_MEMORY_ROUND')
+  $env:RAYMAN_MEMORY_RUN_ID = $runId
+  $env:RAYMAN_MEMORY_TASK_KEY = $memoryTaskKey
+  $env:RAYMAN_MEMORY_TASK_KIND = $TaskKind
+  $env:RAYMAN_MEMORY_ROUND = [string]$round
   try {
     & $testFixScript | Out-Host
     $testExit = [int]$LASTEXITCODE
@@ -592,6 +692,11 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
     $testExit = 1
     $testException = $_.Exception.Message
     Write-LoopLog -Path $detailLogPath -Message ("round={0} test-fix exception={1}" -f $round, $_.Exception.Message)
+  } finally {
+    $env:RAYMAN_MEMORY_RUN_ID = $prevMemoryRunId
+    $env:RAYMAN_MEMORY_TASK_KEY = $prevMemoryTaskKey
+    $env:RAYMAN_MEMORY_TASK_KIND = $prevMemoryTaskKind
+    $env:RAYMAN_MEMORY_ROUND = $prevMemoryRound
   }
   $policyOk = $true
   $errorKind = 'ok'
@@ -635,6 +740,26 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
     Write-LoopLog -Path $detailLogPath -Message ("round={0} diff touched={1} modified={2} added={3} deleted={4}" -f $round, $roundDiffSummary.touched_files_count, $roundDiffSummary.modified_files_count, $roundDiffSummary.added_files_count, $roundDiffSummary.deleted_files_count)
   }
 
+  $roundReflectionOutcome = ''
+  $roundDocGatePass = $false
+  $roundAcceptanceClosed = $false
+  if ($agenticEnabled -and $null -ne $agenticPlan -and $null -ne $agenticToolPolicy) {
+    $reflectionWriteStarted = Get-Date
+    $provisionalReflection = New-RaymanReflection -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -TaskKind $TaskKind -Task $Task -Plan $agenticPlan -ToolPolicy $agenticToolPolicy -Round $round -MaxRounds $MaxRounds -TestExit $testExit -ErrorKind $errorKind -PolicyOk $policyOk -DiffSummary $roundDiffSummary -FallbackCount $agenticFallbackCount -ReplanCount $replanCount -DocGate ([pscustomobject]@{ pass = $true })
+    Write-RaymanReflectionArtifacts -WorkspaceRoot $WorkspaceRoot -Reflection $provisionalReflection | Out-Null
+    $roundDocGate = Test-RaymanAgenticDocGate -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -Stage 'review_loop' -UpdatedAfter $reflectionWriteStarted -UpdatedDocNames @('reflection.current.md', 'reflection.current.json')
+    $agenticReflection = New-RaymanReflection -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -TaskKind $TaskKind -Task $Task -Plan $agenticPlan -ToolPolicy $agenticToolPolicy -Round $round -MaxRounds $MaxRounds -TestExit $testExit -ErrorKind $errorKind -PolicyOk $policyOk -DiffSummary $roundDiffSummary -FallbackCount $agenticFallbackCount -ReplanCount $replanCount -DocGate $roundDocGate
+    Write-RaymanReflectionArtifacts -WorkspaceRoot $WorkspaceRoot -Reflection $agenticReflection | Out-Null
+    $roundReflectionOutcome = [string]$agenticReflection.outcome
+    $roundDocGatePass = [bool]$agenticReflection.doc_gate_pass
+    $roundAcceptanceClosed = [bool]$agenticReflection.acceptance_closed
+    $agenticDocGatePass = $roundDocGatePass
+    $agenticAcceptanceClosed = $roundAcceptanceClosed
+    if ($roundReflectionOutcome -eq 'replan') {
+      $replanCount++
+    }
+  }
+
   $rounds.Add([pscustomobject]@{
     round = $round
     backend = $roundBackend
@@ -650,21 +775,55 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
     policy_bypassed = $roundPolicyBypassed
     policy_bypass_reason = $roundPolicyBypassReason
     policy_block_reason = $roundPolicyBlockedReason
+    plan_id = if ($null -ne $agenticPlan) { [string]$agenticPlan.plan_id } else { '' }
+    selected_tools = @($agenticSelectedTools)
+    fallback_count = $agenticFallbackCount
+    replan_count = $replanCount
+    reflection_outcome = $roundReflectionOutcome
+    doc_gate_pass = $roundDocGatePass
+    acceptance_closed = $roundAcceptanceClosed
     diff_summary = $roundDiffSummary
   }) | Out-Null
+  if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+    Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'review_round' -Round $round -Success $policyOk -ErrorKind $errorKind -SelectedTools @($agenticSelectedTools) -DiffSummary $roundDiffSummary -ArtifactRefs @($detailLogPath, $summaryPath) -SummaryText ("round {0}: backend={1}; test_exit={2}" -f $round, [string]$roundBackend, $testExit) -ExtraPayload @{
+      backend = $roundBackend
+      test_exit = $testExit
+      policy_ok = $policyOk
+      reflection_outcome = $roundReflectionOutcome
+    } | Out-Null
+  }
 
   Write-LoopLog -Path $detailLogPath -Message ("round={0} backend={1} test_exit={2} error_kind={3}" -f $round, $roundBackend, $testExit, $errorKind)
 
   if ($testExit -eq 0) {
-    $success = $true
-    $finalExitCode = 0
-    $finalErrorKind = 'ok'
-    if ($round -eq 1) { $firstPass = $true }
-    break
+    if ($agenticEnabled) {
+      if ($roundReflectionOutcome -eq 'done') {
+        $success = $true
+        $finalExitCode = 0
+        $finalErrorKind = 'ok'
+        if ($round -eq 1) { $firstPass = $true }
+        break
+      }
+      $success = $false
+      $finalExitCode = 7
+      $finalErrorKind = if ([string]::IsNullOrWhiteSpace($roundReflectionOutcome)) { 'agentic_reflection_failed' } else { ('reflection_{0}' -f $roundReflectionOutcome) }
+      break
+    } else {
+      $success = $true
+      $finalExitCode = 0
+      $finalErrorKind = 'ok'
+      if ($round -eq 1) { $firstPass = $true }
+      break
+    }
   }
 
-  $finalExitCode = $testExit
-  $finalErrorKind = $errorKind
+  if ($agenticEnabled -and -not [string]::IsNullOrWhiteSpace($roundReflectionOutcome)) {
+    $finalExitCode = $testExit
+    $finalErrorKind = ('reflection_{0}' -f $roundReflectionOutcome)
+  } else {
+    $finalExitCode = $testExit
+    $finalErrorKind = $errorKind
+  }
 }
 
 $finishedAt = Get-Date
@@ -679,6 +838,7 @@ $summary = @{
   run_id = $runId
   workspace_root = $WorkspaceRoot
   task_kind = $TaskKind
+  memory_task_key = $memoryTaskKey
   task = $Task
   prompt_key = $PromptKey
   preferred_backend = $PreferredBackend
@@ -690,6 +850,15 @@ $summary = @{
   duration_ms = $durationMs
   success = $success
   first_pass = $firstPass
+  pipeline = if ($agenticEnabled) { [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1') } else { 'legacy' }
+  plan_id = if ($null -ne $agenticPlan) { [string]$agenticPlan.plan_id } else { '' }
+  selected_tools = @($agenticSelectedTools)
+  fallback_count = $agenticFallbackCount
+  replan_count = $replanCount
+  doc_gate_pass = $agenticDocGatePass
+  acceptance_closed = $agenticAcceptanceClosed
+  reflection_outcome = if ($null -ne $agenticReflection) { [string]$agenticReflection.outcome } else { '' }
+  agentic_reflection = $agenticReflection
   final_exit_code = $finalExitCode
   final_error_kind = $finalErrorKind
   rounds = @($rounds.ToArray())
@@ -760,14 +929,33 @@ if ($diffSummaryEnabled) {
 
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 
+if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+  $finalDiffSummary = $null
+  if ($rounds.Count -gt 0) {
+    $finalRoundObj = $rounds[$rounds.Count - 1]
+    if ($null -ne $finalRoundObj.PSObject.Properties['diff_summary']) {
+      $finalDiffSummary = $finalRoundObj.diff_summary
+    }
+  }
+  Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'review_result' -Round $rounds.Count -Success $success -ErrorKind $finalErrorKind -DurationMs $durationMs -SelectedTools @($agenticSelectedTools) -DiffSummary $finalDiffSummary -ArtifactRefs @($summaryPath, $diffReportPath, $detailLogPath) -SummaryText ("review-loop result: success={0}; first_pass={1}; final_exit={2}" -f $success, $firstPass, $finalExitCode) -ExtraPayload @{
+    first_pass = $firstPass
+    final_exit_code = $finalExitCode
+    reflection_outcome = if ($null -ne $agenticReflection) { [string]$agenticReflection.outcome } else { '' }
+  } | Out-Null
+  if (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue) {
+    Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $TaskKind -RunId $runId | Out-Null
+  }
+}
+
 $_legacyFirstPassHeader = "ts_iso`trun_id`tprofile`tstage`tscope`tstatus`terror_kind`tduration_ms`tcommand"
-$_firstPassHeader = "ts_iso`trun_id`tprofile`tstage`tscope`tstatus`terror_kind`tduration_ms`tcommand`tround1_touched_files`tround1_net_line_delta`tround1_modified_files`tround1_added_files`tround1_deleted_files`tround1_net_size_delta_bytes"
+$_previousFirstPassHeader = "ts_iso`trun_id`tprofile`tstage`tscope`tstatus`terror_kind`tduration_ms`tcommand`tround1_touched_files`tround1_net_line_delta`tround1_modified_files`tround1_added_files`tround1_deleted_files`tround1_net_size_delta_bytes"
+$_firstPassHeader = "ts_iso`trun_id`tprofile`tstage`tscope`tstatus`terror_kind`tduration_ms`tcommand`tround1_touched_files`tround1_net_line_delta`tround1_modified_files`tround1_added_files`tround1_deleted_files`tround1_net_size_delta_bytes`tplan_id`treplan_count`tselected_tools`tfallback_count`tdoc_gate_pass`tacceptance_closed`treflection_outcome"
 if (-not (Test-Path -LiteralPath $firstPassTsv -PathType Leaf)) {
   $_firstPassHeader | Set-Content -LiteralPath $firstPassTsv -Encoding UTF8
 } else {
   try {
     $existing = @(Get-Content -LiteralPath $firstPassTsv -Encoding UTF8 -ErrorAction Stop)
-    if ($existing.Count -gt 0 -and [string]$existing[0] -eq $_legacyFirstPassHeader) {
+    if ($existing.Count -gt 0 -and @($_legacyFirstPassHeader, $_previousFirstPassHeader) -contains [string]$existing[0]) {
       Set-Content -LiteralPath $firstPassTsv -Encoding UTF8 -Value $_firstPassHeader
       if ($existing.Count -gt 1) {
         Add-Content -LiteralPath $firstPassTsv -Encoding UTF8 -Value @($existing | Select-Object -Skip 1)
@@ -799,7 +987,12 @@ $fpStatus = if ($firstPass) { 'OK' } else { 'FAIL' }
 $fpErrorKindRaw = if ($firstPass) { 'ok' } else { [string]$finalErrorKind }
 $fpErrorKind = ([string]$fpErrorKindRaw -replace "[`r`n`t]+", ' ').Trim()
 if ([string]::IsNullOrWhiteSpace($fpErrorKind)) { $fpErrorKind = 'unknown' }
-$fpLine = "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}`t{8}`t{9}`t{10}`t{11}`t{12}`t{13}`t{14}" -f $finishedAt.ToString('o'), $runId, 'first-pass', $TaskKind, $round1Backend, $fpStatus, $fpErrorKind, $durationMs, 'review-loop', $round1Touched, $round1NetLineDelta, $round1Modified, $round1Added, $round1Deleted, $round1NetSizeDeltaBytes
+$fpSelectedTools = ($agenticSelectedTools | ForEach-Object { [string]$_ }) -join '|'
+$fpDocGatePass = if ($agenticEnabled) { [string]$agenticDocGatePass.ToString().ToLowerInvariant() } else { 'true' }
+$fpAcceptanceClosed = if ($agenticEnabled) { [string]$agenticAcceptanceClosed.ToString().ToLowerInvariant() } else { [string]$success.ToString().ToLowerInvariant() }
+$fpReflectionOutcome = if ($agenticEnabled -and $null -ne $agenticReflection) { [string]$agenticReflection.outcome } else { '' }
+$fpPlanId = if ($null -ne $agenticPlan) { [string]$agenticPlan.plan_id } else { '' }
+$fpLine = "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`t{7}`t{8}`t{9}`t{10}`t{11}`t{12}`t{13}`t{14}`t{15}`t{16}`t{17}`t{18}`t{19}`t{20}`t{21}" -f $finishedAt.ToString('o'), $runId, 'first-pass', $TaskKind, $round1Backend, $fpStatus, $fpErrorKind, $durationMs, 'review-loop', $round1Touched, $round1NetLineDelta, $round1Modified, $round1Added, $round1Deleted, $round1NetSizeDeltaBytes, $fpPlanId, $replanCount, $fpSelectedTools, $agenticFallbackCount, $fpDocGatePass, $fpAcceptanceClosed, $fpReflectionOutcome
 Add-Content -LiteralPath $firstPassTsv -Encoding UTF8 -Value $fpLine
 try {
   Write-RaymanRulesTelemetryRecord -WorkspaceRoot $WorkspaceRoot -RunId $runId -Profile 'review-loop' -Stage 'final' -Scope $TaskKind -Status $(if ($success) { 'OK' } else { 'FAIL' }) -ExitCode $finalExitCode -DurationMs $durationMs -Command 'review-loop' | Out-Null

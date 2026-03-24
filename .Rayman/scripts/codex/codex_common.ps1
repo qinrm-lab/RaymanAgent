@@ -2272,7 +2272,7 @@ function Get-RaymanCodexCliCompatibilityStatus {
             compatible = $false
             updated = $false
             reason = 'codex_command_not_found'
-            minimum_version = '0.5.80'
+            minimum_version = '0.116.0'
             version_before = ''
             version_after = ''
             output = $notFoundMessage
@@ -2285,7 +2285,7 @@ function Get-RaymanCodexCliCompatibilityStatus {
         return $script:RaymanCodexCompatibilityCache[$cacheKey]
     }
 
-    $minimumVersion = '0.5.80'
+    $minimumVersion = '0.116.0'
     $versionInfo = Get-RaymanCodexVersionInfo -WorkspaceRoot $WorkspaceRoot -AccountAlias $AccountAlias
     $probe = $null
     $compatible = $true

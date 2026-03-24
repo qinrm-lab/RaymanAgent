@@ -41,7 +41,7 @@ function Get-QuickFixCommandsForCheck([string]$CheckName) {
     '非Rayman产物Git跟踪噪声' { return @('git rm -r --cached -- .dotnet10 dist publish .tmp .temp') }
     'Dist镜像同步' { return @('.\\.Rayman\\rayman.ps1 dist-sync') }
     '版本一致性' { return @('.\\.Rayman\\rayman.ps1 release-gate -Mode project') }
-    'RAG路径隔离' { return @('$env:RAYMAN_RAG_ROOT=".rag"', '.\\.Rayman\\rayman.ps1 migrate-rag') }
+    'Agent Memory 存储有效' { return @('.\\.Rayman\\rayman.ps1 memory-bootstrap') }
     'MCP配置可移植性' { return @('.\\.Rayman\\scripts\\mcp\\manage_mcp.ps1 -Action status') }
     'Playwright摘要结构' { return @('.\\.Rayman\\rayman.ps1 ensure-playwright') }
     'Agent能力同步' { return @('.\\.Rayman\\rayman.ps1 agent-capabilities --sync') }
@@ -53,7 +53,7 @@ function Get-QuickFixCommandsForCheck([string]$CheckName) {
     'Bash逻辑单测' { return @('bash ./.Rayman/scripts/testing/run_bats_tests.sh') }
     '宿主环境冒烟' { return @('.\\.Rayman\\scripts\\testing\\run_host_smoke.ps1 -WorkspaceRoot "$PWD"') }
     '依赖自动补全默认项' { return @('.\\.Rayman\\setup.ps1') }
-    'MCP/RAG最小可用性' { return @('.\\.Rayman\\scripts\\mcp\\manage_mcp.ps1 -Action start', '.\\.Rayman\\scripts\\rag\\manage_rag.ps1 -Action build') }
+    'Agent Memory 检索有效' { return @('.\\.Rayman\\rayman.ps1 memory-bootstrap', '.\\.Rayman\\rayman.ps1 memory-search -Query "release requirements"') }
     '单仓库增强风险快照' { return @('.\\.Rayman\\rayman.ps1 single-repo-upgrade --RiskMode strict --ApproveHighRisk') }
     default {
       return @()
@@ -489,33 +489,33 @@ if (-not $isGitWorkspace) {
         if ($workspaceKind -eq 'source') {
           '移除 source workspace 的本地/生成资产，或在确需临时入库时于 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
         } else {
-          '移除 external workspace 的 tracked Rayman 本地资产，或在确需临时入库时于 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
+          '移除 external workspace 的 Rayman 生成资产 / 本地配置；这类仓库只建议提交业务源码、业务文档，以及 .<SolutionName>/ 下的 requirements / agentic 文档；如需临时入库则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
         }
       } else {
         if ($workspaceKind -eq 'source') {
           "{0}；如需临时保留这些本地/生成资产，则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1" -f [string]$trackedNoise.raymanCommand
         } else {
-          "{0}；external workspace 只建议提交业务源码与 .<SolutionName>/，如需临时保留则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1" -f [string]$trackedNoise.raymanCommand
+          "{0}；external workspace 只建议提交业务源码、业务文档，以及 .<SolutionName>/ 下的 requirements / agentic 文档；Rayman 生成的 workflow / 配置应保持未跟踪，如需临时保留则在 .rayman.env.ps1 设置 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1" -f [string]$trackedNoise.raymanCommand
         }
       }
       $detail = if ($workspaceKind -eq 'source') {
         "检测到 source workspace 本地/生成资产已被 Git 跟踪: {0}" -f $raymanDetail
       } else {
-        "检测到 external workspace 的 Rayman 本地资产已被 Git 跟踪: {0}" -f $raymanDetail
+        "检测到 external workspace 的 Rayman 生成资产 / 本地配置已被 Git 跟踪: {0}" -f $raymanDetail
       }
       Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status FAIL -Detail $detail -Action $action
     } elseif ([int]$trackedNoise.raymanTrackedCount -gt 0) {
       $detail = if ($workspaceKind -eq 'source') {
         "已显式放行 source workspace 本地/生成资产: {0}" -f $raymanDetail
       } else {
-        "已显式放行 external workspace tracked Rayman assets: {0}" -f $raymanDetail
+        "已显式放行 external workspace 的 Rayman 生成资产 / 本地配置: {0}" -f $raymanDetail
       }
       Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status PASS -Detail $detail -Action '如需恢复阻断，移除 .rayman.env.ps1 中的 RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1'
     } else {
       $detail = if ($workspaceKind -eq 'source') {
         '未发现 source workspace 本地/生成资产 Git 跟踪噪声'
       } else {
-        '未发现 external workspace Rayman 本地资产 Git 跟踪噪声'
+        '未发现 external workspace Rayman 生成资产 / 本地配置 Git 跟踪噪声'
       }
       Add-Result -Results $results -Name 'Rayman资产Git跟踪噪声' -Status PASS -Detail $detail
     }
@@ -691,8 +691,10 @@ $requiredFiles = @(
   '.Rayman/scripts/release/contract_nested_repair.sh',
   '.Rayman/scripts/pwa/ensure_playwright_ready.ps1',
   '.Rayman/scripts/pwa/ensure_playwright_wsl.sh',
-  '.Rayman/scripts/rag/manage_rag.ps1',
-  '.Rayman/scripts/rag/build_index.py',
+  '.Rayman/scripts/memory/memory_bootstrap.ps1',
+  '.Rayman/scripts/memory/manage_memory.ps1',
+  '.Rayman/scripts/memory/memory_common.ps1',
+  '.Rayman/scripts/memory/manage_memory.py',
   '.Rayman/scripts/mcp/manage_mcp.ps1',
   '.Rayman/win-watch.ps1',
   '.Rayman/scripts/watch/embedded_watchers.lib.ps1',
@@ -735,7 +737,6 @@ if (-not (Test-Path -LiteralPath $workspaceEnv -PathType Leaf)) {
       'RAYMAN_HEARTBEAT_VERBOSE',
       'RAYMAN_HEARTBEAT_SMART_SILENCE_ENABLED',
       'RAYMAN_HEARTBEAT_SILENT_WINDOW_SECONDS',
-      'RAYMAN_RAG_HEARTBEAT_SECONDS',
       'RAYMAN_SANDBOX_HEARTBEAT_SECONDS',
       'RAYMAN_MCP_HEARTBEAT_SECONDS'
     )
@@ -785,48 +786,55 @@ if (-not (Test-Path -LiteralPath $tasksPath -PathType Leaf)) {
   }
 }
 
-# 5) RAG 路径隔离（必须位于工作区根目录 .rag/<namespace>）
-$ragPathIssues = @()
-$ragPaths = $null
+# 5) Agent Memory 存储有效
+$memoryPathIssues = @()
+$memoryPaths = $null
 if (-not $commonImported) {
   if ([string]::IsNullOrWhiteSpace($commonImportError)) {
-    $ragPathIssues += 'common.ps1 导入失败，无法解析 RAG 路径'
+    $memoryPathIssues += 'common.ps1 导入失败，无法解析 Agent Memory 路径'
   } else {
-    $ragPathIssues += ("common.ps1 导入失败，无法解析 RAG 路径: {0}" -f $commonImportError)
+    $memoryPathIssues += ("common.ps1 导入失败，无法解析 Agent Memory 路径: {0}" -f $commonImportError)
   }
 } else {
   try {
-    $ragPaths = Get-RaymanRagPaths -WorkspaceRoot $WorkspaceRoot
+    $memoryPaths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
   } catch {
-    $ragPathIssues += ("RAG 路径解析失败: {0}" -f $_.Exception.Message)
+    $memoryPathIssues += ("Agent Memory 路径解析失败: {0}" -f $_.Exception.Message)
   }
 }
 
-if ($null -ne $ragPaths) {
-  $expectedRoot = Get-PathComparisonValue (Join-Path $WorkspaceRoot '.rag')
-  $actualRoot = Get-PathComparisonValue ([string]$ragPaths.RagRoot)
-  $actualDb = Get-PathComparisonValue ([string]$ragPaths.ChromaDbPath)
-  $legacyRoot = Get-PathComparisonValue (Join-Path $WorkspaceRoot '.Rayman/state')
-
-  if ([string]::IsNullOrWhiteSpace([string]$ragPaths.Namespace)) {
-    $ragPathIssues += 'RAG namespace 为空'
+foreach ($legacyMemoryPath in @(
+  (Join-Path $WorkspaceRoot ('.' + 'rag')),
+  (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('chroma' + '_db')),
+  (Join-Path (Join-Path $WorkspaceRoot '.Rayman\state') ('rag' + '.db'))
+)) {
+  if (Test-Path -LiteralPath $legacyMemoryPath) {
+    $memoryPathIssues += ("检测到 legacy 记忆数据残留: {0}" -f $legacyMemoryPath)
   }
+}
+
+if ($null -ne $memoryPaths) {
+  $expectedRoot = Get-PathComparisonValue (Join-Path $WorkspaceRoot '.Rayman/state/memory')
+  $actualRoot = Get-PathComparisonValue ([string]$memoryPaths.MemoryRoot)
+  $actualDb = Get-PathComparisonValue ([string]$memoryPaths.DatabasePath)
 
   if ([string]::IsNullOrWhiteSpace($actualRoot)) {
-    $ragPathIssues += 'RagRoot 为空'
+    $memoryPathIssues += 'MemoryRoot 为空'
   } elseif ($actualRoot -ne $expectedRoot -and -not $actualRoot.StartsWith($expectedRoot + '/')) {
-    $ragPathIssues += ("RagRoot 必须位于工作区 .rag 下，当前: {0}" -f $actualRoot)
+    $memoryPathIssues += ("MemoryRoot 必须位于工作区 .Rayman/state/memory 下，当前: {0}" -f $actualRoot)
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($actualDb) -and ($actualDb -eq $legacyRoot -or $actualDb.StartsWith($legacyRoot + '/'))) {
-    $ragPathIssues += ("检测到旧路径 .Rayman/state 被用作 RAG 存储: {0}" -f $actualDb)
+  if ([string]::IsNullOrWhiteSpace($actualDb)) {
+    $memoryPathIssues += 'DatabasePath 为空'
+  } elseif (-not $actualDb.StartsWith($expectedRoot + '/')) {
+    $memoryPathIssues += ("DatabasePath 必须位于工作区 .Rayman/state/memory 下，当前: {0}" -f $actualDb)
   }
 }
 
-if ($ragPathIssues.Count -eq 0) {
-  Add-Result -Results $results -Name 'RAG路径隔离' -Status PASS -Detail ("RAG 路径有效：{0}" -f [string]$ragPaths.ChromaDbPath)
+if ($memoryPathIssues.Count -eq 0) {
+  Add-Result -Results $results -Name 'Agent Memory 存储有效' -Status PASS -Detail ("Agent Memory 路径有效：{0}" -f [string]$memoryPaths.DatabasePath)
 } else {
-  Add-Result -Results $results -Name 'RAG路径隔离' -Status FAIL -Detail ($ragPathIssues -join ' | ') -Action '设置 RAYMAN_RAG_ROOT=.rag，并确保 namespace 非空'
+  Add-Result -Results $results -Name 'Agent Memory 存储有效' -Status FAIL -Detail ($memoryPathIssues -join ' | ') -Action '清理 legacy 记忆数据，并执行 ./.Rayman/rayman.ps1 memory-bootstrap'
 }
 
 # 6) MCP 配置可移植性（禁止硬编码工作区绝对路径）
@@ -1185,6 +1193,7 @@ $dispatchPath = Join-Path $raymanDir 'scripts\agents\dispatch.ps1'
 $agentContractCheckPath = Join-Path $raymanDir 'scripts\agents\check_agent_contract.ps1'
 $reviewLoopPath = Join-Path $raymanDir 'scripts\agents\review_loop.ps1'
 $firstPassPath = Join-Path $raymanDir 'scripts\agents\first_pass_report.ps1'
+$agenticPipelinePath = Join-Path $raymanDir 'scripts\agents\agentic_pipeline.ps1'
 $promptCatalogPath = Join-Path $raymanDir 'scripts\agents\prompts_catalog.ps1'
 $winAppEnsureScriptPath = Join-Path $raymanDir 'scripts\windows\ensure_winapp.ps1'
 $winAppFlowScriptPath = Join-Path $raymanDir 'scripts\windows\run_winapp_flow.ps1'
@@ -1194,8 +1203,9 @@ $winAppSampleFlowPath = Join-Path $raymanDir 'winapp.flow.sample.json'
 $routerCfgPath = Join-Path $raymanDir 'config\agent_router.json'
 $policyCfgPath = Join-Path $raymanDir 'config\agent_policy.json'
 $reviewCfgPath = Join-Path $raymanDir 'config\review_loop.json'
+$agenticCfgPath = Join-Path $raymanDir 'config\agentic_pipeline.json'
 
-foreach ($p in @($dispatchPath, $agentContractCheckPath, $reviewLoopPath, $firstPassPath, $promptCatalogPath, $winAppEnsureScriptPath, $winAppFlowScriptPath, $winAppInspectScriptPath, $winAppMcpScriptPath, $winAppSampleFlowPath, $routerCfgPath, $policyCfgPath, $reviewCfgPath)) {
+foreach ($p in @($dispatchPath, $agentContractCheckPath, $reviewLoopPath, $firstPassPath, $agenticPipelinePath, $promptCatalogPath, $winAppEnsureScriptPath, $winAppFlowScriptPath, $winAppInspectScriptPath, $winAppMcpScriptPath, $winAppSampleFlowPath, $routerCfgPath, $policyCfgPath, $reviewCfgPath, $agenticCfgPath)) {
   if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
     $agentContractIssues.Add(("missing: {0}" -f $p)) | Out-Null
   }
@@ -1214,9 +1224,18 @@ if (Test-Path -LiteralPath $raymanCliPath -PathType Leaf) {
 
 if (Test-Path -LiteralPath $dispatchPath -PathType Leaf) {
   $dispatchRaw = Get-Content -LiteralPath $dispatchPath -Raw -Encoding UTF8
-  foreach ($token in @('RAYMAN_AGENT_POLICY_BYPASS', 'RAYMAN_BYPASS_REASON', 'policy_bypassed', 'agent-pre-dispatch')) {
+  foreach ($token in @('RAYMAN_AGENT_POLICY_BYPASS', 'RAYMAN_BYPASS_REASON', 'policy_bypassed', 'agent-pre-dispatch', 'planner_v1', 'agentic_plan', 'agentic_tool_policy', 'agentic_doc_gate', 'agentic_execution')) {
     if ($dispatchRaw -notmatch [regex]::Escape($token)) {
-      $agentContractIssues.Add(("dispatch.ps1 缺少 policy bypass 审计标记: {0}" -f $token)) | Out-Null
+      $agentContractIssues.Add(("dispatch.ps1 缺少 agent/policy 标记: {0}" -f $token)) | Out-Null
+    }
+  }
+}
+
+if (Test-Path -LiteralPath $agenticPipelinePath -PathType Leaf) {
+  $agenticHelperRaw = Get-Content -LiteralPath $agenticPipelinePath -Raw -Encoding UTF8
+  foreach ($token in @('rayman.agentic.execution_contract.v1', 'delegation_required', 'local_fallback_command', 'optional_requests', 'prepare_results')) {
+    if ($agenticHelperRaw -notmatch [regex]::Escape($token)) {
+      $agentContractIssues.Add(("agentic_pipeline.ps1 缺少 execution-contract 标记: {0}" -f $token)) | Out-Null
     }
   }
 }
@@ -1240,18 +1259,18 @@ if (Test-Path -LiteralPath $agentContractCheckPath -PathType Leaf) {
 
 if (Test-Path -LiteralPath $reviewLoopPath -PathType Leaf) {
   $reviewRaw = Get-Content -LiteralPath $reviewLoopPath -Raw -Encoding UTF8
-  foreach ($token in @('Get-SnapshotDiffSummary', 'diff_summary', 'review_loop.last.diff.md')) {
+  foreach ($token in @('Get-SnapshotDiffSummary', 'diff_summary', 'review_loop.last.diff.md', 'agentic_reflection', 'reflection_outcome', 'doc_gate_pass', 'acceptance_closed')) {
     if ($reviewRaw -notmatch [regex]::Escape($token)) {
-      $agentContractIssues.Add(("review_loop.ps1 缺少 diff 摘要标记: {0}" -f $token)) | Out-Null
+      $agentContractIssues.Add(("review_loop.ps1 缺少 diff/agentic 标记: {0}" -f $token)) | Out-Null
     }
   }
 }
 
 if (Test-Path -LiteralPath $firstPassPath -PathType Leaf) {
   $firstPassRaw = Get-Content -LiteralPath $firstPassPath -Raw -Encoding UTF8
-  foreach ($token in @('Change-Scale Correlation (Round 1)', 'change_scale_correlation', 'round1_touched_files', 'round1_abs_net_size_delta_bytes')) {
+  foreach ($token in @('Change-Scale Correlation (Round 1)', 'change_scale_correlation', 'round1_touched_files', 'round1_abs_net_size_delta_bytes', 'Planner / Reflection', 'reflection_distribution', 'selected_tool_distribution')) {
     if ($firstPassRaw -notmatch [regex]::Escape($token)) {
-      $agentContractIssues.Add(("first_pass_report.ps1 缺少改动规模相关性标记: {0}" -f $token)) | Out-Null
+      $agentContractIssues.Add(("first_pass_report.ps1 缺少 telemetry/agentic 标记: {0}" -f $token)) | Out-Null
     }
   }
 }
@@ -1526,90 +1545,55 @@ foreach ($lane in $projectGateDefinitions) {
   }
 }
 
-# 10) MCP/RAG 最小可用性
-$mcpScript = Join-Path $raymanDir 'scripts\mcp\manage_mcp.ps1'
-$ragScript = Join-Path $raymanDir 'scripts\rag\manage_rag.ps1'
-$ragBootstrapScript = Join-Path $raymanDir 'scripts\rag\rag_bootstrap.ps1'
-$ragReq = Join-Path $raymanDir 'scripts\rag\requirements.txt'
-$buildPy = Join-Path $raymanDir 'scripts\rag\build_index.py'
+# 10) Agent Memory 检索有效
+$memoryManageScript = Join-Path $raymanDir 'scripts\memory\manage_memory.ps1'
+$memoryBootstrapScript = Join-Path $raymanDir 'scripts\memory\memory_bootstrap.ps1'
+$memoryBackendScript = Join-Path $raymanDir 'scripts\memory\manage_memory.py'
+$memoryReq = Join-Path $raymanDir 'scripts\memory\requirements.txt'
 
-$mcpOk = $true
-$mcpStatusDetail = ''
-if (-not (Test-Path -LiteralPath $mcpScript -PathType Leaf)) {
-  $mcpOk = $false
-  $mcpStatusDetail = ("缺少脚本: {0}" -f $mcpScript)
-} else {
+$memoryWarn = @()
+if (-not (Test-Path -LiteralPath $memoryManageScript -PathType Leaf)) { $memoryWarn += 'manage_memory.ps1 缺失' }
+if (-not (Test-Path -LiteralPath $memoryBootstrapScript -PathType Leaf)) { $memoryWarn += 'memory_bootstrap.ps1 缺失' }
+if (-not (Test-Path -LiteralPath $memoryBackendScript -PathType Leaf)) { $memoryWarn += 'manage_memory.py 缺失' }
+if (-not (Test-Path -LiteralPath $memoryReq -PathType Leaf)) { $memoryWarn += 'requirements.txt 缺失' }
+
+$memoryOk = $false
+$memoryRuntimeText = ''
+if ($memoryWarn.Count -eq 0) {
   try {
-    $childPs = Resolve-ChildPowerShellHost
-    if ([string]::IsNullOrWhiteSpace($childPs)) {
-      throw '未找到可用的 PowerShell host（pwsh/powershell.exe）'
-    }
-    $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $mcpScript, '-Action', 'status')
-    $mcpExit = 1
-    [void](& $childPs @childArgs)
-    if (Test-Path variable:LASTEXITCODE) {
-      $mcpExit = [int]$LASTEXITCODE
-    } elseif ($?) {
-      $mcpExit = 0
-    }
-    if ($mcpExit -ne 0) {
-      $mcpOk = $false
-      $mcpStatusDetail = ("status exit={0}, host={1}" -f $mcpExit, $childPs)
-    }
-  } catch {
-    $mcpOk = $false
-    $mcpStatusDetail = [string]$_.Exception.Message
-  }
-}
-
-$ragWarn = @()
-if (-not (Test-Path -LiteralPath $ragScript -PathType Leaf)) { $ragWarn += 'manage_rag.ps1 缺失' }
-if (-not (Test-Path -LiteralPath $ragBootstrapScript -PathType Leaf)) { $ragWarn += 'rag_bootstrap.ps1 缺失' }
-if (-not (Test-Path -LiteralPath $ragReq -PathType Leaf)) { $ragWarn += 'requirements.txt 缺失' }
-if (-not (Test-Path -LiteralPath $buildPy -PathType Leaf)) { $ragWarn += 'build_index.py 缺失' }
-
-$ragDepsOk = $true
-$ragDepsRuntime = ''
-if ($ragWarn.Count -eq 0) {
-  try {
-    . $ragBootstrapScript
-    $probe = Invoke-RaymanRagBootstrap -WorkspaceRoot $WorkspaceRoot -EnsureDeps:$false -NoInstallDeps -Quiet
-    if ($probe.Success) {
-      $ragDepsOk = $true
-      $ragDepsRuntime = [string]$probe.PythonLabel
+    $bootstrapRaw = & $memoryBootstrapScript -WorkspaceRoot $WorkspaceRoot -Action probe -Json
+    $bootstrapText = ($bootstrapRaw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    $bootstrapObj = $bootstrapText | ConvertFrom-Json -ErrorAction Stop
+    if (-not [bool]$bootstrapObj.Success) {
+      $memoryWarn += [string]$bootstrapObj.Message
     } else {
-      $ragDepsOk = $false
-      if ([string]::IsNullOrWhiteSpace([string]$probe.Message)) {
-        $ragWarn += 'RAG 依赖未就绪（rag_bootstrap 探测失败）'
+      $memoryRuntimeText = [string]$bootstrapObj.PythonLabel
+      $searchRaw = & $memoryManageScript -WorkspaceRoot $WorkspaceRoot -Action search -Query 'release requirements' -Json
+      $searchText = ($searchRaw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+      $searchObj = $searchText | ConvertFrom-Json -ErrorAction Stop
+      if ([bool]$searchObj.success) {
+        $memoryOk = $true
+        if (-not [string]::IsNullOrWhiteSpace([string]$searchObj.search_backend)) {
+          $memoryRuntimeText = ("{0}; backend={1}" -f $memoryRuntimeText, [string]$searchObj.search_backend).Trim('; ')
+        }
       } else {
-        $ragWarn += [string]$probe.Message
+        $memoryWarn += 'Agent Memory search 返回失败状态'
       }
     }
   } catch {
-    $ragDepsOk = $false
-    $ragWarn += ("rag_bootstrap 执行失败: {0}" -f $_.Exception.Message)
+    $memoryWarn += ("Agent Memory 检索执行失败: {0}" -f $_.Exception.Message)
   }
 }
 
-if ($mcpOk -and $ragWarn.Count -eq 0 -and $ragDepsOk) {
-  $runtimeText = if ([string]::IsNullOrWhiteSpace($ragDepsRuntime)) { '自动探测' } else { $ragDepsRuntime }
-  Add-Result -Results $results -Name 'MCP/RAG最小可用性' -Status PASS -Detail ("MCP status 正常，RAG 依赖可导入（{0}）" -f $runtimeText)
-} elseif (-not $mcpOk) {
-  $mcpFailDetail = 'MCP status 检查失败'
-  if (-not [string]::IsNullOrWhiteSpace($mcpStatusDetail)) {
-    $mcpFailDetail = ("{0} ({1})" -f $mcpFailDetail, $mcpStatusDetail)
-  }
-  if ($Mode -eq 'project') {
-    Add-Result -Results $results -Name 'MCP/RAG最小可用性' -Status PASS -Detail ("project 模式初始化豁免：{0}" -f $mcpFailDetail) -Action '如需严格探活，请执行 ./.Rayman/scripts/mcp/manage_mcp.ps1 -Action start 后用 standard 模式复检'
-  } else {
-    Add-Result -Results $results -Name 'MCP/RAG最小可用性' -Status FAIL -Detail $mcpFailDetail -Action '检查 .Rayman/mcp/mcp_servers.json 与 mcp 脚本'
-  }
+if ($memoryOk -and $memoryWarn.Count -eq 0) {
+  $detail = if ([string]::IsNullOrWhiteSpace($memoryRuntimeText)) { 'Agent Memory search 正常' } else { "Agent Memory search 正常（$memoryRuntimeText）" }
+  Add-Result -Results $results -Name 'Agent Memory 检索有效' -Status PASS -Detail $detail
 } else {
-  $detail = if ($ragWarn.Count -gt 0) { $ragWarn -join ' | ' } else { 'RAG 依赖未就绪（可在 setup/build 时自动安装）' }
+  $detail = if ($memoryWarn.Count -gt 0) { $memoryWarn -join ' | ' } else { 'Agent Memory 检索未就绪' }
   if ($Mode -eq 'project') {
-    Add-Result -Results $results -Name 'MCP/RAG最小可用性' -Status PASS -Detail ("project 模式初始化豁免：{0}" -f $detail) -Action '如需严格探活，可先执行 Rayman: Test & Fix 或 setup 预热，再用 standard 模式复检'
+    Add-Result -Results $results -Name 'Agent Memory 检索有效' -Status PASS -Detail ("project 模式初始化豁免：{0}" -f $detail) -Action '如需严格探活，请执行 ./.Rayman/rayman.ps1 memory-bootstrap 后复检'
   } else {
-    Add-Result -Results $results -Name 'MCP/RAG最小可用性' -Status WARN -Detail $detail -Action '可先执行 Rayman: Test & Fix 或 setup 预热'
+    Add-Result -Results $results -Name 'Agent Memory 检索有效' -Status FAIL -Detail $detail -Action '执行 ./.Rayman/rayman.ps1 memory-bootstrap 并确认 manage_memory.ps1 可搜索'
   }
 }
 
@@ -1778,13 +1762,13 @@ if ($failedResults.Count -gt 0) {
         [void]$md.AppendLine('- 同步版本与 marker：运行 `./.Rayman/rayman.ps1 release-gate -Mode project` 验证项目模式。')
         [void]$md.AppendLine('- 清理历史临时目录：`Get-ChildItem -Force -Directory -Filter ".Rayman.stage.*" | Remove-Item -Recurse -Force`')
       }
-      'RAG路径隔离' {
-        [void]$md.AppendLine('- 设置路径：`$env:RAYMAN_RAG_ROOT=".rag"`；确保 `RAYMAN_RAG_NAMESPACE` 非空。')
-        [void]$md.AppendLine('- 迁移旧库：`./.Rayman/rayman.ps1 migrate-rag`')
+      'Agent Memory 存储有效' {
+        [void]$md.AppendLine('- 清理 legacy 记忆目录残留。')
+        [void]$md.AppendLine('- 预热 Agent Memory：`./.Rayman/rayman.ps1 memory-bootstrap`')
       }
-      'MCP/RAG最小可用性' {
-        [void]$md.AppendLine('- 启动 MCP：`./.Rayman/scripts/mcp/manage_mcp.ps1 -Action start`')
-        [void]$md.AppendLine('- 预热 RAG：`./.Rayman/scripts/rag/manage_rag.ps1 -Action build`')
+      'Agent Memory 检索有效' {
+        [void]$md.AppendLine('- 预热 Agent Memory：`./.Rayman/rayman.ps1 memory-bootstrap`')
+        [void]$md.AppendLine('- 验证检索：`./.Rayman/rayman.ps1 memory-search -Query "release requirements"`')
       }
       'VSCode任务注册' {
         [void]$md.AppendLine('- 重新生成任务：`./.Rayman/setup.ps1 -SkipReleaseGate`')

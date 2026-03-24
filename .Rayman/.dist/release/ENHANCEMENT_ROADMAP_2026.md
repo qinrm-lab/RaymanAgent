@@ -13,6 +13,7 @@
 | Area | Change | Why now | Regression surfaces |
 | --- | --- | --- | --- |
 | Review baseline | 维护 `.Rayman/release/FEATURE_INVENTORY.md` 与本路线图 | 把“功能盘点”和“增强建议”变成 tracked 资产，而不是聊天记录 | `check_agent_contract.ps1`, governance docs tests, dist parity |
+| Agentic pipeline contract | 把 `planner_v1` 默认链路、`.RaymanAgent/agentic/*`、requirements gate、first-pass telemetry 作为同一组受管资产维护 | 默认路径已经切到 `plan -> tool/subagent select -> execute -> reflect -> verify -> doc close`，必须防止 runtime/文档/契约再次漂移 | `dispatch`, `review_loop`, `validate_requirements.sh`, `first_pass_report.ps1`, dist parity |
 | Instruction layering | 收紧 `.github/copilot-instructions.md`，把 repository-wide、path-specific、model policy、review docs 的职责分开 | 减少 `.github` 规则重复、冲突和 typo 漂移 | agent contract, human review |
 | Hosted platform boundary | 维护 `.github/model-policy.md`，明确 Auto model selection / custom agents / hosted MCP 只做文档与检测 | 避免把平台能力误写成 repo 保证 | agent contract, README links |
 | README parity | 修正 watcher / alert 默认值、补 review docs 和 platform-opportunity 链接 | 当前 README 容易成为运维与功能认知入口，漂移成本高 | README review, host smoke indirect |
@@ -22,7 +23,7 @@
 
 | Area | Change | External signal | Acceptance shape |
 | --- | --- | --- | --- |
-| OpenAI / Codex | 为 review-loop、批量修复、长任务委派增加可选 Codex SDK / `codex exec` / GitHub Action 适配层 | OpenAI 已公开 Codex SDK 与 GitHub Action 集成，并强调本地 CLI / editor / cloud 连通 | opt-in smoke only, no default path change |
+| OpenAI / Codex | 在默认 `planner_v1` 之上，通过 delegated Codex 为长任务与 prompt 治理增加可选 background mode / compaction / prompt optimizer / `codex exec` 适配层 | OpenAI 已公开 Codex SDK / background mode / prompt optimizer，并强调本地 CLI / editor / cloud 连通 | default path stays local-first; optional features must auto-detect, flow through delegated Codex, and degrade to local fallback |
 | Long-running work | 为长耗时分析/修复增加 background mode submit / poll / cancel / timeout 语义 | OpenAI Responses API 官方支持 background mode | new opt-in command or helper, explicit timeout diagnostics |
 | Prompt governance | 对高价值 prompts 引入 prompt objects、prompt optimizer、eval dataset 闭环 | OpenAI 官方把 prompt objects / optimizer 作为提示资产治理路径 | report + eval dataset + no runtime breakage |
 | Browser debugging | 把 trace 变成一等 artifact；Playwright setup/auth 收敛到 projects + dependencies | Playwright 官方强调 trace viewer、projects、dependencies、UI mode | failing browser jobs always publish trace |

@@ -64,6 +64,7 @@ $routerJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\agent_router.json'
 $policyJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\agent_policy.json'
 $reviewJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\review_loop.json'
 $modelRoutingJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\model_routing.json'
+$agenticPipelineJsonPath = Join-Path $WorkspaceRoot '.Rayman\config\agentic_pipeline.json'
 $systemSlimPolicyPath = Join-Path $WorkspaceRoot '.Rayman\config\system_slim_policy.json'
 $reviewPromptManifest = @(Get-RaymanReviewPromptManifest)
 
@@ -290,6 +291,68 @@ $modelRoutingJson = ([ordered]@{
     prompt_routes = $reviewPromptRoutes
   } | ConvertTo-Json -Depth 8)
 
+$agenticPipelineJson = @'
+{
+  "schema": "rayman.agentic_pipeline.v1",
+  "default_pipeline": "planner_v1",
+  "legacy_pipeline_name": "legacy",
+  "doc_gate_enabled": true,
+  "openai_optional": "auto",
+  "tool_budget": {
+    "default": {
+      "max_selected_tools": 3,
+      "max_fallbacks": 2,
+      "max_subagents": 2
+    },
+    "review": {
+      "max_selected_tools": 4,
+      "max_fallbacks": 3,
+      "max_subagents": 2
+    },
+    "release": {
+      "max_selected_tools": 4,
+      "max_fallbacks": 2,
+      "max_subagents": 1
+    }
+  },
+  "required_docs": {
+    "dispatch": [
+      "plan.current.md",
+      "plan.current.json",
+      "tool-policy.md",
+      "tool-policy.json",
+      "evals.md"
+    ],
+    "review_loop": [
+      "plan.current.md",
+      "plan.current.json",
+      "tool-policy.md",
+      "tool-policy.json",
+      "reflection.current.md",
+      "reflection.current.json",
+      "evals.md"
+    ]
+  },
+  "openai_optional_features": {
+    "background_mode": {
+      "fallback": "local_review_loop",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    },
+    "compaction": {
+      "fallback": "local_context_files",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    },
+    "prompt_optimizer": {
+      "fallback": "manual_evals_index",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    }
+  }
+}
+'@
+
 $systemSlimPolicyJson = @'
 {
   "schema": "rayman.system_slim.policy.v1",
@@ -297,7 +360,7 @@ $systemSlimPolicyJson = @'
   "notify_on_upgrade": true,
   "minimum_versions": {
     "vscode": "1.110.0",
-    "codex": "0.5.80"
+    "codex": "0.116.0"
   },
   "features": {
     "dispatch": {
@@ -317,6 +380,7 @@ $systemSlimPolicyJson = @'
 [void](Ensure-ManagedFile -Path $policyJsonPath -Content $policyJson)
 [void](Ensure-ManagedFile -Path $reviewJsonPath -Content $reviewJson)
 [void](Ensure-ManagedFile -Path $modelRoutingJsonPath -Content $modelRoutingJson)
+[void](Ensure-ManagedFile -Path $agenticPipelineJsonPath -Content $agenticPipelineJson)
 [void](Ensure-ManagedFile -Path $systemSlimPolicyPath -Content $systemSlimPolicyJson)
 
 $generalInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\general.instructions.md'

@@ -1,0 +1,59 @@
+{
+  "schema": "rayman.agentic_pipeline.v1",
+  "default_pipeline": "planner_v1",
+  "legacy_pipeline_name": "legacy",
+  "doc_gate_enabled": true,
+  "openai_optional": "auto",
+  "tool_budget": {
+    "default": {
+      "max_selected_tools": 3,
+      "max_fallbacks": 2,
+      "max_subagents": 2
+    },
+    "review": {
+      "max_selected_tools": 4,
+      "max_fallbacks": 3,
+      "max_subagents": 2
+    },
+    "release": {
+      "max_selected_tools": 4,
+      "max_fallbacks": 2,
+      "max_subagents": 1
+    }
+  },
+  "required_docs": {
+    "dispatch": [
+      "plan.current.md",
+      "plan.current.json",
+      "tool-policy.md",
+      "tool-policy.json",
+      "evals.md"
+    ],
+    "review_loop": [
+      "plan.current.md",
+      "plan.current.json",
+      "tool-policy.md",
+      "tool-policy.json",
+      "reflection.current.md",
+      "reflection.current.json",
+      "evals.md"
+    ]
+  },
+  "openai_optional_features": {
+    "background_mode": {
+      "fallback": "local_review_loop",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    },
+    "compaction": {
+      "fallback": "local_context_files",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    },
+    "prompt_optimizer": {
+      "fallback": "manual_evals_index",
+      "support_mode": "disabled_until_supported",
+      "support_reason": "delegated_codex_executor_not_implemented"
+    }
+  }
+}

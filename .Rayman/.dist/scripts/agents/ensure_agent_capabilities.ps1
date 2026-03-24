@@ -487,7 +487,7 @@ function Get-CodexFeatureSupportStatus {
     [object]$Probe,
     [string]$FeatureKey,
     [string]$FeatureName = '',
-    [string]$MinimumVersion = '0.5.80',
+    [string]$MinimumVersion = '0.116.0',
     [switch]$AlwaysSupported
   )
 
@@ -640,7 +640,7 @@ function Get-RaymanMultiAgentRegistry([string]$WorkspaceRoot) {
     env_toggle = [string](Get-PropValue -Object $config -Name 'env_toggle' -Default 'RAYMAN_CODEX_MULTI_AGENT_ENABLED')
     detection_feature_name = [string](Get-PropValue -Object $detection -Name 'feature_name' -Default 'multi_agent')
     detection_preferred_command = [string](Get-PropValue -Object $detection -Name 'preferred_command' -Default 'codex features list')
-    minimum_version_fallback = [string](Get-PropValue -Object $detection -Name 'minimum_version_fallback' -Default '0.5.80')
+    minimum_version_fallback = [string](Get-PropValue -Object $detection -Name 'minimum_version_fallback' -Default '0.116.0')
     features_multi_agent = [bool](Get-PropValue -Object $defaults -Name 'features.multi_agent' -Default $true)
     max_threads = [int](Get-PropValue -Object $defaults -Name 'agents.max_threads' -Default 4)
     max_depth = [int](Get-PropValue -Object $defaults -Name 'agents.max_depth' -Default 2)
@@ -655,7 +655,7 @@ function Get-CodexMultiAgentSupportStatus([object]$Registry, [object]$Probe = $n
     $Probe = Get-CodexFeatureProbe
   }
   $featureName = [string](Get-PropValue -Object $Registry -Name 'detection_feature_name' -Default 'multi_agent')
-  $minimumVersion = [string](Get-PropValue -Object $Registry -Name 'minimum_version_fallback' -Default '0.5.80')
+  $minimumVersion = [string](Get-PropValue -Object $Registry -Name 'minimum_version_fallback' -Default '0.116.0')
   $support = Get-CodexFeatureSupportStatus -Probe $Probe -FeatureKey 'multi_agent' -FeatureName $featureName -MinimumVersion $minimumVersion
   return [pscustomobject]@{
     codex_available = [bool](Get-PropValue -Object $Probe -Name 'codex_available' -Default $false)
@@ -733,9 +733,9 @@ function Get-RaymanManagedSliceStates {
     [object]$MultiAgentState
   )
 
-  $projectDocSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'project_doc' -MinimumVersion '0.5.80'
-  $profilesSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'profiles' -MinimumVersion '0.5.80'
-  $advancedSubagentsSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'advanced_subagents' -MinimumVersion '0.5.80'
+  $projectDocSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'project_doc' -MinimumVersion '0.116.0'
+  $profilesSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'profiles' -MinimumVersion '0.116.0'
+  $advancedSubagentsSupport = Get-CodexFeatureSupportStatus -Probe $CodexProbe -FeatureKey 'advanced_subagents' -MinimumVersion '0.116.0'
 
   return [ordered]@{
     capabilities = [pscustomobject]@{

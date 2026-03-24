@@ -319,11 +319,30 @@ function Reset-PortableRuntimeAndLogs([string]$RaymanRoot) {
   if (Test-Path -LiteralPath $mcpPid -PathType Leaf) {
     Remove-Item -LiteralPath $mcpPid -Force -ErrorAction SilentlyContinue
   }
+
+  $stateRoot = Join-Path $RaymanRoot 'state'
+  $memoryRoot = Join-Path $stateRoot 'memory'
+  if (Test-Path -LiteralPath $memoryRoot -PathType Container) {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $memoryRoot -Force -ErrorAction SilentlyContinue)) {
+      Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  } else {
+    New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
+  }
+
+  foreach ($legacyPath in @(
+    (Join-Path $stateRoot ('chroma' + '_db')),
+    (Join-Path $stateRoot ('rag' + '.db'))
+  )) {
+    if (Test-Path -LiteralPath $legacyPath) {
+      Remove-Item -LiteralPath $legacyPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 function Disable-CopySmokeSlowSetupModules([string]$TempRoot) {
   foreach ($relativePath in @(
-    '.Rayman\scripts\rag\manage_rag.ps1',
+    '.Rayman\scripts\memory\manage_memory.ps1',
     '.Rayman\scripts\mcp\manage_mcp.ps1',
     '.Rayman\scripts\agents\ensure_agent_capabilities.ps1'
   )) {
@@ -549,14 +568,14 @@ function Invoke-CopySmokeSetupRun {
           "`$env:RAYMAN_SETUP_GITHUB_LOGIN='0'"
           "`$env:RAYMAN_SETUP_SKIP_POST_CHECK='1'"
           "`$env:RAYMAN_SETUP_SKIP_ADVANCED_MODULES='1'"
-          "& '$setupScriptEscaped' -WorkspaceRoot '$tmpRootEscaped' -SkipReleaseGate -NoAutoMigrateLegacyRag"
+          "& '$setupScriptEscaped' -WorkspaceRoot '$tmpRootEscaped' -SkipReleaseGate"
         ) -join '; '
         & $powershellExe.Source -NoProfile -ExecutionPolicy Bypass -Command $cmd | Out-Host
       }
     } elseif ($StrictMode) {
       & $SetupScript -WorkspaceRoot $TempRoot | Out-Host
     } else {
-      & $SetupScript -WorkspaceRoot $TempRoot -SkipReleaseGate -NoAutoMigrateLegacyRag | Out-Host
+      & $SetupScript -WorkspaceRoot $TempRoot -SkipReleaseGate | Out-Host
     }
     if ($?) {
       $run.ExitCode = 0
@@ -653,6 +672,189 @@ function Invoke-CopySmokeProjectFastGateContract {
   }
 }
 
+function Get-CopySmokeGitCheckIgnoreResult {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$RelativePath
+  )
+
+  $git = Get-Command 'git' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $git -or [string]::IsNullOrWhiteSpace([string]$git.Source)) {
+    throw 'git not found for check-ignore'
+  }
+
+  Reset-LastExitCodeCompat
+  $rawOutput = @(& $git.Source -C $WorkspaceRoot check-ignore -v -- $RelativePath 2>&1)
+  $exitCode = Get-LastExitCodeCompat -Default 1
+  $matchedSource = ''
+  $matchedPattern = ''
+  $matchedPath = ''
+
+  foreach ($line in @($rawOutput | ForEach-Object { [string]$_ })) {
+    if ($line -match '^(?<source>.+?):(?<line>\d+):(?<pattern>[^\t]+)\t(?<path>.+)$') {
+      $matchedSource = [string]$matches['source']
+      $matchedPattern = [string]$matches['pattern']
+      $matchedPath = [string]$matches['path']
+      break
+    }
+  }
+
+  return [pscustomobject]@{
+    relative_path = $RelativePath
+    ignored = ($exitCode -eq 0)
+    exit_code = $exitCode
+    matched_source = $matchedSource
+    matched_pattern = $matchedPattern
+    matched_path = $matchedPath
+    raw_output = (@($rawOutput | ForEach-Object { [string]$_ }) -join "`n")
+  }
+}
+
+function Resolve-CopySmokePathUnderWorkspace {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$CandidatePath
+  )
+
+  if ([string]::IsNullOrWhiteSpace($CandidatePath)) { return '' }
+  if ([System.IO.Path]::IsPathRooted($CandidatePath)) { return $CandidatePath }
+  return (Join-Path $WorkspaceRoot ($CandidatePath.Replace('/', '\')))
+}
+
+function Test-CopySmokeManagedIgnoreFile {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$MatchedSource
+  )
+
+  $path = Resolve-CopySmokePathUnderWorkspace -WorkspaceRoot $WorkspaceRoot -CandidatePath $MatchedSource
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return $false
+  }
+
+  $leaf = [string](Split-Path -Leaf $path)
+  if ($leaf -ne '.gitignore' -and $leaf -ne 'exclude') {
+    return $false
+  }
+
+  $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+  return ($raw -match '# RAYMAN:GENERATED:BEGIN' -and $raw -match '# RAYMAN:GENERATED:END')
+}
+
+function Get-CopySmokeRelativePath {
+  param(
+    [string]$BasePath,
+    [string]$TargetPath
+  )
+
+  $baseNorm = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\') + '\'
+  $targetNorm = [System.IO.Path]::GetFullPath($TargetPath)
+  if (Test-Path -LiteralPath $TargetPath -PathType Container) {
+    $targetNorm = $targetNorm.TrimEnd('\') + '\'
+  }
+
+  $baseUri = [System.Uri]::new($baseNorm)
+  $targetUri = [System.Uri]::new($targetNorm)
+  $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+  if ([string]::IsNullOrWhiteSpace([string]$relativeUri)) {
+    return ''
+  }
+
+  return [System.Uri]::UnescapeDataString($relativeUri.ToString()).TrimEnd('/')
+}
+
+function Get-CopySmokeTrackedSolutionRequirementRelative {
+  param([string]$WorkspaceRoot)
+
+  $candidate = Get-ChildItem -LiteralPath $WorkspaceRoot -Force -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name.StartsWith('.') } |
+    ForEach-Object {
+      $path = Join-Path $_.FullName ($_.Name + '.requirements.md')
+      if (Test-Path -LiteralPath $path -PathType Leaf) { $path }
+    } |
+    Select-Object -First 1
+
+  if ($null -eq $candidate) {
+    throw 'tracked solution requirements path not found'
+  }
+
+  return (Get-CopySmokeRelativePath -BasePath $WorkspaceRoot -TargetPath ([string]$candidate))
+}
+
+function Get-CopySmokeTrackedAgenticDocRelativePaths {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$RequirementsPath = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RequirementsPath)) {
+    $RequirementsPath = Get-CopySmokeTrackedSolutionRequirementRelative -WorkspaceRoot $WorkspaceRoot
+  }
+
+  $solutionDirRel = [System.IO.Path]::GetDirectoryName($RequirementsPath)
+  if ([string]::IsNullOrWhiteSpace($solutionDirRel)) {
+    throw ("unable to resolve solution dir from requirements path: {0}" -f $RequirementsPath)
+  }
+
+  $solutionDir = Join-Path $WorkspaceRoot ($solutionDirRel.Replace('/', '\'))
+  $agenticDir = Join-Path $solutionDir 'agentic'
+  New-Item -ItemType Directory -Force -Path $agenticDir | Out-Null
+
+  $docs = [ordered]@{
+    'copy-smoke.policy.md' = "# copy smoke`n"
+    'copy-smoke.contract.json' = "{`"kind`":`"agentic`"}"
+  }
+
+  $result = New-Object System.Collections.Generic.List[string]
+  foreach ($name in $docs.Keys) {
+    $path = Join-Path $agenticDir $name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      Set-Content -LiteralPath $path -Value $docs[$name] -Encoding UTF8
+    }
+    $result.Add((Get-CopySmokeRelativePath -BasePath $WorkspaceRoot -TargetPath $path)) | Out-Null
+  }
+
+  return $result.ToArray()
+}
+
+function Get-CopySmokeExternalBlockedTargets {
+  param([string]$WorkspaceRoot)
+
+  $targets = New-Object System.Collections.Generic.List[string]
+  foreach ($candidate in @(
+      '.Rayman/VERSION',
+      '.SolutionName',
+      '.cursorrules',
+      '.clinerules',
+      '.rayman.env.ps1',
+      '.rayman.project.json',
+      '.codex/config.toml',
+      '.github/copilot-instructions.md',
+      '.github/model-policy.md',
+      '.github/workflows/rayman-project-fast-gate.yml',
+      '.github/workflows/rayman-project-browser-gate.yml',
+      '.github/workflows/rayman-project-full-gate.yml',
+      '.vscode/tasks.json',
+      '.vscode/settings.json'
+    )) {
+    if (Test-Path -LiteralPath (Join-Path $WorkspaceRoot $candidate)) {
+      $targets.Add($candidate) | Out-Null
+    }
+  }
+
+  foreach ($dirRel in @('.github/instructions', '.github/agents', '.github/skills', '.github/prompts')) {
+    $dirPath = Join-Path $WorkspaceRoot $dirRel
+    if (-not (Test-Path -LiteralPath $dirPath -PathType Container)) { continue }
+    $sample = Get-ChildItem -LiteralPath $dirPath -Recurse -File -ErrorAction SilentlyContinue |
+      Sort-Object FullName |
+      Select-Object -First 1
+    if ($null -eq $sample) { continue }
+    $targets.Add((Get-CopySmokeRelativePath -BasePath $WorkspaceRoot -TargetPath ([string]$sample.FullName))) | Out-Null
+  }
+
+  return @($targets | Select-Object -Unique)
+}
+
 function Invoke-CopySmokeTrackedNoiseContract {
   param(
     [string]$TempRoot,
@@ -674,24 +876,62 @@ function Invoke-CopySmokeTrackedNoiseContract {
     return [pscustomobject]$result
   }
 
-  $targets = @(
-    '.Rayman/VERSION',
-    '.SolutionName',
-    '.cursorrules',
-    '.clinerules',
-    '.rayman.env.ps1',
-    '.github/copilot-instructions.md'
-  ) | Where-Object { Test-Path -LiteralPath (Join-Path $TempRoot $_) }
+  $requirementsPath = ''
+  try {
+    $requirementsPath = Get-CopySmokeTrackedSolutionRequirementRelative -WorkspaceRoot $TempRoot
+  } catch {
+    $result.Message = ("strict 合约未找到 solution requirements 文档：{0}" -f $_.Exception.Message)
+    return [pscustomobject]$result
+  }
+
+  $allowedDocs = @($requirementsPath) + @(Get-CopySmokeTrackedAgenticDocRelativePaths -WorkspaceRoot $TempRoot -RequirementsPath $requirementsPath)
+  foreach ($allowedDoc in @($allowedDocs | Select-Object -Unique)) {
+    $ignoreResult = Get-CopySmokeGitCheckIgnoreResult -WorkspaceRoot $TempRoot -RelativePath $allowedDoc
+    if ([bool]$ignoreResult.ignored) {
+      $result.Message = ("external workspace 文档白名单被误伤：{0}" -f $allowedDoc)
+      return [pscustomobject]$result
+    }
+  }
+
+  $targets = @(Get-CopySmokeExternalBlockedTargets -WorkspaceRoot $TempRoot)
+  $requiredGeneratedTargets = @(@(
+    '.rayman.project.json',
+    '.github/workflows/rayman-project-fast-gate.yml',
+    '.github/workflows/rayman-project-browser-gate.yml',
+    '.github/workflows/rayman-project-full-gate.yml'
+  ) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $TempRoot $_)) })
 
   if ($targets.Count -le 0) {
-    $result.Message = 'strict 合约未找到可加入索引的 Rayman 管理资产'
+    $result.Message = 'strict 合约未找到可加入索引的 Rayman 生成资产'
     return [pscustomobject]$result
+  }
+  if ($requiredGeneratedTargets.Count -gt 0) {
+    $result.Message = ("external workspace 缺少预期生成资产：{0}" -f ($requiredGeneratedTargets -join ', '))
+    return [pscustomobject]$result
+  }
+
+  foreach ($blockedTarget in @($targets)) {
+    $ignoreResult = Get-CopySmokeGitCheckIgnoreResult -WorkspaceRoot $TempRoot -RelativePath $blockedTarget
+    if (-not [bool]$ignoreResult.ignored) {
+      $result.Message = ("external workspace 应忽略 Rayman 生成资产，但未命中 ignore：{0}" -f $blockedTarget)
+      return [pscustomobject]$result
+    }
+    if (-not (Test-CopySmokeManagedIgnoreFile -WorkspaceRoot $TempRoot -MatchedSource ([string]$ignoreResult.matched_source))) {
+      $result.Message = ("ignore 命中了非 Rayman managed block：target={0}, source={1}" -f $blockedTarget, [string]$ignoreResult.matched_source)
+      return [pscustomobject]$result
+    }
   }
 
   Reset-LastExitCodeCompat
   & $git.Source -C $TempRoot add -f -- @($targets)
   if (Get-LastExitCodeCompat -Default 1) {
     $result.Message = 'strict 合约执行 git add 失败'
+    return [pscustomobject]$result
+  }
+
+  $blockedAnalysis = Get-RaymanScmTrackedNoiseAnalysis -WorkspaceRoot $TempRoot
+  if (-not [bool]$blockedAnalysis.raymanBlocked) {
+    $result.Message = 'tracked assets 加入索引后，SCM 噪声分析未按 external workspace 规则阻断'
     return [pscustomobject]$result
   }
 
@@ -747,7 +987,7 @@ function Invoke-CopySmokeTrackedNoiseContract {
   }
 
   $result.Ok = $true
-  $result.Message = 'fresh copy pass -> external tracked assets blocked -> explicit allow pass -> stable rerun pass'
+  $result.Message = 'fresh copy pass -> docs allowlist verified -> generated workflow/config block verified -> external tracked assets blocked -> explicit allow pass -> stable rerun pass'
   return [pscustomobject]$result
 }
 
@@ -1087,10 +1327,6 @@ try {
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SETUP_SKIP_POST_CHECK' -Value '1'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SETUP_SKIP_ADVANCED_MODULES' -Value '1'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_HOME' -Value (Join-Path $tmpRoot '.rayman-global')
-  Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_RAG_ROOT' -Value '.rag'
-  Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_RAG_NAMESPACE' -Value (Split-Path -Leaf $tmpRoot)
-  Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_ALLOW_EXTERNAL_RAG_ROOT' -Value '0'
-  Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_PRESERVE_RAG_NAMESPACE' -Value '0'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SANDBOX_AUTO_CLOSE' -Value '1'
   Set-EnvOverride -Backup $envBackup -Name 'RAYMAN_SANDBOX_KILL_EXISTING' -Value '1'
   if ($null -ne $ownerToken) {

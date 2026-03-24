@@ -59,6 +59,31 @@ record_bypass(){
 SOL="$(bash ./.Rayman/scripts/requirements/detect_solution.sh)"
 SOL_DIR=".${SOL}"
 SOL_FILE="${SOL_DIR}/.${SOL}.requirements.md"
+AGENTIC_DOCS=(
+  "${SOL_DIR}/agentic/plan.current.md"
+  "${SOL_DIR}/agentic/plan.current.json"
+  "${SOL_DIR}/agentic/tool-policy.md"
+  "${SOL_DIR}/agentic/tool-policy.json"
+  "${SOL_DIR}/agentic/reflection.current.md"
+  "${SOL_DIR}/agentic/reflection.current.json"
+  "${SOL_DIR}/agentic/evals.md"
+)
+
+AGENTIC_CONFIG="./.Rayman/config/agentic_pipeline.json"
+pipeline_mode="${RAYMAN_AGENT_PIPELINE:-}"
+if [[ -z "${pipeline_mode// }" && -f "${AGENTIC_CONFIG}" ]]; then
+  pipeline_mode="$(grep -E '"default_pipeline"\s*:' "${AGENTIC_CONFIG}" | head -n1 | sed -E 's/.*"default_pipeline"\s*:\s*"([^"]+)".*/\1/' || true)"
+fi
+if [[ -z "${pipeline_mode// }" ]]; then
+  pipeline_mode="planner_v1"
+fi
+doc_gate_enabled="${RAYMAN_AGENT_DOC_GATE:-}"
+if [[ -z "${doc_gate_enabled// }" && -f "${AGENTIC_CONFIG}" ]]; then
+  doc_gate_enabled="$(grep -E '"doc_gate_enabled"\s*:' "${AGENTIC_CONFIG}" | head -n1 | sed -E 's/.*"doc_gate_enabled"\s*:\s*([^,}]+).*/\1/' | tr -d '[:space:]' || true)"
+fi
+if [[ -z "${doc_gate_enabled// }" ]]; then
+  doc_gate_enabled="true"
+fi
 
 if printf '%s' "${SOL}" | LC_ALL=C grep -q $'\xEF\xBB\xBF'; then
   fail "detect_solution 返回了 BOM 污染的 SolutionName：${SOL}"
@@ -97,6 +122,14 @@ for f in "${PROJ_REQS[@]}"; do
   [[ "$rel" == "${SOL_FILE#./}" ]] && continue
   grep -Fq "${rel}" <<< "${CONTENT}" || fail "Solution requirements 未包含：${rel}"
 done
+
+if [[ "${pipeline_mode}" != "legacy" && "${doc_gate_enabled,,}" != "0" && "${doc_gate_enabled,,}" != "false" ]]; then
+  for f in "${AGENTIC_DOCS[@]}"; do
+    [[ -f "${f}" ]] || fail "缺少 agentic 文档：${f}"
+    rel="${f#./}"
+    grep -Fq "${rel}" <<< "${CONTENT}" || fail "Solution requirements 未包含 agentic 文档：${rel}"
+  done
+fi
 
 AGENTS_PATH="$(bash ./.Rayman/scripts/agents/resolve_agents_file.sh --require-existing)" || fail "缺少 AGENTS.md/agents.md"
 AGENTS="$(cat "${AGENTS_PATH}")"
@@ -155,20 +188,32 @@ mapfile -t CHANGED < <(git diff --name-only "${BASE}...HEAD" 2>/dev/null | sed '
 
 EXCLUDE_DIR_RE='^(\.|\.github|\.Rayman|\.vscode|\.vs|\.temp|out|bin|obj|node_modules)(/|$)'
 declare -A INVOLVED=()
+touched_sol=0; touched_any_proj=0
+touched_agentic=0
+governance_touched=0
 for p in "${CHANGED[@]}"; do
+  case "${p}" in
+    .Rayman/*|.github/*|AGENTS.md|agents.md|.SolutionName|.rayman.env.ps1|.clinerules|.cursorrules)
+      governance_touched=1
+      ;;
+  esac
   [[ "$p" =~ ${EXCLUDE_DIR_RE} ]] && continue
   top="${p%%/*}"
   [[ -d "${top}" ]] && INVOLVED["${top}"]=1
 done
-[[ "${#INVOLVED[@]}" -eq 0 ]] && { info "未涉及 Project 变更"; exit 0; }
-
-touched_sol=0; touched_any_proj=0
+[[ "${#INVOLVED[@]}" -eq 0 && "${governance_touched}" -eq 0 ]] && { info "未涉及 Project 变更"; exit 0; }
 printf '%s\n' "${CHANGED[@]}" | grep -Fq "${SOL_FILE#./}" && touched_sol=1 || true
+for f in "${AGENTIC_DOCS[@]}"; do
+  printf '%s\n' "${CHANGED[@]}" | grep -Fq "${f#./}" && touched_agentic=1 || true
+done
 for proj in "${!INVOLVED[@]}"; do
   req="${SOL_DIR}/.${proj}/.${proj}.requirements.md"
   [[ -f "${req}" ]] || fail "涉及 ${proj} 但缺少 requirements：${req}"
   printf '%s\n' "${CHANGED[@]}" | grep -Fq "${req#./}" && touched_any_proj=1 || true
 done
+if [[ "${governance_touched}" -eq 1 ]]; then
+  [[ "${touched_sol}" -eq 1 && "${touched_agentic}" -eq 1 ]] || fail "涉及 source workspace 治理变更但未同时触达 Solution requirements 与 agentic docs。"
+fi
 [[ "$touched_sol" -eq 1 || "$touched_any_proj" -eq 1 ]] || fail "涉及 Project 变更但未触达 requirements。"
 
 info "全部校验通过"

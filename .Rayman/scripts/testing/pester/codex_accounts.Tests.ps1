@@ -688,7 +688,7 @@ param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$updated = Test-Path -LiteralPath `$markerPath
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
   if (`$updated) {
-    Write-Output 'codex-cli 0.5.80'
+    Write-Output 'codex-cli 0.116.0'
   } else {
     Write-Output 'codex-cli 0.47.0'
   }
@@ -729,7 +729,7 @@ exit 1
       [string]$result.reason | Should -Be 'compatibility_auto_updated'
       [bool]$result.latest_check_attempted | Should -Be $false
       [string]$result.version_before | Should -Be '0.47.0'
-      [string]$result.version_after | Should -Be '0.5.80'
+      [string]$result.version_after | Should -Be '0.116.0'
       (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -755,7 +755,7 @@ exit 1
       New-CodexTestWrapper -Root $toolRoot -ScriptBody @"
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if (`$argv.Count -ge 2 -and `$argv[0] -eq 'features' -and `$argv[1] -eq 'list') {
@@ -815,9 +815,9 @@ param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$updated = Test-Path -LiteralPath `$markerPath
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
   if (`$updated) {
-    Write-Output 'codex-cli 0.6.10'
+    Write-Output 'codex-cli 0.120.0'
   } else {
-    Write-Output 'codex-cli 0.5.80'
+    Write-Output 'codex-cli 0.116.0'
   }
   exit 0
 }
@@ -833,7 +833,7 @@ exit 0
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$markerPath = '$quotedMarkerPath'
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'view' -and `$argv[1] -eq '@openai/codex' -and `$argv[2] -eq 'version') {
-  Write-Output '0.6.10'
+  Write-Output '0.120.0'
   exit 0
 }
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'install' -and `$argv[1] -eq '-g' -and `$argv[2] -eq '@openai/codex') {
@@ -856,9 +856,9 @@ exit 1
       [bool]$result.latest_check_attempted | Should -Be $true
       [bool]$result.latest_check_succeeded | Should -Be $true
       [string]$result.reason | Should -Be 'updated_to_latest'
-      [string]$result.version_before | Should -Be '0.5.80'
-      [string]$result.latest_version | Should -Be '0.6.10'
-      [string]$result.version_after | Should -Be '0.6.10'
+      [string]$result.version_before | Should -Be '0.116.0'
+      [string]$result.latest_version | Should -Be '0.120.0'
+      [string]$result.version_after | Should -Be '0.120.0'
       (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -936,7 +936,7 @@ exit 1
       New-CodexTestWrapper -Root $toolRoot -ScriptBody @"
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if (`$argv.Count -ge 2 -and `$argv[0] -eq 'features' -and `$argv[1] -eq 'list') {
@@ -991,7 +991,7 @@ param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$updated = Test-Path -LiteralPath `$markerPath
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
   if (`$updated) {
-    Write-Output 'codex-cli 0.5.80'
+    Write-Output 'codex-cli 0.116.0'
   } else {
     Write-Output 'codex-cli 0.47.0'
   }
@@ -1036,7 +1036,7 @@ exit 1
       [bool]$result.latest_check_attempted | Should -Be $true
       [bool]$result.latest_check_succeeded | Should -Be $false
       [string]$result.reason | Should -Be 'compatibility_auto_updated'
-      [string]$result.version_after | Should -Be '0.5.80'
+      [string]$result.version_after | Should -Be '0.116.0'
       (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -1065,9 +1065,9 @@ param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$updated = Test-Path -LiteralPath `$markerPath
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
   if (`$updated) {
-    Write-Output 'codex-cli 0.6.10'
+    Write-Output 'codex-cli 0.120.0'
   } else {
-    Write-Output 'codex-cli 0.5.80'
+    Write-Output 'codex-cli 0.116.0'
   }
   exit 0
 }
@@ -1083,7 +1083,7 @@ exit 0
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$markerPath = '$quotedMarkerPath'
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'view' -and `$argv[1] -eq '@openai/codex' -and `$argv[2] -eq 'version') {
-  Write-Output '0.6.10'
+  Write-Output '0.120.0'
   exit 0
 }
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'install' -and `$argv[1] -eq '-g' -and `$argv[2] -eq '@openai/codex') {
@@ -1103,9 +1103,9 @@ exit 1
       [bool]$payload.compatible | Should -Be $true
       [bool]$payload.updated | Should -Be $true
       [string]$payload.reason | Should -Be 'updated_to_latest'
-      [string]$payload.version_before | Should -Be '0.5.80'
-      [string]$payload.latest_version | Should -Be '0.6.10'
-      [string]$payload.version_after | Should -Be '0.6.10'
+      [string]$payload.version_before | Should -Be '0.116.0'
+      [string]$payload.latest_version | Should -Be '0.120.0'
+      [string]$payload.version_after | Should -Be '0.120.0'
       (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -1129,7 +1129,7 @@ exit 1
       New-CodexTestWrapper -Root $toolRoot -ScriptBody @"
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.6.10'
+  Write-Output 'codex-cli 0.120.0'
   exit 0
 }
 if (`$argv.Count -ge 2 -and `$argv[0] -eq 'features' -and `$argv[1] -eq 'list') {
@@ -1144,7 +1144,7 @@ exit 0
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$markerPath = '$quotedMarkerPath'
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'view' -and `$argv[1] -eq '@openai/codex' -and `$argv[2] -eq 'version') {
-  Write-Output '0.6.10'
+  Write-Output '0.120.0'
   exit 0
 }
 if (`$argv.Count -ge 3 -and `$argv[0] -eq 'install' -and `$argv[1] -eq '-g' -and `$argv[2] -eq '@openai/codex') {
@@ -1184,7 +1184,7 @@ exit 1
       New-CodexTestWrapper -Root $binRoot -ScriptBody @"
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if (`$argv.Count -ge 2 -and `$argv[0] -eq 'features' -and `$argv[1] -eq 'list') {
@@ -1258,7 +1258,7 @@ exit 0
       New-CodexTestWrapper -Root $binRoot -ScriptBody @'
 param([Parameter(ValueFromRemainingArguments=$true)][string[]]$argv)
 if ($argv.Count -eq 1 -and $argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if ($argv.Count -ge 2 -and $argv[0] -eq 'features' -and $argv[1] -eq 'list') {
@@ -1333,7 +1333,7 @@ exit 0
       New-CodexTestWrapper -Root $binRoot -ScriptBody @'
 param([Parameter(ValueFromRemainingArguments=$true)][string[]]$argv)
 if ($argv.Count -eq 1 -and $argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if ($argv.Count -ge 2 -and $argv[0] -eq 'features' -and $argv[1] -eq 'list') {
@@ -1387,7 +1387,7 @@ exit 0
 param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$argv)
 `$markerPath = '$quotedMarkerPath'
 if (`$argv.Count -eq 1 -and `$argv[0] -eq '--version') {
-  Write-Output 'codex-cli 0.5.80'
+  Write-Output 'codex-cli 0.116.0'
   exit 0
 }
 if (`$argv.Count -ge 2 -and `$argv[0] -eq 'features' -and `$argv[1] -eq 'list') {

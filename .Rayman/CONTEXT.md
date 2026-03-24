@@ -7,7 +7,7 @@
 ## Workspace Snapshot
 
 - Root: `.`
-- Top-level entries: .clinerules, .codex, .cursorrules, .env, .gitattributes, .github, .gitignore, .rag, .Rayman, .rayman.env.ps1, .RaymanAgent, .SolutionName, .venv, .vscode, AGENTS.md, testResults.xml
+- Top-level entries: .clinerules, .codex, .cursorrules, .env, .gitattributes, .github, .gitignore, .Rayman, .rayman.env.ps1, .RaymanAgent, .SolutionName, .venv, .vscode, AGENTS.md, clash_report_20260321_202028.zip, codex_list.log, codex_list2.log, codex_login_main.log, codex_status.log, menu_run.log, testResults.xml
 
 ## Governance & Agent Assets
 
@@ -46,10 +46,10 @@
 - dynproxy
 - fast-init
 - mcp
+- memory
 - project
 - proxy
 - pwa
-- rag
 - release
 - repair
 - requirements
@@ -66,6 +66,7 @@
 - agent_capabilities.json
 - agent_policy.json
 - agent_router.json
+- agentic_pipeline.json
 - codex_multi_agent.json
 - command_catalog.tsv
 - model_routing.json

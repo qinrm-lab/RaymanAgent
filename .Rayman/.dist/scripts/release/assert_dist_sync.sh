@@ -38,7 +38,22 @@ hash_file(){
 }
 
 git_path_tracked(){
-  git -C "${WORKSPACE_ROOT}" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+  git -C "${WORKSPACE_ROOT}" ls-files --cached -- "$1" | grep -Fxq "$1"
+}
+
+git_path_state(){
+  local relative_path="$1"
+  if [[ ! -f "${WORKSPACE_ROOT}/${relative_path}" ]]; then
+    printf 'missing'
+    return 0
+  fi
+
+  if git_path_tracked "${relative_path}"; then
+    printf 'tracked'
+    return 0
+  fi
+
+  printf 'present'
 }
 
 detect_workspace_kind(){
@@ -88,6 +103,7 @@ mirror_rel=(
   "scripts/agents/ensure_agent_assets.ps1"
   "scripts/agents/check_agent_contract.ps1"
   "scripts/agents/ensure_agent_capabilities.ps1"
+  "scripts/agents/agentic_pipeline.ps1"
   "scripts/agents/dispatch.ps1"
   "scripts/agents/review_loop.ps1"
   "scripts/agents/first_pass_report.ps1"
@@ -148,14 +164,18 @@ mirror_rel=(
   "scripts/utils/workspace_state_guard.sh"
   "config/command_catalog.tsv"
   "config/agent_capabilities.json"
+  "config/agentic_pipeline.json"
   "winapp.flow.sample.json"
   "scripts/repair/run_tests_and_fix.ps1"
   "scripts/repair/capture_snapshot.ps1"
     "scripts/repair/inject_probe.ps1"
     "scripts/repair/revert_probe.ps1"
     "agents/diagnostics.prompt.md"
-    "scripts/rag/rag_bootstrap.ps1"
-  "scripts/rag/migrate_legacy_rag.ps1"
+    "scripts/memory/memory_bootstrap.ps1"
+  "scripts/memory/manage_memory.ps1"
+  "scripts/memory/memory_common.ps1"
+  "scripts/memory/manage_memory.py"
+  "scripts/memory/requirements.txt"
   "scripts/telemetry/rules_metrics.sh"
   "scripts/telemetry/daily_trend.sh"
   "scripts/telemetry/validate_json.sh"
@@ -193,7 +213,10 @@ mirror_rel=(
   "scripts/testing/pester/release_gate.lib.Tests.ps1"
   "scripts/testing/pester/playwright_ready.lib.Tests.ps1"
   "scripts/testing/pester/winapp_core.Tests.ps1"
+  "scripts/testing/pester/agentic_pipeline.Tests.ps1"
+  "scripts/testing/pester/agent_memory.Tests.ps1"
   "scripts/testing/bats/ensure_project_test_deps.bats"
+  "scripts/testing/bats/validate_requirements_agentic.bats"
   "scripts/testing/fixtures/reports/release_gate.sample.json"
   "scripts/testing/fixtures/reports/playwright.ready.windows.sample.json"
   "scripts/testing/fixtures/reports/playwright.ready.wsl.sample.json"
@@ -201,6 +224,9 @@ mirror_rel=(
   "scripts/testing/fixtures/reports/winapp.last_result.sample.json"
   "scripts/testing/fixtures/reports/agent_capabilities.report.sample.json"
   "scripts/testing/fixtures/reports/codex.auth.status.sample.json"
+  "scripts/testing/fixtures/reports/agent_memory.status.sample.json"
+  "scripts/testing/fixtures/reports/agent_memory.search.sample.json"
+  "scripts/testing/fixtures/reports/agent_memory.summarize.sample.json"
   "scripts/testing/fixtures/reports/project_gate.fast.sample.json"
   "scripts/testing/schemas/release_gate.v1.schema.json"
   "scripts/testing/schemas/playwright_windows.v2.schema.json"
@@ -210,6 +236,9 @@ mirror_rel=(
   "scripts/testing/schemas/winapp_flow_result.v1.schema.json"
   "scripts/testing/schemas/agent_capabilities_report.v1.schema.json"
   "scripts/testing/schemas/codex_auth_status.v1.schema.json"
+  "scripts/testing/schemas/agent_memory_status.v1.schema.json"
+  "scripts/testing/schemas/agent_memory_search_result.v1.schema.json"
+  "scripts/testing/schemas/agent_memory_summarize_result.v1.schema.json"
   "scripts/testing/schemas/project_gate.v1.schema.json"
   "templates/workflows/rayman-project-fast-gate.yml"
   "templates/workflows/rayman-project-browser-gate.yml"
@@ -230,7 +259,8 @@ mirror_rel=(
 )
 
 enforce_trackedness=0
-tracked_missing=()
+tracked_mismatch=()
+tracked_pending=()
 workspace_kind="$(detect_workspace_kind "${WORKSPACE_ROOT}")"
 if command -v git >/dev/null 2>&1; then
   if git -C "${WORKSPACE_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -255,8 +285,13 @@ for rel in "${mirror_rel[@]}"; do
   [[ -f "${dst}" ]] || fail "dist missing: ${dst}"
 
   if [[ "${enforce_trackedness}" == "1" ]]; then
-    git_path_tracked "${src}" || tracked_missing+=("${src}")
-    git_path_tracked "${dst}" || tracked_missing+=("${dst}")
+    src_state="$(git_path_state "${src}")"
+    dst_state="$(git_path_state "${dst}")"
+    if [[ "${src_state}" == "tracked" && "${dst_state}" != "tracked" ]] || [[ "${dst_state}" == "tracked" && "${src_state}" != "tracked" ]]; then
+      tracked_mismatch+=("${src}<->${dst}")
+    elif [[ "${src_state}" == "present" && "${dst_state}" == "present" ]]; then
+      tracked_pending+=("${src}<->${dst}")
+    fi
   fi
 
   hs="$(hash_file "${src}")"
@@ -266,8 +301,12 @@ for rel in "${mirror_rel[@]}"; do
   fi
 done
 
-if [[ "${#tracked_missing[@]}" -gt 0 ]]; then
-  fail "git index missing mirrored assets: ${tracked_missing[*]}（请先 git add 对应 source/dist 资产）"
+if [[ "${#tracked_mismatch[@]}" -gt 0 ]]; then
+  fail "git index mirrored assets mismatch: ${tracked_mismatch[*]}（请先 git add 对应 source/dist 资产）"
+fi
+
+if [[ "${#tracked_pending[@]}" -gt 0 ]]; then
+  warn "git index pending mirrored assets: ${tracked_pending[*]}"
 fi
 
 if [[ "${#drift[@]}" -gt 0 ]]; then

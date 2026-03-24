@@ -46,6 +46,13 @@ function Parse-FirstPassRows([string]$Path) {
     $round1Added = $null
     $round1Deleted = $null
     $round1NetSizeDeltaBytes = $null
+    $planId = ''
+    $replanCount = $null
+    $selectedTools = ''
+    $fallbackCount = $null
+    $docGatePass = $null
+    $acceptanceClosed = $null
+    $reflectionOutcome = ''
     if ($parts.Count -gt 9) {
       $tmp = 0
       if ([int]::TryParse([string]$parts[9], [ref]$tmp)) { $round1Touched = [int]$tmp }
@@ -70,6 +77,31 @@ function Parse-FirstPassRows([string]$Path) {
       $tmp64 = [int64]0
       if ([int64]::TryParse([string]$parts[14], [ref]$tmp64)) { $round1NetSizeDeltaBytes = [int64]$tmp64 }
     }
+    if ($parts.Count -gt 15) {
+      $planId = [string]$parts[15]
+    }
+    if ($parts.Count -gt 16) {
+      $tmp = 0
+      if ([int]::TryParse([string]$parts[16], [ref]$tmp)) { $replanCount = [int]$tmp }
+    }
+    if ($parts.Count -gt 17) {
+      $selectedTools = [string]$parts[17]
+    }
+    if ($parts.Count -gt 18) {
+      $tmp = 0
+      if ([int]::TryParse([string]$parts[18], [ref]$tmp)) { $fallbackCount = [int]$tmp }
+    }
+    if ($parts.Count -gt 19) {
+      $raw = [string]$parts[19]
+      if (-not [string]::IsNullOrWhiteSpace($raw)) { $docGatePass = ($raw.Trim().ToLowerInvariant() -eq 'true') }
+    }
+    if ($parts.Count -gt 20) {
+      $raw = [string]$parts[20]
+      if (-not [string]::IsNullOrWhiteSpace($raw)) { $acceptanceClosed = ($raw.Trim().ToLowerInvariant() -eq 'true') }
+    }
+    if ($parts.Count -gt 21) {
+      $reflectionOutcome = [string]$parts[21]
+    }
     $rows.Add([pscustomobject]@{
       ts_iso = $tsRaw
       ts = $ts
@@ -87,6 +119,13 @@ function Parse-FirstPassRows([string]$Path) {
       round1_added_files = $round1Added
       round1_deleted_files = $round1Deleted
       round1_net_size_delta_bytes = $round1NetSizeDeltaBytes
+      plan_id = $planId
+      replan_count = $replanCount
+      selected_tools = $selectedTools
+      fallback_count = $fallbackCount
+      doc_gate_pass = $docGatePass
+      acceptance_closed = $acceptanceClosed
+      reflection_outcome = $reflectionOutcome
     }) | Out-Null
   }
   return @($rows | Sort-Object ts)
@@ -186,6 +225,24 @@ if ($rows.Count -eq 0) {
         corr_status = $null
       }
     }
+    agentic = [ordered]@{
+      rows_with_plan = 0
+      plan_coverage_rate = 0.0
+      avg_replan_count = $null
+      avg_fallback_count = $null
+      doc_gate = [ordered]@{
+        sample_total = 0
+        pass = 0
+        rate = 0.0
+      }
+      acceptance = [ordered]@{
+        sample_total = 0
+        pass = 0
+        rate = 0.0
+      }
+      reflection_distribution = @()
+      selected_tool_distribution = @()
+    }
     summary = [ordered]@{
       total = 0
       pass = 0
@@ -220,12 +277,12 @@ for ($i = $sample.Count - 1; $i -ge 0; $i--) {
   break
 }
 
-$backendStats = $sample | Group-Object scope | Sort-Object Count -Descending | ForEach-Object {
+$backendStats = @($sample | Group-Object scope | Sort-Object Count -Descending | ForEach-Object {
   [pscustomobject]@{
     backend = [string]$_.Name
     count = [int]$_.Count
   }
-}
+})
 
 $allDays = @($rows | ForEach-Object { $_.ts.ToString('yyyy-MM-dd') } | Select-Object -Unique | Sort-Object)
 $recentDates = @()
@@ -297,6 +354,42 @@ if ($null -ne $passTouchAvg -and $null -ne $failTouchAvg) { $touchDelta = [Math]
 $absScaleDelta = $null
 if ($null -ne $passAbsScaleAvg -and $null -ne $failAbsScaleAvg) { $absScaleDelta = [Math]::Round(([double]$passAbsScaleAvg - [double]$failAbsScaleAvg), 2) }
 
+$planRows = @($sample | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.plan_id) })
+$planCoverageRate = Get-Rate -Pass $planRows.Count -Total $sample.Count
+$docGateRows = @($sample | Where-Object { $null -ne $_.doc_gate_pass })
+$docGatePassCount = @($docGateRows | Where-Object { $_.doc_gate_pass }).Count
+$docGateRate = Get-Rate -Pass $docGatePassCount -Total $docGateRows.Count
+$acceptanceRows = @($sample | Where-Object { $null -ne $_.acceptance_closed })
+$acceptancePassCount = @($acceptanceRows | Where-Object { $_.acceptance_closed }).Count
+$acceptanceRate = Get-Rate -Pass $acceptancePassCount -Total $acceptanceRows.Count
+$avgReplanCount = Get-AverageOrNull -Values @($sample | Where-Object { $null -ne $_.replan_count } | ForEach-Object { [double]$_.replan_count })
+$avgFallbackCount = Get-AverageOrNull -Values @($sample | Where-Object { $null -ne $_.fallback_count } | ForEach-Object { [double]$_.fallback_count })
+$reflectionDistribution = @($sample | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.reflection_outcome) } | Group-Object reflection_outcome | Sort-Object Count -Descending | ForEach-Object {
+  [pscustomobject]@{
+    outcome = [string]$_.Name
+    count = [int]$_.Count
+  }
+})
+$toolCounter = @{}
+foreach ($row in $sample) {
+  foreach ($tool in @(([string]$row.selected_tools).Split('|', [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+    if ($toolCounter.ContainsKey($tool)) {
+      $toolCounter[$tool]++
+    } else {
+      $toolCounter[$tool] = 1
+    }
+  }
+}
+$selectedToolDistribution = @($toolCounter.Keys | Sort-Object | ForEach-Object {
+  [pscustomobject]@{
+    tool = [string]$_
+    count = [int]$toolCounter[$_]
+  }
+} | Sort-Object -Property @(
+  @{ Expression = 'count'; Descending = $true },
+  @{ Expression = 'tool'; Descending = $false }
+))
+
 $mdLines = New-Object System.Collections.Generic.List[string]
 $mdLines.Add('# Rayman First-Pass Report') | Out-Null
 $mdLines.Add('') | Out-Null
@@ -343,6 +436,43 @@ $mdLines.Add('| metric | pass_avg | fail_avg | delta(pass-fail) | corr(status,me
 $mdLines.Add('| --- | ---: | ---: | ---: | ---: |') | Out-Null
 $mdLines.Add(('| round1_touched_files | {0} | {1} | {2} | {3} |' -f (Format-Nullable -Value $passTouchAvg), (Format-Nullable -Value $failTouchAvg), (Format-Nullable -Value $touchDelta), (Format-Nullable -Value $touchCorr -Digits 4))) | Out-Null
 $mdLines.Add(('| round1_abs_net_size_delta_bytes | {0} | {1} | {2} | {3} |' -f (Format-Nullable -Value $passAbsScaleAvg), (Format-Nullable -Value $failAbsScaleAvg), (Format-Nullable -Value $absScaleDelta), (Format-Nullable -Value $absScaleCorr -Digits 4))) | Out-Null
+$mdLines.Add('') | Out-Null
+$mdLines.Add('## Planner / Reflection') | Out-Null
+$mdLines.Add('') | Out-Null
+$mdLines.Add('| metric | value |') | Out-Null
+$mdLines.Add('| --- | ---: |') | Out-Null
+$mdLines.Add(('| rows_with_plan | {0}/{1} |' -f $planRows.Count, $sample.Count)) | Out-Null
+$mdLines.Add(('| plan_coverage_rate | {0}% |' -f $planCoverageRate)) | Out-Null
+$mdLines.Add(('| doc_gate_pass | {0}/{1} |' -f $docGatePassCount, $docGateRows.Count)) | Out-Null
+$mdLines.Add(('| doc_gate_rate | {0}% |' -f $docGateRate)) | Out-Null
+$mdLines.Add(('| acceptance_closed | {0}/{1} |' -f $acceptancePassCount, $acceptanceRows.Count)) | Out-Null
+$mdLines.Add(('| acceptance_rate | {0}% |' -f $acceptanceRate)) | Out-Null
+$mdLines.Add(('| avg_replan_count | {0} |' -f (Format-Nullable -Value $avgReplanCount))) | Out-Null
+$mdLines.Add(('| avg_fallback_count | {0} |' -f (Format-Nullable -Value $avgFallbackCount))) | Out-Null
+$mdLines.Add('') | Out-Null
+$mdLines.Add('### Reflection Distribution') | Out-Null
+$mdLines.Add('') | Out-Null
+if ($reflectionDistribution.Count -eq 0) {
+  $mdLines.Add('- (none)') | Out-Null
+} else {
+  $mdLines.Add('| outcome | count |') | Out-Null
+  $mdLines.Add('| --- | ---: |') | Out-Null
+  foreach ($it in $reflectionDistribution) {
+    $mdLines.Add(('| {0} | {1} |' -f $it.outcome, $it.count)) | Out-Null
+  }
+}
+$mdLines.Add('') | Out-Null
+$mdLines.Add('### Selected Tool Distribution') | Out-Null
+$mdLines.Add('') | Out-Null
+if ($selectedToolDistribution.Count -eq 0) {
+  $mdLines.Add('- (none)') | Out-Null
+} else {
+  $mdLines.Add('| tool | count |') | Out-Null
+  $mdLines.Add('| --- | ---: |') | Out-Null
+  foreach ($it in $selectedToolDistribution) {
+    $mdLines.Add(('| {0} | {1} |' -f $it.tool, $it.count)) | Out-Null
+  }
+}
 $mdLines.Add('') | Out-Null
 $mdLines.Add('Tips:') | Out-Null
 $mdLines.Add('- `rayman trend --source .Rayman/runtime/telemetry/first_pass_runs.tsv --days 14`') | Out-Null
@@ -392,6 +522,24 @@ $jsonObj = [ordered]@{
       delta_pass_minus_fail = $absScaleDelta
       corr_status = $absScaleCorr
     }
+  }
+  agentic = [ordered]@{
+    rows_with_plan = [int]$planRows.Count
+    plan_coverage_rate = $planCoverageRate
+    avg_replan_count = $avgReplanCount
+    avg_fallback_count = $avgFallbackCount
+    doc_gate = [ordered]@{
+      sample_total = [int]$docGateRows.Count
+      pass = [int]$docGatePassCount
+      rate = $docGateRate
+    }
+    acceptance = [ordered]@{
+      sample_total = [int]$acceptanceRows.Count
+      pass = [int]$acceptancePassCount
+      rate = $acceptanceRate
+    }
+    reflection_distribution = @($reflectionDistribution)
+    selected_tool_distribution = @($selectedToolDistribution)
   }
   backend_distribution = @($backendStats)
 }

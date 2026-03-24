@@ -169,7 +169,7 @@ function Get-RaymanSystemSlimDefaultPolicy() {
     notify_on_upgrade = $true
     minimum_versions = [ordered]@{
       vscode = '1.110.0'
-      codex = '0.5.80'
+      codex = '0.116.0'
     }
     features = [ordered]@{
       dispatch = [ordered]@{
@@ -263,7 +263,7 @@ function Invoke-RaymanSystemSlimAudit {
   $codexProbe = Get-RaymanToolVersionProbe -CommandName 'codex'
 
   $vscodeMin = [string](Get-RaymanPropValue -Object $policy.minimum_versions -Name 'vscode' -DefaultValue '1.110.0')
-  $codexMin = [string](Get-RaymanPropValue -Object $policy.minimum_versions -Name 'codex' -DefaultValue '0.5.80')
+  $codexMin = [string](Get-RaymanPropValue -Object $policy.minimum_versions -Name 'codex' -DefaultValue '0.116.0')
 
   $vscodeAtLeast = Test-RaymanVersionAtLeast -DetectedVersion ([string]$vscodeProbe.version) -MinimumVersion $vscodeMin
   $codexAtLeast = Test-RaymanVersionAtLeast -DetectedVersion ([string]$codexProbe.version) -MinimumVersion $codexMin

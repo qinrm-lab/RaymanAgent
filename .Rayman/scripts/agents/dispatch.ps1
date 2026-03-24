@@ -18,6 +18,16 @@ if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
 
+$agenticHelperPath = Join-Path $PSScriptRoot 'agentic_pipeline.ps1'
+if (Test-Path -LiteralPath $agenticHelperPath -PathType Leaf) {
+  . $agenticHelperPath
+}
+
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
+  . $memoryHelperPath
+}
+
 function Get-EnvBoolCompat([string]$Name, [bool]$Default) {
   $raw = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
@@ -887,6 +897,36 @@ function Build-SystemSlimDispatchPrompt {
   return $body
 }
 
+function Invoke-RaymanDispatchLocalCommand {
+  param(
+    [string]$CommandText,
+    [string]$DetailLogPath
+  )
+
+  $result = [ordered]@{
+    command = $CommandText
+    exit_code = 0
+    success = $true
+    error_message = ''
+  }
+
+  try {
+    $commandOutput = Invoke-Expression $CommandText 2>&1
+    if ($commandOutput) {
+      $commandOutput | ForEach-Object { Add-Content -LiteralPath $DetailLogPath -Encoding UTF8 -Value ([string]$_) }
+    }
+    $result.exit_code = [int]$LASTEXITCODE
+    $result.success = ($result.exit_code -eq 0)
+  } catch {
+    $result.exit_code = 1
+    $result.success = $false
+    $result.error_message = $_.Exception.Message
+    Add-Content -LiteralPath $DetailLogPath -Encoding UTF8 -Value $_.Exception.ToString()
+  }
+
+  return [pscustomobject]$result
+}
+
 function Test-PolicyBlocked {
   param(
     [object]$PolicyConfig,
@@ -942,6 +982,14 @@ $multiAgentRegistry = Get-CodexMultiAgentRegistry -WorkspaceRoot $WorkspaceRoot
 $routerConfig = Get-JsonOrNull -Path $routerConfigPath
 $policyConfig = Get-JsonOrNull -Path $policyConfigPath
 $modelRoutingConfig = Get-JsonOrNull -Path $modelRoutingPath
+$agenticConfigInfo = $null
+$agenticConfig = $null
+$agenticEnabled = $false
+if (Get-Command Get-RaymanAgenticPipelineConfig -ErrorAction SilentlyContinue) {
+  $agenticConfigInfo = Get-RaymanAgenticPipelineConfig -WorkspaceRoot $WorkspaceRoot
+  $agenticConfig = $agenticConfigInfo.data
+  $agenticEnabled = (-not [string]::Equals([string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1'), [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'legacy_pipeline_name' -Default 'legacy'), [System.StringComparison]::OrdinalIgnoreCase))
+}
 
 $script:KnownBackends = @('copilot', 'codex', 'local')
 $backendRequirements = Get-PropValue -Object $routerConfig -Name 'backend_requirements' -Default $null
@@ -955,6 +1003,7 @@ if ($null -ne $backendRequirements) {
   }
 }
 
+$dispatchStartedAt = Get-Date
 $runId = [Guid]::NewGuid().ToString('n')
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $detailLog = Join-Path $logsDir ("agent.dispatch.{0}.log" -f $timestamp)
@@ -970,6 +1019,11 @@ $requestedModelAlias = [string]$requestedModelResolution.route_key
 $requestedModelSelector = [string]$requestedModelResolution.selector
 $requestedResolvedModel = [string]$requestedModelResolution.resolved_model
 $effectiveTaskKey = [string]$requestedModelResolution.effective_task_key
+$memoryTaskKey = if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
+  Get-RaymanMemoryTaskKey -TaskKind $TaskKind -Task $Task -PromptKey $effectivePromptKey -Command $Command -WorkspaceRoot $WorkspaceRoot
+} else {
+  ''
+}
 
 $defaultBackend = Get-EnvStringCompat -Name 'RAYMAN_AGENT_DEFAULT_BACKEND' -Default ''
 if ([string]::IsNullOrWhiteSpace($defaultBackend) -and $null -ne $routerConfig -and $null -ne $routerConfig.PSObject.Properties['default_backend']) {
@@ -1018,7 +1072,57 @@ $capabilityMatches = Get-AgentCapabilityMatches -CapabilityState $capabilityStat
 $matchedCapabilities = @($capabilityMatches.all_matches)
 $activeCapabilityMatches = @($capabilityMatches.active_matches)
 $capabilityPreamble = Build-AgentCapabilityPreamble -CapabilityMatches $activeCapabilityMatches
+$memoryPreamble = ''
+if (Get-Command Get-RaymanMemoryPromptPreamble -ErrorAction SilentlyContinue) {
+  $memoryPreamble = Get-RaymanMemoryPromptPreamble -WorkspaceRoot $WorkspaceRoot -TaskKind $TaskKind -Task $Task -TaskKey $memoryTaskKey
+}
 $subagentPreamble = Build-RaymanSubagentPreamble -Registry $multiAgentRegistry
+$agenticPlan = $null
+$agenticToolPolicy = $null
+$agenticDocGate = $null
+$agenticExecution = $null
+$agenticPreamble = ''
+$agenticSelectedTools = @()
+$agenticFallbackCount = 0
+$agenticPaths = $null
+
+if ($agenticEnabled -and (Get-Command New-RaymanAgenticToolPolicy -ErrorAction SilentlyContinue)) {
+  $agenticWriteStarted = Get-Date
+  $agenticToolPolicy = New-RaymanAgenticToolPolicy -TaskKind $TaskKind -Task $Task -Command $Command -PromptKey $effectivePromptKey -PreferredBackend $effectivePreferredBackend -CapabilityMatches $matchedCapabilities -MultiAgentRegistry $multiAgentRegistry -ConfigData $agenticConfig
+  $agenticPlan = New-RaymanAgenticPlan -WorkspaceRoot $WorkspaceRoot -TaskKind $TaskKind -Task $Task -Command $Command -PromptKey $effectivePromptKey -PreferredBackend $effectivePreferredBackend -ConfigData $agenticConfig -ToolPolicy $agenticToolPolicy -CapabilityState $capabilityState
+  $agenticExecution = New-RaymanAgenticExecutionContract -TaskKind $TaskKind -Task $Task -Command $Command -PromptKey $effectivePromptKey -PreferredBackend $effectivePreferredBackend -ToolPolicy $agenticToolPolicy -CapabilityMatches $matchedCapabilities -ConfigData $agenticConfig -CapabilityState $capabilityState
+  $agenticPaths = Write-RaymanAgenticPlanArtifacts -WorkspaceRoot $WorkspaceRoot -Plan $agenticPlan -ToolPolicy $agenticToolPolicy
+  $agenticDocGate = Test-RaymanAgenticDocGate -WorkspaceRoot $WorkspaceRoot -ConfigData $agenticConfig -Stage 'dispatch' -UpdatedAfter $agenticWriteStarted -UpdatedDocNames @('plan.current.md', 'plan.current.json', 'tool-policy.md', 'tool-policy.json')
+  $agenticSelectedTools = @($agenticToolPolicy.selected_tool_keys)
+  $agenticFallbackCount = @($agenticToolPolicy.fallback_chain).Count
+  $agenticPreamble = @(
+    '[RaymanAgenticPlan]'
+    ('pipeline={0}' -f [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1'))
+    ('plan_id={0}' -f [string]$agenticPlan.plan_id)
+    ('selected_tools={0}' -f (($agenticSelectedTools | ForEach-Object { [string]$_ }) -join ','))
+    ('doc_gate_pass={0}' -f [string]([bool]$agenticDocGate.pass).ToString().ToLowerInvariant())
+    ('required_docs={0}' -f (((@($agenticPlan.required_docs) | ForEach-Object { [string]$_ }) -join ',')))
+    '[/RaymanAgenticPlan]'
+  ) -join "`n"
+  $preambleParts = New-Object System.Collections.Generic.List[string]
+  foreach ($item in @($memoryPreamble, $capabilityPreamble, $agenticPreamble, (Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'delegation_preamble' -Default ''))) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
+      $preambleParts.Add(([string]$item).Trim()) | Out-Null
+    }
+  }
+  $capabilityPreamble = ($preambleParts -join "`n")
+  Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("agentic planner: plan_id={0}; selected_tools={1}; doc_gate_pass={2}; backend_order={3}" -f [string]$agenticPlan.plan_id, ($agenticSelectedTools -join ','), [string]([bool]$agenticDocGate.pass).ToString().ToLowerInvariant(), ((@(Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'backend_order' -Default @()) | ForEach-Object { [string]$_ }) -join ','))
+}
+
+if (-not $agenticEnabled -and -not [string]::IsNullOrWhiteSpace([string]$memoryPreamble)) {
+  $preambleParts = New-Object System.Collections.Generic.List[string]
+  foreach ($item in @($memoryPreamble, $capabilityPreamble)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
+      $preambleParts.Add(([string]$item).Trim()) | Out-Null
+    }
+  }
+  $capabilityPreamble = ($preambleParts -join "`n")
+}
 
 if ($matchedCapabilities.Count -gt 0) {
   $matchSummary = @($matchedCapabilities | ForEach-Object {
@@ -1157,6 +1261,10 @@ if ($policy.blocked) {
     selected_model_alias = $selectedModelAlias
     selected_model_selector = $selectedModelSelector
     resolved_model = $resolvedModel
+    pipeline = if ($agenticEnabled) { [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1') } else { 'legacy' }
+    plan_id = [string](Get-RaymanAgenticPropValue -Object $agenticPlan -Name 'plan_id' -Default '')
+    selected_tools = @($agenticSelectedTools)
+    fallback_count = $agenticFallbackCount
     selected_backend = 'blocked'
     selection_reason = $policyBlockedReason
     policy_blocked = $policyBlocked
@@ -1171,6 +1279,10 @@ if ($policy.blocked) {
     capability_matches = @($matchedCapabilities)
     active_capability_matches = @($activeCapabilityMatches)
     codex_capability_preamble = $capabilityPreamble
+    agentic_plan = $agenticPlan
+    agentic_tool_policy = $agenticToolPolicy
+    agentic_doc_gate = $agenticDocGate
+    agentic_execution = $agenticExecution
     system_slim_active = $systemSlimActive
     system_slim_feature = $systemSlimFeature
     delegation_target = $delegationTarget
@@ -1185,6 +1297,43 @@ if ($policy.blocked) {
   Write-Host ("❌ [dispatch] blocked by policy: {0}" -f $policyBlockedReason) -ForegroundColor Red
   exit 5
   }
+}
+
+if ($agenticEnabled -and $null -ne $agenticDocGate -and -not [bool]$agenticDocGate.pass) {
+  $docGateSummary = [ordered]@{
+    schema = 'rayman.agent.dispatch.v1'
+    generated_at = (Get-Date).ToString('o')
+    run_id = $runId
+    workspace_root = $WorkspaceRoot
+    task_kind = $TaskKind
+    effective_task_key = $effectiveTaskKey
+    task = $Task
+    prompt_key = $effectivePromptKey
+    preferred_backend = $effectivePreferredBackend
+    pipeline = [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1')
+    plan_id = [string](Get-RaymanAgenticPropValue -Object $agenticPlan -Name 'plan_id' -Default '')
+    selected_tools = @($agenticSelectedTools)
+    fallback_count = $agenticFallbackCount
+    selected_backend = 'blocked'
+    selection_reason = 'agentic_doc_gate_failed'
+    policy_blocked = $policyBlocked
+    policy_block_reason = [string]$policy.reason
+    capability_registry_path = [string]$capabilityState.registry_path
+    capability_registry_valid = [bool]$capabilityState.registry_valid
+    capability_matches = @($matchedCapabilities)
+    active_capability_matches = @($activeCapabilityMatches)
+    agentic_plan = $agenticPlan
+    agentic_tool_policy = $agenticToolPolicy
+    agentic_doc_gate = $agenticDocGate
+    agentic_execution = $agenticExecution
+    success = $false
+    exit_code = 6
+    detail_log = $detailLog
+  }
+  ($docGateSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+  Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+  Write-Host "❌ [dispatch] blocked by agentic doc gate" -ForegroundColor Red
+  exit 6
 }
 
 $candidates = New-Object System.Collections.Generic.List[string]
@@ -1209,6 +1358,11 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
     $delegationTarget = 'codex.exec'
   }
 } else {
+  if ($agenticEnabled -and $null -ne $agenticExecution) {
+    foreach ($backend in @(Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'backend_order' -Default @())) {
+      Add-UniqueBackend -List $candidates -Backend ([string]$backend)
+    }
+  }
   if (-not [string]::IsNullOrWhiteSpace($effectivePreferredBackend)) {
     Add-UniqueBackend -List $candidates -Backend $effectivePreferredBackend
   }
@@ -1251,6 +1405,7 @@ $delegated = $false
 $exitCode = 0
 $success = $true
 $errorMessage = ''
+$agenticPrepareResults = New-Object System.Collections.Generic.List[object]
 
 if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   $delegated = $true
@@ -1281,23 +1436,71 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
       }
     }
   }
+} elseif ($agenticEnabled -and $null -ne $agenticExecution -and [bool](Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'delegation_required' -Default $false) -and $selectedBackend -eq 'codex') {
+  $delegated = $true
+  if ([string]::IsNullOrWhiteSpace($delegationTarget)) {
+    $delegationTarget = 'codex.exec'
+  }
+  if ([string]::IsNullOrWhiteSpace($delegationReason)) {
+    $delegationReason = 'agentic_contract_codex_delegate'
+  }
+  $promptText = Build-SystemSlimDispatchPrompt -TaskText $Task -CommandText $Command -TaskKindText $TaskKind -WorkspaceRoot $WorkspaceRoot -CapabilityPreamble $capabilityPreamble -SubagentPreamble $subagentPreamble
+  $promptSingleLine = ($promptText -replace "[`r`n]+", ' ').Trim()
+  $executedCommand = ('codex exec -C "{0}" "{1}"' -f $WorkspaceRoot, $promptSingleLine)
+  Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("agentic delegated: target={0}; prompt={1}" -f $delegationTarget, $promptSingleLine)
+
+  if (-not $DryRun) {
+    try {
+      $delegateResult = Invoke-RaymanCodexCommand -WorkspaceRoot $WorkspaceRoot -ArgumentList @('exec', '-C', $WorkspaceRoot, $promptText) -RequireManagedLogin -Capture
+      if (-not [string]::IsNullOrWhiteSpace([string]$delegateResult.command)) {
+        $executedCommand = [string]$delegateResult.command
+      }
+      foreach ($line in @($delegateResult.stdout + $delegateResult.stderr)) {
+        Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ([string]$line)
+      }
+      $exitCode = [int]$delegateResult.exit_code
+      $success = [bool]$delegateResult.success
+      $errorMessage = [string]$delegateResult.error
+    } catch {
+      $exitCode = 1
+      $success = $false
+      $errorMessage = $_.Exception.Message
+      $delegationReason = ("agentic_delegate_failed:{0}" -f $errorMessage)
+      Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value $_.Exception.ToString()
+    }
+  }
+} elseif ($agenticEnabled -and $null -ne $agenticExecution -and [bool](Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'delegation_required' -Default $false) -and [string]::IsNullOrWhiteSpace($Command) -and $selectedBackend -eq 'local' -and -not [string]::IsNullOrWhiteSpace([string](Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'local_fallback_command' -Default ''))) {
+  $executedCommand = [string](Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'local_fallback_command' -Default '')
+  Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("agentic local fallback selected: command={0}" -f $executedCommand)
+  if (-not $DryRun) {
+    foreach ($prepareCommand in @(Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'prepare_commands' -Default @())) {
+      $prepareText = [string]$prepareCommand
+      if ([string]::IsNullOrWhiteSpace($prepareText)) { continue }
+      Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("agentic prepare: {0}" -f $prepareText)
+      $prepareResult = Invoke-RaymanDispatchLocalCommand -CommandText $prepareText -DetailLogPath $detailLog
+      $agenticPrepareResults.Add($prepareResult) | Out-Null
+      if (-not [bool]$prepareResult.success) {
+        $exitCode = [int]$prepareResult.exit_code
+        $success = $false
+        $errorMessage = if (-not [string]::IsNullOrWhiteSpace([string]$prepareResult.error_message)) { [string]$prepareResult.error_message } else { ('prepare_failed:{0}' -f $prepareText) }
+        break
+      }
+    }
+    if ($success) {
+      $fallbackResult = Invoke-RaymanDispatchLocalCommand -CommandText $executedCommand -DetailLogPath $detailLog
+      $exitCode = [int]$fallbackResult.exit_code
+      $success = [bool]$fallbackResult.success
+      $errorMessage = [string]$fallbackResult.error_message
+    }
+  }
 } elseif (-not [string]::IsNullOrWhiteSpace($Command)) {
   if ($selectedBackend -eq 'local') {
     $executedCommand = $Command
     if (-not $DryRun) {
-      try {
-        $commandOutput = Invoke-Expression $Command 2>&1
-        if ($commandOutput) {
-          $commandOutput | ForEach-Object { Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ([string]$_) }
-        }
-        $exitCode = [int]$LASTEXITCODE
-        $success = ($exitCode -eq 0)
-      } catch {
-        $exitCode = 1
-        $success = $false
-        $errorMessage = $_.Exception.Message
-        Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value $_.Exception.ToString()
-      }
+      $localResult = Invoke-RaymanDispatchLocalCommand -CommandText $Command -DetailLogPath $detailLog
+      $exitCode = [int]$localResult.exit_code
+      $success = [bool]$localResult.success
+      $errorMessage = [string]$localResult.error_message
     }
   } else {
     $delegated = $true
@@ -1306,14 +1509,21 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   }
 }
 
+if ($null -ne $agenticExecution) {
+  $agenticExecution.prepare_results = @($agenticPrepareResults.ToArray())
+}
+
+$dispatchFinishedAt = Get-Date
+$dispatchDurationMs = [int][Math]::Max(0, [Math]::Round(($dispatchFinishedAt - $dispatchStartedAt).TotalMilliseconds))
 $summary = [ordered]@{
   schema = 'rayman.agent.dispatch.v1'
-  generated_at = (Get-Date).ToString('o')
+  generated_at = $dispatchFinishedAt.ToString('o')
   run_id = $runId
   workspace_root = $WorkspaceRoot
   repository = $repoName
   task_kind = $TaskKind
   effective_task_key = $effectiveTaskKey
+  memory_task_key = $memoryTaskKey
   task = $Task
   prompt_key = $effectivePromptKey
   preferred_backend = $effectivePreferredBackend
@@ -1327,6 +1537,10 @@ $summary = [ordered]@{
   selected_model_alias = $selectedModelAlias
   selected_model_selector = $selectedModelSelector
   resolved_model = $resolvedModel
+  pipeline = if ($agenticEnabled) { [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1') } else { 'legacy' }
+  plan_id = [string](Get-RaymanAgenticPropValue -Object $agenticPlan -Name 'plan_id' -Default '')
+  selected_tools = @($agenticSelectedTools)
+  fallback_count = $agenticFallbackCount
   candidate_chain = @($candidates.ToArray())
   selected_backend = $selectedBackend
   selection_reason = $selectionReason
@@ -1342,6 +1556,10 @@ $summary = [ordered]@{
   capability_matches = @($matchedCapabilities)
   active_capability_matches = @($activeCapabilityMatches)
   codex_capability_preamble = $capabilityPreamble
+  agentic_plan = $agenticPlan
+  agentic_tool_policy = $agenticToolPolicy
+  agentic_doc_gate = $agenticDocGate
+  agentic_execution = $agenticExecution
   cloud_enabled = $cloudEnabled
   cloud_whitelist = @($cloudWhitelist)
   cloud_whitelist_match = $whitelistMatch
@@ -1358,11 +1576,33 @@ $summary = [ordered]@{
   success = $success
   exit_code = $exitCode
   error_message = $errorMessage
+  duration_ms = $dispatchDurationMs
   detail_log = $detailLog
 }
 
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+
+if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
+  $dispatchErrorKind = if ($success) {
+    'ok'
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$policy.reason)) {
+    [string]$policy.reason
+  } elseif (-not [string]::IsNullOrWhiteSpace([string]$selectionReason)) {
+    [string]$selectionReason
+  } else {
+    'dispatch_failed'
+  }
+  Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'dispatch' -Success $success -ErrorKind $dispatchErrorKind -DurationMs $dispatchDurationMs -SelectedTools @($agenticSelectedTools) -ArtifactRefs @($summaryPath, $detailLog) -SummaryText ([string]$selectionReason) -ExtraPayload @{
+    preferred_backend = $effectivePreferredBackend
+    selected_backend = $selectedBackend
+    prompt_key = $effectivePromptKey
+    dry_run = [bool]$DryRun
+  } | Out-Null
+  if (-not $DryRun -and (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue)) {
+    Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $TaskKind -RunId $runId | Out-Null
+  }
+}
 
 Write-Host ("✅ [dispatch] backend={0} reason={1}" -f $selectedBackend, $selectionReason) -ForegroundColor Green
 Write-Host ("🧾 [dispatch] summary={0}" -f $summaryPath) -ForegroundColor DarkCyan

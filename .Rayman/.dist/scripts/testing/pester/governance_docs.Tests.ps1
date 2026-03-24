@@ -21,6 +21,7 @@ Describe 'governance review docs' {
     $raw | Should -Match '`drifting`'
     $raw | Should -Match '`under-tested`'
     $raw | Should -Match '`platform-opportunity`'
+    $raw | Should -Match 'Agentic planner pipeline'
   }
 
   It 'tracks the 2026 roadmap with P0 P1 P2 priorities and official platform references' {
@@ -33,6 +34,7 @@ Describe 'governance review docs' {
     $raw | Should -Match '## P2: Platform-Dependent Expansion'
     $raw | Should -Match 'Codex SDK'
     $raw | Should -Match 'background mode'
+    $raw | Should -Match 'planner_v1'
     $raw | Should -Match 'artifact attestations'
     $raw | Should -Match 'Playwright'
     $raw | Should -Match 'Appium Windows Driver'
@@ -61,5 +63,10 @@ Describe 'governance review docs' {
     $readme | Should -Match '\.github/model-policy\.md'
     $readme | Should -Match 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED=0'
     $readme | Should -Match 'RAYMAN_AUTO_SAVE_WATCH_ENABLED=0'
+    $readme | Should -Match 'RAYMAN_AGENT_PIPELINE'
+    $readme | Should -Match 'RAYMAN_AGENT_DOC_GATE'
+    $readme | Should -Match 'RAYMAN_AGENT_OPENAI_OPTIONAL'
+    $readme | Should -Match '\.RaymanAgent/agentic/'
+    $readme | Should -Match 'plan -> tool/subagent select -> execute -> reflect -> verify -> doc close'
   }
 }

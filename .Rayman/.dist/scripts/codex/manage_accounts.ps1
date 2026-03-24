@@ -44,6 +44,18 @@ function Format-CodexVersionText {
   return [string]$Version
 }
 
+function Write-VsCodeReloadHint {
+  if ((Test-Path "Env:\VSCODE_PID") -or ($env:TERM_PROGRAM -eq 'vscode') -or ($env:VSCODE_INJECTION -eq '1')) {
+    $esc = [char]27
+    $bel = [char]7
+    $hyperlink = "${esc}]8;;command:workbench.action.reloadWindow${bel}[🔄 点击此处快速重载窗口]${esc}]8;;${bel}"
+    Write-Host ""
+    Write-Host -ForegroundColor Green "✅ 账号授权状态已更新。"
+    Write-Host -ForegroundColor Cyan "👉 为了使新授权在当前 VS Code 扩展（Codex/Copilot）中生效，请 $hyperlink，或按 Ctrl+Shift+P 执行 'Reload Window'。"
+    Write-Host ""
+  }
+}
+
 function Write-CodexCliUpdateMessages {
   param(
     [object]$Result,
@@ -932,6 +944,7 @@ function Invoke-ActionStatus {
   if (-not [string]::IsNullOrWhiteSpace([string]$status.repair_command) -and -not [bool]$status.authenticated -and [bool]$context.managed) {
     Write-CodexWarn ("login repair: {0}" -f [string]$status.repair_command)
   }
+
 }
 
 function Sync-WorkspaceTrust {
@@ -974,6 +987,8 @@ function Invoke-ActionLogin {
   }
   Write-CodexInfo ("VS Code user profile={0}" -f (Format-VsCodeUserProfileText -ProfileState $profileState))
   Write-CodexInfo ("alias={0} status={1}" -f $normalizedAlias, [string]$status.status)
+
+    Write-VsCodeReloadHint
 }
 
 function Invoke-ActionSwitch {
@@ -1026,6 +1041,8 @@ function Invoke-ActionSwitch {
   if (-not [bool]$status.authenticated) {
     Write-CodexWarn ("login repair: {0}" -f [string]$status.repair_command)
   }
+
+    Write-VsCodeReloadHint
 }
 
 function Invoke-ActionRun {

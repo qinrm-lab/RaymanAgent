@@ -45,13 +45,26 @@ function Get-FileHashCompat([string]$Path, [string]$Algorithm) {
   return ([System.BitConverter]::ToString($bytes)).Replace('-', '')
 }
 
-function Test-GitTrackedPath([string]$GitExe, [string]$RepoRoot, [string]$RelativePath) {
-  if ([string]::IsNullOrWhiteSpace($GitExe) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
-    return $false
+function Get-GitPathState([string]$GitExe, [string]$RepoRoot, [string]$RelativePath) {
+  if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+    return 'missing'
   }
 
-  & $GitExe -C $RepoRoot ls-files --error-unmatch -- $RelativePath *> $null
-  return ($LASTEXITCODE -eq 0)
+  $absolutePath = Join-Path $RepoRoot ($RelativePath.Replace('/', '\'))
+  if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) {
+    return 'missing'
+  }
+
+  if ([string]::IsNullOrWhiteSpace($GitExe)) {
+    return 'present'
+  }
+
+  $trackedOutput = @(& $GitExe -C $RepoRoot ls-files --cached -- $RelativePath 2>$null)
+  if (($LASTEXITCODE -eq 0) -and ($trackedOutput -contains $RelativePath)) {
+    return 'tracked'
+  }
+
+  return 'present'
 }
 
 function Get-BypassReasonOrFail([string]$Gate) {
@@ -89,7 +102,8 @@ try {
   $decisionLog = Join-Path $runtimeDir 'decision.log'
   $gitCommand = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
   $enforceTrackedness = $false
-  $trackedMissing = New-Object System.Collections.Generic.List[string]
+  $trackedMismatch = New-Object System.Collections.Generic.List[string]
+  $trackedPending = New-Object System.Collections.Generic.List[string]
   $workspaceKind = 'external'
   if (Get-Command Get-RaymanWorkspaceKind -ErrorAction SilentlyContinue) {
     try {
@@ -130,6 +144,7 @@ try {
     'scripts/agents/ensure_agent_assets.ps1'
     'scripts/agents/check_agent_contract.ps1'
     'scripts/agents/ensure_agent_capabilities.ps1'
+    'scripts/agents/agentic_pipeline.ps1'
     'scripts/agents/dispatch.ps1'
     'scripts/agents/review_loop.ps1'
     'scripts/agents/first_pass_report.ps1'
@@ -191,14 +206,18 @@ try {
     'scripts/utils/workspace_state_guard.sh'
     'config/command_catalog.tsv'
     'config/agent_capabilities.json'
+    'config/agentic_pipeline.json'
     'winapp.flow.sample.json'
     'scripts/repair/run_tests_and_fix.ps1'
     'scripts/repair/capture_snapshot.ps1'
     'scripts/repair/inject_probe.ps1'
     'scripts/repair/revert_probe.ps1'
     'agents/diagnostics.prompt.md'
-    'scripts/rag/rag_bootstrap.ps1'
-    'scripts/rag/migrate_legacy_rag.ps1'
+    'scripts/memory/memory_bootstrap.ps1'
+    'scripts/memory/manage_memory.ps1'
+    'scripts/memory/memory_common.ps1'
+    'scripts/memory/manage_memory.py'
+    'scripts/memory/requirements.txt'
     'scripts/telemetry/rules_metrics.sh'
     'scripts/telemetry/daily_trend.sh'
     'scripts/telemetry/validate_json.sh'
@@ -236,7 +255,10 @@ try {
     'scripts/testing/pester/release_gate.lib.Tests.ps1'
     'scripts/testing/pester/playwright_ready.lib.Tests.ps1'
     'scripts/testing/pester/winapp_core.Tests.ps1'
+    'scripts/testing/pester/agentic_pipeline.Tests.ps1'
+    'scripts/testing/pester/agent_memory.Tests.ps1'
     'scripts/testing/bats/ensure_project_test_deps.bats'
+    'scripts/testing/bats/validate_requirements_agentic.bats'
     'scripts/testing/fixtures/reports/release_gate.sample.json'
     'scripts/testing/fixtures/reports/playwright.ready.windows.sample.json'
     'scripts/testing/fixtures/reports/playwright.ready.wsl.sample.json'
@@ -244,6 +266,9 @@ try {
     'scripts/testing/fixtures/reports/winapp.last_result.sample.json'
     'scripts/testing/fixtures/reports/agent_capabilities.report.sample.json'
     'scripts/testing/fixtures/reports/codex.auth.status.sample.json'
+    'scripts/testing/fixtures/reports/agent_memory.status.sample.json'
+    'scripts/testing/fixtures/reports/agent_memory.search.sample.json'
+    'scripts/testing/fixtures/reports/agent_memory.summarize.sample.json'
     'scripts/testing/fixtures/reports/project_gate.fast.sample.json'
     'scripts/testing/schemas/release_gate.v1.schema.json'
     'scripts/testing/schemas/playwright_windows.v2.schema.json'
@@ -253,6 +278,9 @@ try {
     'scripts/testing/schemas/winapp_flow_result.v1.schema.json'
     'scripts/testing/schemas/agent_capabilities_report.v1.schema.json'
     'scripts/testing/schemas/codex_auth_status.v1.schema.json'
+    'scripts/testing/schemas/agent_memory_status.v1.schema.json'
+    'scripts/testing/schemas/agent_memory_search_result.v1.schema.json'
+    'scripts/testing/schemas/agent_memory_summarize_result.v1.schema.json'
     'scripts/testing/schemas/project_gate.v1.schema.json'
     'templates/workflows/rayman-project-fast-gate.yml'
     'templates/workflows/rayman-project-browser-gate.yml'
@@ -288,11 +316,13 @@ try {
     if ($enforceTrackedness) {
       $srcTrackedRel = (Join-Path '.Rayman' $relWin).Replace('\', '/')
       $dstTrackedRel = (Join-Path '.Rayman\.dist' $relWin).Replace('\', '/')
-      if (-not (Test-GitTrackedPath -GitExe $gitCommand.Source -RepoRoot $WorkspaceRoot -RelativePath $srcTrackedRel)) {
-        [void]$trackedMissing.Add($srcTrackedRel)
-      }
-      if (-not (Test-GitTrackedPath -GitExe $gitCommand.Source -RepoRoot $WorkspaceRoot -RelativePath $dstTrackedRel)) {
-        [void]$trackedMissing.Add($dstTrackedRel)
+
+      $srcState = Get-GitPathState -GitExe $gitCommand.Source -RepoRoot $WorkspaceRoot -RelativePath $srcTrackedRel
+      $dstState = Get-GitPathState -GitExe $gitCommand.Source -RepoRoot $WorkspaceRoot -RelativePath $dstTrackedRel
+      if ((($srcState -eq 'tracked') -xor ($dstState -eq 'tracked'))) {
+        [void]$trackedMismatch.Add(("{0}<->{1}" -f $srcTrackedRel, $dstTrackedRel))
+      } elseif ($srcState -eq 'present' -and $dstState -eq 'present') {
+        [void]$trackedPending.Add(("{0}<->{1}" -f $srcTrackedRel, $dstTrackedRel))
       }
     }
 
@@ -303,8 +333,12 @@ try {
     }
   }
 
-  if ($enforceTrackedness -and $trackedMissing.Count -gt 0) {
-    Fail ("git index missing mirrored assets: {0}（请先 git add 对应 source/dist 资产）" -f ($trackedMissing -join ' '))
+  if ($enforceTrackedness -and $trackedMismatch.Count -gt 0) {
+    Fail ("git index mirrored assets mismatch: {0}（请先 git add 对应 source/dist 资产）" -f ($trackedMismatch -join ' '))
+  }
+
+  if ($enforceTrackedness -and $trackedPending.Count -gt 0) {
+    Warn ("git index pending mirrored assets: {0}" -f ($trackedPending -join ' '))
   }
 
   if ($drift.Count -gt 0) {

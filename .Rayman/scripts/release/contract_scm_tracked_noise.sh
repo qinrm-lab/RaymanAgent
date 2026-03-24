@@ -70,13 +70,9 @@ function Invoke-SetupContract {
     $env:RAYMAN_SETUP_SKIP_POST_CHECK = '1'
     $env:RAYMAN_SETUP_SKIP_ADVANCED_MODULES = '1'
     $env:RAYMAN_MCP_SQLITE_DB_AUTOFIX = '1'
-    $env:RAYMAN_RAG_ROOT = '.rag'
-    $env:RAYMAN_RAG_NAMESPACE = 'scm-noise-contract'
-    $env:RAYMAN_ALLOW_EXTERNAL_RAG_ROOT = '0'
-    $env:RAYMAN_PRESERVE_RAG_NAMESPACE = '0'
     try { Set-Variable -Name 'LASTEXITCODE' -Scope Global -Value 0 -Force } catch {}
     try { Set-Variable -Name 'LASTEXITCODE' -Scope Script -Value 0 -Force } catch {}
-    & $setupScript -WorkspaceRoot $WorkspaceRoot -SkipReleaseGate -NoAutoMigrateLegacyRag *> $null
+    & $setupScript -WorkspaceRoot $WorkspaceRoot -SkipReleaseGate *> $null
     if ($?) {
       $run.ExitCode = 0
     } elseif (Test-Path variable:LASTEXITCODE) {
@@ -172,7 +168,7 @@ function New-TrackedNoiseWorkspace {
     }
   }
   foreach ($slowScriptRel in @(
-    '.Rayman/scripts/rag/manage_rag.ps1',
+    '.Rayman/scripts/memory/manage_memory.ps1',
     '.Rayman/scripts/mcp/manage_mcp.ps1',
     '.Rayman/scripts/agents/ensure_agent_capabilities.ps1'
   )) {
@@ -246,7 +242,7 @@ function Get-TrackedSolutionRequirementRelative([string]$WorkspaceRoot) {
     throw 'tracked solution requirements path not found'
   }
 
-  return [System.IO.Path]::GetRelativePath($WorkspaceRoot, [string]$candidate).Replace('\', '/')
+  return (Get-ContractRelativePath -BasePath $WorkspaceRoot -TargetPath ([string]$candidate))
 }
 
 function Get-GitCheckIgnoreResult {
@@ -279,6 +275,102 @@ function Get-GitCheckIgnoreResult {
     matched_path = $matchedPath
     raw_output = (@($rawOutput | ForEach-Object { [string]$_ }) -join "`n")
   }
+}
+
+function Get-ContractRelativePath {
+  param(
+    [string]$BasePath,
+    [string]$TargetPath
+  )
+
+  $baseNorm = [System.IO.Path]::GetFullPath($BasePath).TrimEnd('\') + '\'
+  $targetNorm = [System.IO.Path]::GetFullPath($TargetPath)
+  if (Test-Path -LiteralPath $TargetPath -PathType Container) {
+    $targetNorm = $targetNorm.TrimEnd('\') + '\'
+  }
+
+  $baseUri = [System.Uri]::new($baseNorm)
+  $targetUri = [System.Uri]::new($targetNorm)
+  $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+  if ([string]::IsNullOrWhiteSpace([string]$relativeUri)) {
+    return ''
+  }
+
+  return [System.Uri]::UnescapeDataString($relativeUri.ToString()).TrimEnd('/')
+}
+
+function Get-TrackedSolutionAgenticDocRelativePaths {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$RequirementsPath = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RequirementsPath)) {
+    $RequirementsPath = Get-TrackedSolutionRequirementRelative -WorkspaceRoot $WorkspaceRoot
+  }
+
+  $solutionDirRel = [System.IO.Path]::GetDirectoryName($RequirementsPath)
+  if ([string]::IsNullOrWhiteSpace($solutionDirRel)) {
+    throw ("unable to resolve solution dir from requirements path: {0}" -f $RequirementsPath)
+  }
+
+  $solutionDir = Join-Path $WorkspaceRoot ($solutionDirRel.Replace('/', '\'))
+  $agenticDir = Join-Path $solutionDir 'agentic'
+  New-Item -ItemType Directory -Force -Path $agenticDir | Out-Null
+
+  $docs = [ordered]@{
+    'contract-agentic.md' = "# agentic`n"
+    'contract-agentic.json' = "{`"kind`":`"agentic`"}"
+  }
+
+  $result = New-Object System.Collections.Generic.List[string]
+  foreach ($name in $docs.Keys) {
+    $path = Join-Path $agenticDir $name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      Set-Content -LiteralPath $path -Value $docs[$name] -Encoding UTF8
+    }
+    $result.Add((Get-ContractRelativePath -BasePath $WorkspaceRoot -TargetPath $path)) | Out-Null
+  }
+
+  return $result.ToArray()
+}
+
+function Get-ExternalBlockedTrackedTargets {
+  param([string]$WorkspaceRoot)
+
+  $targets = New-Object System.Collections.Generic.List[string]
+  foreach ($candidate in @(
+      '.Rayman/VERSION',
+      '.SolutionName',
+      '.cursorrules',
+      '.clinerules',
+      '.rayman.env.ps1',
+      '.rayman.project.json',
+      '.codex/config.toml',
+      '.github/copilot-instructions.md',
+      '.github/model-policy.md',
+      '.github/workflows/rayman-project-fast-gate.yml',
+      '.github/workflows/rayman-project-browser-gate.yml',
+      '.github/workflows/rayman-project-full-gate.yml',
+      '.vscode/tasks.json',
+      '.vscode/settings.json'
+    )) {
+    if (Test-Path -LiteralPath (Join-Path $WorkspaceRoot $candidate)) {
+      $targets.Add($candidate) | Out-Null
+    }
+  }
+
+  foreach ($dirRel in @('.github/instructions', '.github/agents', '.github/skills', '.github/prompts')) {
+    $dirPath = Join-Path $WorkspaceRoot $dirRel
+    if (-not (Test-Path -LiteralPath $dirPath -PathType Container)) { continue }
+    $sample = Get-ChildItem -LiteralPath $dirPath -Recurse -File -ErrorAction SilentlyContinue |
+      Sort-Object FullName |
+      Select-Object -First 1
+    if ($null -eq $sample) { continue }
+    $targets.Add((Get-ContractRelativePath -BasePath $WorkspaceRoot -TargetPath ([string]$sample.FullName))) | Out-Null
+  }
+
+  return @($targets | Select-Object -Unique)
 }
 
 function Get-ManagedIgnorePath {
@@ -475,6 +567,53 @@ function Assert-ManagedIgnoreBlock {
   }
 }
 
+function Assert-ExternalAllowedDocsTrackable {
+  param([string]$WorkspaceRoot)
+
+  $requirementsPath = Get-TrackedSolutionRequirementRelative -WorkspaceRoot $WorkspaceRoot
+  $docTargets = @($requirementsPath) + @(Get-TrackedSolutionAgenticDocRelativePaths -WorkspaceRoot $WorkspaceRoot -RequirementsPath $requirementsPath)
+
+  foreach ($docTarget in @($docTargets | Select-Object -Unique)) {
+    $result = Get-GitCheckIgnoreResult -WorkspaceRoot $WorkspaceRoot -RelativePath $docTarget
+    Add-ContractCheckIgnoreResult -Mode 'external' -Result $result
+    if ([bool]$result.ignored) {
+      throw ("external workspace should keep doc trackable: {0}" -f $docTarget)
+    }
+  }
+}
+
+function Assert-ExternalBlockedTargetsIgnored {
+  param([string]$WorkspaceRoot)
+
+  $blockedTargets = @(Get-ExternalBlockedTrackedTargets -WorkspaceRoot $WorkspaceRoot)
+  $requiredGeneratedTargets = @(@(
+    '.rayman.project.json',
+    '.github/workflows/rayman-project-fast-gate.yml',
+    '.github/workflows/rayman-project-browser-gate.yml',
+    '.github/workflows/rayman-project-full-gate.yml'
+  ) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot $_)) })
+  Update-ContractWorkspaceSnapshot -Mode 'external' -WorkspaceRoot $WorkspaceRoot -BlockedTargets $blockedTargets
+
+  if ($blockedTargets.Count -le 0) {
+    throw 'external setup did not generate expected Rayman workflow/config assets'
+  }
+  if ($requiredGeneratedTargets.Count -gt 0) {
+    throw ("external setup missing expected generated assets: {0}" -f ($requiredGeneratedTargets -join ', '))
+  }
+
+  foreach ($ignoredPath in @($blockedTargets)) {
+    $result = Get-GitCheckIgnoreResult -WorkspaceRoot $WorkspaceRoot -RelativePath $ignoredPath
+    Add-ContractCheckIgnoreResult -Mode 'external' -Result $result
+
+    if (-not [bool]$result.ignored) {
+      throw ("external workspace should ignore generated Rayman asset: {0}" -f $ignoredPath)
+    }
+    if (-not (Test-RaymanManagedIgnoreFile -WorkspaceRoot $WorkspaceRoot -MatchedSource ([string]$result.matched_source))) {
+      throw ("external workspace ignore for {0} did not come from a Rayman managed block: {1}" -f $ignoredPath, [string]$result.matched_source)
+    }
+  }
+}
+
 function Assert-SourceManagedIgnoreBlockDoesNotHideAuthoredRaymanDirectories {
   param([string]$WorkspaceRoot)
 
@@ -549,12 +688,8 @@ try {
   }
 
   Assert-ManagedIgnoreBlock -WorkspaceRoot $externalRoot
-  $requirementsPath = Get-TrackedSolutionRequirementRelative -WorkspaceRoot $externalRoot
-  $requirementsIgnore = Get-GitCheckIgnoreResult -WorkspaceRoot $externalRoot -RelativePath $requirementsPath
-  Add-ContractCheckIgnoreResult -Mode 'external' -Result $requirementsIgnore
-  if ([bool]$requirementsIgnore.ignored) {
-    throw ("external workspace should keep solution requirements trackable: {0}" -f $requirementsPath)
-  }
+  Assert-ExternalAllowedDocsTrackable -WorkspaceRoot $externalRoot
+  Assert-ExternalBlockedTargetsIgnored -WorkspaceRoot $externalRoot
 
   $sourceRoot = New-TrackedNoiseWorkspace -Root $Root -Mode 'source'
   Update-ContractWorkspaceSnapshot -Mode 'source' -WorkspaceRoot $sourceRoot

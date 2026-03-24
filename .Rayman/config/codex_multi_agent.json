@@ -5,7 +5,7 @@
   "detection": {
     "feature_name": "multi_agent",
     "preferred_command": "codex features list",
-    "minimum_version_fallback": "0.5.80"
+    "minimum_version_fallback": "0.116.0"
   },
   "defaults": {
     "features.multi_agent": true,

@@ -14,8 +14,10 @@ rayman_cli=".Rayman/rayman.ps1"
 dispatch_file=".Rayman/scripts/agents/dispatch.ps1"
 review_loop_file=".Rayman/scripts/agents/review_loop.ps1"
 first_pass_file=".Rayman/scripts/agents/first_pass_report.ps1"
+agentic_pipeline_helper=".Rayman/scripts/agents/agentic_pipeline.ps1"
 prompts_file=".Rayman/scripts/agents/prompts_catalog.ps1"
 agent_caps_cfg=".Rayman/config/agent_capabilities.json"
+agentic_pipeline_cfg=".Rayman/config/agentic_pipeline.json"
 agent_caps_script=".Rayman/scripts/agents/ensure_agent_capabilities.ps1"
 winapp_ensure_script=".Rayman/scripts/windows/ensure_winapp.ps1"
 winapp_core_script=".Rayman/scripts/windows/winapp_core.ps1"
@@ -36,8 +38,10 @@ review_cfg=".Rayman/config/review_loop.json"
 [[ -f "${dispatch_file}" ]] || fail "missing: ${dispatch_file}"
 [[ -f "${review_loop_file}" ]] || fail "missing: ${review_loop_file}"
 [[ -f "${first_pass_file}" ]] || fail "missing: ${first_pass_file}"
+[[ -f "${agentic_pipeline_helper}" ]] || fail "missing: ${agentic_pipeline_helper}"
 [[ -f "${prompts_file}" ]] || fail "missing: ${prompts_file}"
 [[ -f "${agent_caps_cfg}" ]] || fail "missing: ${agent_caps_cfg}"
+[[ -f "${agentic_pipeline_cfg}" ]] || fail "missing: ${agentic_pipeline_cfg}"
 [[ -f "${agent_caps_script}" ]] || fail "missing: ${agent_caps_script}"
 [[ -f "${winapp_ensure_script}" ]] || fail "missing: ${winapp_ensure_script}"
 [[ -f "${winapp_core_script}" ]] || fail "missing: ${winapp_core_script}"
@@ -175,6 +179,9 @@ required_env_defaults=(
   "RAYMAN_AGENT_DEFAULT_BACKEND"
   "RAYMAN_AGENT_FALLBACK_ORDER"
   "RAYMAN_AGENT_CLOUD_ENABLED"
+  "RAYMAN_AGENT_PIPELINE"
+  "RAYMAN_AGENT_DOC_GATE"
+  "RAYMAN_AGENT_OPENAI_OPTIONAL"
   "RAYMAN_AGENT_POLICY_BYPASS"
   "RAYMAN_AGENT_CLOUD_WHITELIST"
   "RAYMAN_AGENT_CAPABILITIES_ENABLED"
@@ -225,6 +232,44 @@ for token in "${required_dispatch_policy_tokens[@]}"; do
   fi
 done
 
+required_agentic_dispatch_tokens=(
+  "planner_v1"
+  "agentic_plan"
+  "agentic_tool_policy"
+  "agentic_doc_gate"
+  "agentic_execution"
+)
+for token in "${required_agentic_dispatch_tokens[@]}"; do
+  if ! grep -Fq "${token}" "${dispatch_file}"; then
+    fail "dispatch.ps1 missing agentic token: ${token}"
+  fi
+done
+
+required_agentic_helper_tokens=(
+  "rayman.agentic.execution_contract.v1"
+  "delegation_required"
+  "local_fallback_command"
+  "optional_requests"
+  "prepare_results"
+)
+for token in "${required_agentic_helper_tokens[@]}"; do
+  if ! grep -Fq "${token}" "${agentic_pipeline_helper}"; then
+    fail "agentic_pipeline.ps1 missing execution token: ${token}"
+  fi
+done
+
+required_agentic_review_tokens=(
+  "agentic_reflection"
+  "reflection_outcome"
+  "doc_gate_pass"
+  "acceptance_closed"
+)
+for token in "${required_agentic_review_tokens[@]}"; do
+  if ! grep -Fq "${token}" "${review_loop_file}"; then
+    fail "review_loop.ps1 missing agentic token: ${token}"
+  fi
+done
+
 required_agent_cap_tokens=(
   "rayman.agent_capabilities.v1"
   "\"openai_docs\""
@@ -256,6 +301,9 @@ required_first_pass_corr_tokens=(
   "change_scale_correlation"
   "round1_touched_files"
   "round1_abs_net_size_delta_bytes"
+  "Planner / Reflection"
+  "selected_tool_distribution"
+  "reflection_distribution"
 )
 for token in "${required_first_pass_corr_tokens[@]}"; do
   if ! grep -Fq "${token}" "${first_pass_file}"; then

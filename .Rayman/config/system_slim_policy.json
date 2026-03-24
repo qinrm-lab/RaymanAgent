@@ -4,7 +4,7 @@
   "notify_on_upgrade": true,
   "minimum_versions": {
     "vscode": "1.110.0",
-    "codex": "0.5.80"
+    "codex": "0.116.0"
   },
   "features": {
     "dispatch": {
