@@ -162,6 +162,21 @@
         },
         "detail": {
           "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "missing_components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failure_kind": {
+          "type": "string"
+        },
+        "action_required": {
+          "type": "string"
         }
       },
       "additionalProperties": true

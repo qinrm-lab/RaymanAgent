@@ -1,0 +1,228 @@
+name: rayman-reusable-lane
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+      run_fast_contract:
+        required: false
+        type: boolean
+        default: false
+      run_pester:
+        required: false
+        type: boolean
+        default: false
+      run_bats:
+        required: false
+        type: boolean
+        default: false
+      run_host_smoke:
+        required: false
+        type: boolean
+        default: false
+      host_smoke_args:
+        required: false
+        type: string
+        default: ""
+      run_copy_smoke:
+        required: false
+        type: boolean
+        default: false
+      copy_smoke_args:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  lane:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 -m pip install --upgrade pip jsonschema
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
+          pwsh -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser"
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip jsonschema
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run fast contract lane
+        if: inputs.run_fast_contract
+        shell: bash
+        run: bash ./.Rayman/scripts/testing/run_fast_contract.sh
+
+      - name: Run Pester logic unit lane
+        if: inputs.run_pester
+        shell: pwsh
+        run: ./.Rayman/scripts/testing/run_pester_tests.ps1 -WorkspaceRoot "$PWD"
+
+      - name: Run Bats logic unit lane
+        if: inputs.run_bats
+        shell: bash
+        run: bash ./.Rayman/scripts/testing/run_bats_tests.sh
+
+      - name: Run host smoke lane
+        if: inputs.run_host_smoke
+        shell: pwsh
+        run: |
+          $cmd = @(
+            '.\.Rayman\scripts\testing\run_host_smoke.ps1'
+            '-WorkspaceRoot'
+            "$PWD"
+          )
+          $extra = '${{ inputs.host_smoke_args }}'.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($extra)) {
+            foreach ($token in @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null))) {
+              if ($token.Type -eq 'CommandParameter') {
+                $cmd += ('-' + $token.Content)
+              } elseif ($token.Type -eq 'CommandArgument') {
+                $cmd += $token.Content
+              }
+            }
+          }
+          & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+
+      - name: Run distributable consumer contract
+        if: inputs.run_copy_smoke
+        shell: pwsh
+        run: |
+          $cmd = @(
+            '.\.Rayman\scripts\release\copy_smoke.ps1'
+            '-WorkspaceRoot'
+            "$PWD"
+          )
+          $extra = '${{ inputs.copy_smoke_args }}'.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($extra)) {
+            foreach ($token in @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null))) {
+              if ($token.Type -eq 'CommandParameter') {
+                $cmd += ('-' + $token.Content)
+              } elseif ($token.Type -eq 'CommandArgument') {
+                $cmd += $token.Content
+              }
+            }
+          }
+          & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+
+      - name: Build artifact manifest
+        if: always()
+        shell: pwsh
+        run: |
+          $manifestDir = Join-Path $PWD '.Rayman\runtime\ci-artifacts'
+          New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
+          $manifestPath = Join-Path $manifestDir '${{ inputs.artifact_name }}.manifest.json'
+          $seen = @{}
+          $files = New-Object System.Collections.Generic.List[object]
+
+          foreach ($root in @(
+              (Join-Path $PWD '.Rayman\runtime\project_gates'),
+              (Join-Path $PWD '.Rayman\runtime\test_lanes'),
+              (Join-Path $PWD '.Rayman\runtime\winapp-tests'),
+              (Join-Path $PWD '.Rayman\logs')
+            )) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+            foreach ($file in @(Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue)) {
+              $relative = [System.IO.Path]::GetRelativePath($PWD, $file.FullName).Replace('\', '/')
+              if ($seen.ContainsKey($relative)) { continue }
+              $seen[$relative] = $true
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $files.Add([pscustomobject]@{
+                  path = $relative
+                  sha256 = $hash
+                  size_bytes = [int64]$file.Length
+                }) | Out-Null
+            }
+          }
+
+          $runtimeDir = Join-Path $PWD '.Rayman\runtime'
+          if (Test-Path -LiteralPath $runtimeDir -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $runtimeDir -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+              $relative = [System.IO.Path]::GetRelativePath($PWD, $file.FullName).Replace('\', '/')
+              if ($seen.ContainsKey($relative)) { continue }
+              $seen[$relative] = $true
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $files.Add([pscustomobject]@{
+                  path = $relative
+                  sha256 = $hash
+                  size_bytes = [int64]$file.Length
+                }) | Out-Null
+            }
+          }
+
+          $payload = [ordered]@{
+            schema = 'rayman.ci.artifact.manifest.v1'
+            artifact_name = '${{ inputs.artifact_name }}'
+            generated_at = (Get-Date).ToString('o')
+            repository = [string]$env:GITHUB_REPOSITORY
+            run_id = [string]$env:GITHUB_RUN_ID
+            run_attempt = [string]$env:GITHUB_RUN_ATTEMPT
+            sha = [string]$env:GITHUB_SHA
+            file_count = $files.Count
+            files = @($files | Sort-Object path)
+          }
+
+          ($payload | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+      - name: Upload lane artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          if-no-files-found: warn
+          path: |
+            .Rayman/runtime/project_gates/**
+            .Rayman/runtime/test_lanes/**
+            .Rayman/runtime/*.json
+            .Rayman/runtime/winapp-tests/**
+            .Rayman/runtime/ci-artifacts/**
+            .Rayman/logs/**
+
+      - name: Generate artifact attestation
+        if: always()
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: .Rayman/runtime/ci-artifacts/${{ inputs.artifact_name }}.manifest.json
+
+      - name: Verify artifact attestation
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifestPath = Join-Path $PWD '.Rayman\runtime\ci-artifacts\${{ inputs.artifact_name }}.manifest.json'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "artifact manifest not found: $manifestPath"
+          }
+          $gh = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $gh) {
+            throw 'gh CLI not found for attestation verification'
+          }
+          & $gh.Source attestation verify $manifestPath --repo $env:GITHUB_REPOSITORY

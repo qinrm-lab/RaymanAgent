@@ -12,5 +12,34 @@
   "ready": false,
   "reason": "host_not_windows",
   "detail": "Windows UI Automation is only available on Windows hosts.",
-  "error_message": ""
+  "error_message": "",
+  "backend_preference": [
+    "appium_windows_driver",
+    "winappdriver_compatible",
+    "uia_direct"
+  ],
+  "preferred_backend": "uia_direct",
+  "preferred_backend_available": false,
+  "selected_backend": "uia_direct",
+  "selected_backend_available": false,
+  "selected_backend_reason": "uia_direct_is_the_current_runtime_backend",
+  "fallback_decision": "none",
+  "fallback_reason": "",
+  "backend_probe": {
+    "appium_windows_driver": {
+      "available": false,
+      "command": "",
+      "reason": "host_not_windows"
+    },
+    "winappdriver_compatible": {
+      "available": false,
+      "command": "",
+      "reason": "host_not_windows"
+    },
+    "uia_direct": {
+      "available": false,
+      "command": "uia-direct",
+      "reason": "host_not_windows"
+    }
+  }
 }

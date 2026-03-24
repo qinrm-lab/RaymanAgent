@@ -125,6 +125,9 @@ function Get-SandboxFailureKindFromMessage {
   if ($msg.Contains('feature is not enabled') -or $msg.Contains('containers-disposableclientvm') -or $msg.Contains('windowssandbox.exe not found')) {
     return 'feature_not_enabled'
   }
+  if ($msg.Contains('only one running windows sandbox instance') -or $msg.Contains('仅允许一个运行的 windows 沙盒实例') -or $msg.Contains('existing windows sandbox instance is already running')) {
+    return 'existing_instance_running'
+  }
   if ($msg.Contains('exited before bootstrap became ready')) {
     return 'exited_before_ready'
   }
@@ -145,6 +148,9 @@ function Get-SandboxActionRequired {
   switch ($FailureKind) {
     'feature_not_enabled' {
       return '本机未启用 Windows Sandbox；可直接重跑 setup（默认 scope=wsl，并在需要时回退 host），或先设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl。'
+    }
+    'existing_instance_running' {
+      return '检测到已有 Windows Sandbox 实例在运行；先关闭已有 Sandbox 窗口，或等待当前 Rayman sandbox session 完成后再重试。'
     }
     'exited_before_ready' {
       return '若你手工关闭了 Sandbox，本次失败是预期现象；无需等待自动关闭，直接重跑 setup（默认 scope=wsl）或设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl。'

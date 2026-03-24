@@ -13,6 +13,9 @@ on:
 {{FAST_PATHS}}
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   fast-gate-linux:
     runs-on: ubuntu-latest
@@ -25,7 +28,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install Rayman fast gate dependencies
         shell: bash

@@ -340,6 +340,9 @@ $result = [ordered]@{
     playwright_packages = $false
     browser_cache = $false
   }
+  missing_components = @()
+  failure_kind = ''
+  action_required = ''
   ready_for_offline_playwright = $false
   node = $null
   playwright_packages = $null
@@ -378,6 +381,15 @@ if (-not $forceRefresh -and (Get-CacheManifestFresh -ManifestPath $manifestPath 
     if ($prev.PSObject.Properties['ready_for_offline_playwright']) {
       $result.ready_for_offline_playwright = [bool]$prev.ready_for_offline_playwright
     }
+    if ($prev.PSObject.Properties['missing_components']) {
+      $result.missing_components = @($prev.missing_components | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    if ($prev.PSObject.Properties['failure_kind']) {
+      $result.failure_kind = [string]$prev.failure_kind
+    }
+    if ($prev.PSObject.Properties['action_required']) {
+      $result.action_required = [string]$prev.action_required
+    }
   } catch {}
   return [pscustomobject]$result
 }
@@ -402,10 +414,25 @@ $result.completeness.node = [bool]$nodeCacheReady
 $result.completeness.playwright_packages = [bool]$pkgCacheReady
 $result.completeness.browser_cache = [bool]$browserCacheReady
 
+$missingComponents = New-Object System.Collections.Generic.List[string]
+if (-not $result.completeness.node) {
+  $missingComponents.Add('node-runtime') | Out-Null
+}
+if (-not $result.completeness.playwright_packages) {
+  $missingComponents.Add('npm-offline') | Out-Null
+}
+if ($copyBrowsers -and -not $result.completeness.browser_cache) {
+  $missingComponents.Add('ms-playwright') | Out-Null
+}
+$result.missing_components = @($missingComponents.ToArray())
+
 $result.ready_for_offline_playwright = ($result.completeness.node -and $result.completeness.playwright_packages -and ($result.completeness.browser_cache -or -not $copyBrowsers))
 if (-not $result.ready_for_offline_playwright) {
   $result.success = $false
-  $result.detail = 'offline cache is incomplete; sandbox may fall back to online downloads'
+  $result.failure_kind = 'offline_cache_incomplete'
+  $result.action_required = 'Run .\.Rayman\scripts\pwa\prepare_windows_sandbox_cache.ps1 on the Windows host until node-runtime, npm-offline, and ms-playwright are all cached, then retry sandbox setup.'
+  $missingText = if ($result.missing_components.Count -gt 0) { ($result.missing_components -join ', ') } else { 'unknown' }
+  $result.detail = ("offline cache is incomplete; missing={0}; sandbox host preflight must block before bootstrap" -f $missingText)
 }
 
 ($result | ConvertTo-Json -Depth 10) | Out-File -FilePath $manifestPath -Encoding utf8

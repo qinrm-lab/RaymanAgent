@@ -79,6 +79,14 @@
     "node_cached": false,
     "playwright_pkg_cached": false,
     "browser_cached": false,
-    "reused": false
+    "reused": false,
+    "required": true,
+    "missing_components": [
+      "node-runtime",
+      "npm-offline",
+      "ms-playwright"
+    ],
+    "failure_kind": "offline_cache_incomplete",
+    "action_required": "Run .\\.Rayman\\scripts\\pwa\\prepare_windows_sandbox_cache.ps1 on the Windows host until node-runtime, npm-offline, and ms-playwright are all cached, then retry sandbox setup."
   }
 }

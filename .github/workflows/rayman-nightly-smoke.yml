@@ -5,75 +5,35 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   hosted-windows-smoke:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Install nightly dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip jsonschema
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
-
-      - name: Run hosted Windows smoke
-        shell: pwsh
-        run: ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD" -IncludeWsl
-
-      - name: Run distributable consumer contract
-        shell: pwsh
-        run: ./.Rayman/scripts/release/copy_smoke.ps1 -WorkspaceRoot "$PWD" -Strict -Scope host -TimeoutSeconds 180
-
-      - name: Upload hosted nightly artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rayman-nightly-hosted-windows
-          path: |
-            .Rayman/runtime/project_gates/**
-            .Rayman/runtime/test_lanes/**
-            .Rayman/runtime/*.json
-            .Rayman/runtime/winapp-tests/**
-            .Rayman/logs/**
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_rayman-reusable-lane.yml
+    with:
+      runs_on: '["windows-latest"]'
+      artifact_name: rayman-nightly-hosted-windows
+      run_host_smoke: true
+      host_smoke_args: "-IncludeWsl"
+      run_copy_smoke: true
+      copy_smoke_args: "-Strict -Scope host -TimeoutSeconds 180"
 
   self-hosted-windows-deep-smoke:
-    runs-on:
-      - self-hosted
-      - windows
-      - rayman
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_rayman-reusable-lane.yml
     timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Install nightly dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip jsonschema
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
-
-      - name: Run self-hosted deep smoke
-        shell: pwsh
-        run: ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD" -IncludeWsl -IncludeSandbox -RequireEnvironment
-
-      - name: Upload self-hosted nightly artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rayman-nightly-self-hosted
-          path: |
-            .Rayman/runtime/project_gates/**
-            .Rayman/runtime/test_lanes/**
-            .Rayman/runtime/*.json
-            .Rayman/runtime/winapp-tests/**
-            .Rayman/logs/**
+    with:
+      runs_on: '["self-hosted","windows","rayman"]'
+      artifact_name: rayman-nightly-self-hosted
+      run_host_smoke: true
+      host_smoke_args: "-IncludeWsl -IncludeSandbox -RequireEnvironment"

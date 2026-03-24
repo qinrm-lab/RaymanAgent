@@ -60,6 +60,7 @@ try {
     degraded_reason = ''
     error_message = $_.Exception.Message
     detail_log = $detailLog
+    backend = $null
     launch = $null
     window = $null
     artifacts = [ordered]@{

@@ -16,7 +16,16 @@
     "ready",
     "reason",
     "detail",
-    "error_message"
+    "error_message",
+    "backend_preference",
+    "preferred_backend",
+    "preferred_backend_available",
+    "selected_backend",
+    "selected_backend_available",
+    "selected_backend_reason",
+    "fallback_decision",
+    "fallback_reason",
+    "backend_probe"
   ],
   "properties": {
     "schema": {
@@ -60,6 +69,36 @@
     },
     "error_message": {
       "type": "string"
+    },
+    "backend_preference": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "preferred_backend": {
+      "type": "string"
+    },
+    "preferred_backend_available": {
+      "type": "boolean"
+    },
+    "selected_backend": {
+      "type": "string"
+    },
+    "selected_backend_available": {
+      "type": "boolean"
+    },
+    "selected_backend_reason": {
+      "type": "string"
+    },
+    "fallback_decision": {
+      "type": "string"
+    },
+    "fallback_reason": {
+      "type": "string"
+    },
+    "backend_probe": {
+      "type": "object"
     }
   },
   "additionalProperties": true

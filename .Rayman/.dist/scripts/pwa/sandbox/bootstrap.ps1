@@ -352,30 +352,6 @@ function Invoke-NetworkPreflight {
   }
 }
 
-function Get-PlaywrightVersion {
-  $pwCmd = Get-Command playwright -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($pwCmd) {
-    try {
-      $line = (& $pwCmd.Source --version 2>$null | Select-Object -First 1)
-      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
-        return [string]$line
-      }
-    } catch {}
-  }
-
-  $npxCmd = Get-Command npx -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($npxCmd) {
-    try {
-      $line = (& $npxCmd.Source playwright --version 2>$null | Select-Object -First 1)
-      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
-        return [string]$line
-      }
-    } catch {}
-  }
-
-  return ''
-}
-
 function Test-PlaywrightChromiumInstalled {
   $roots = @()
   if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
@@ -394,19 +370,128 @@ function Test-PlaywrightChromiumInstalled {
   return $false
 }
 
-function Get-PlaywrightProbeDiagnostics {
-  $pw = Get-Command playwright -ErrorAction SilentlyContinue | Select-Object -First 1
-  $npx = Get-Command npx -ErrorAction SilentlyContinue | Select-Object -First 1
-  $npm = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -First 1
-  $npmRoot = ''
+function Get-PreferredCommand([string[]]$Names) {
+  foreach ($name in @($Names)) {
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      return $cmd
+    }
+  }
+  return $null
+}
+
+function Get-NodeCommand {
+  return (Get-PreferredCommand -Names @('node.exe', 'node'))
+}
+
+function Get-NpmCommand {
+  return (Get-PreferredCommand -Names @('npm.cmd', 'npm'))
+}
+
+function Get-NpxCommand {
+  return (Get-PreferredCommand -Names @('npx.cmd', 'npx'))
+}
+
+function Get-PlaywrightCommand {
+  return (Get-PreferredCommand -Names @('playwright.cmd', 'playwright.ps1', 'playwright'))
+}
+
+function Get-NpmGlobalRoot {
+  $npm = Get-NpmCommand
+  if (-not $npm) { return '' }
   try {
-    if ($npm) {
-      $npmRoot = (& $npm.Source root -g 2>$null | Select-Object -First 1)
+    $root = (& $npm.Source root -g 2>$null | Select-Object -First 1)
+    if (-not [string]::IsNullOrWhiteSpace([string]$root)) {
+      return [string]$root
     }
   } catch {}
+  return ''
+}
+
+function Get-InstalledPlaywrightPackageInfo {
+  $npmRoot = Get-NpmGlobalRoot
+  if ([string]::IsNullOrWhiteSpace($npmRoot)) { return $null }
+
+  foreach ($pkgRoot in @((Join-Path $npmRoot 'playwright'), (Join-Path $npmRoot 'playwright-core'))) {
+    if (-not (Test-Path -LiteralPath $pkgRoot -PathType Container)) { continue }
+    $packageJsonPath = Join-Path $pkgRoot 'package.json'
+    if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) { continue }
+    try {
+      $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      $version = [string]$packageJson.version
+      if ([string]::IsNullOrWhiteSpace($version)) { continue }
+      $cliPath = Join-Path $pkgRoot 'cli.js'
+      return [pscustomobject]@{
+        npm_global_root = $npmRoot
+        package_root = $pkgRoot
+        package_json = $packageJsonPath
+        version = $version
+        cli_path = if (Test-Path -LiteralPath $cliPath -PathType Leaf) { $cliPath } else { '' }
+      }
+    } catch {}
+  }
+
+  return $null
+}
+
+function Invoke-InstalledPlaywrightCli([string[]]$Arguments) {
+  $pwCmd = Get-PlaywrightCommand
+  if ($pwCmd) {
+    return (& $pwCmd.Source @Arguments)
+  }
+
+  $pkgInfo = Get-InstalledPlaywrightPackageInfo
+  $nodeCmd = Get-NodeCommand
+  if ($null -ne $pkgInfo -and -not [string]::IsNullOrWhiteSpace([string]$pkgInfo.cli_path) -and $nodeCmd) {
+    return (& $nodeCmd.Source $pkgInfo.cli_path @Arguments)
+  }
+
+  throw 'Installed Playwright CLI could not be resolved.'
+}
+
+function Get-PlaywrightVersion {
+  $pwCmd = Get-PlaywrightCommand
+  if ($pwCmd) {
+    try {
+      $line = (& $pwCmd.Source --version 2>$null | Select-Object -First 1)
+      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
+        return [string]$line
+      }
+    } catch {}
+  }
+
+  $pkgInfo = Get-InstalledPlaywrightPackageInfo
+  if ($null -ne $pkgInfo) {
+    $nodeCmd = Get-NodeCommand
+    if ($nodeCmd -and -not [string]::IsNullOrWhiteSpace([string]$pkgInfo.cli_path)) {
+      try {
+        $line = (& $nodeCmd.Source $pkgInfo.cli_path --version 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$line)) {
+          return [string]$line
+        }
+      } catch {}
+    }
+    return ("Version {0}" -f [string]$pkgInfo.version)
+  }
+
+  return ''
+}
+
+function Get-PlaywrightProbeDiagnostics {
+  $pw = Get-PlaywrightCommand
+  $npx = Get-NpxCommand
+  $npm = Get-NpmCommand
+  $node = Get-NodeCommand
+  $npmRoot = Get-NpmGlobalRoot
+  $pkgInfo = Get-InstalledPlaywrightPackageInfo
 
   $diag = [ordered]@{
     playwright_cmd = if ($pw) { [string]$pw.Source } else { '' }
+    playwright_cli = if ($pkgInfo) { [string]$pkgInfo.cli_path } else { '' }
+    playwright_pkg_root = if ($pkgInfo) { [string]$pkgInfo.package_root } else { '' }
+    playwright_pkg_version = if ($pkgInfo) { [string]$pkgInfo.version } else { '' }
+    node_cmd = if ($node) { [string]$node.Source } else { '' }
     npx_cmd = if ($npx) { [string]$npx.Source } else { '' }
     npm_cmd = if ($npm) { [string]$npm.Source } else { '' }
     npm_global_root = [string]$npmRoot
@@ -529,7 +614,7 @@ function Install-PlaywrightFromOfflineCache {
   $playwrightCorePkg = Get-ChildItem -LiteralPath $pkgCache -Filter 'playwright-core-*.tgz' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $playwrightPkg -or -not $playwrightCorePkg) { return $false }
 
-  $npmCmd = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -First 1
+  $npmCmd = Get-NpmCommand
   if (-not $npmCmd) { return $false }
 
   Write-Host '[sandbox] installing Playwright from offline cache packages...'
@@ -682,7 +767,7 @@ function Ensure-DotNetSdk([string]$wingetExe) {
 }
 
 function Test-NpmAvailable {
-  return [bool](Get-Command npm -ErrorAction SilentlyContinue)
+  return ($null -ne (Get-NpmCommand))
 }
 
 function Get-NodeZipCandidates {
@@ -827,7 +912,8 @@ try {
   Write-Host '[sandbox] installing Playwright + chromium...'
   Write-Status $false 'installing-playwright' 'installing Playwright + Chromium'
   try {
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    $npmCmd = Get-NpmCommand
+    if (-not $npmCmd) {
       throw 'npm not found; cannot install Playwright.'
     }
 
@@ -840,20 +926,20 @@ try {
 
     if (-not $offlinePlaywrightReady) {
       Invoke-WithProxyPreference 'Playwright (npm + browser download)' {
-        npm config set fund false | Out-Null
-        npm config set audit false | Out-Null
+        $npmRuntime = Get-NpmCommand
+        if (-not $npmRuntime) {
+          throw 'npm command is not available after Node setup.'
+        }
+        & $npmRuntime.Source config set fund false | Out-Null
+        & $npmRuntime.Source config set audit false | Out-Null
 
         # Prefer direct download; npm may have persisted proxy settings from previous runs.
-        try { npm config delete proxy | Out-Null } catch {}
-        try { npm config delete https-proxy | Out-Null } catch {}
+        try { & $npmRuntime.Source config delete proxy | Out-Null } catch {}
+        try { & $npmRuntime.Source config delete https-proxy | Out-Null } catch {}
 
-        npm i -g playwright@latest | Out-Null
-        $pwCmd = Get-Command playwright -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($pwCmd) {
-          & $pwCmd.Source install chromium --with-deps | Out-Null
-        } else {
-          npx --yes playwright@latest install chromium --with-deps | Out-Null
-        }
+        & $npmRuntime.Source i -g playwright@latest | Out-Null
+        Invoke-InstalledPlaywrightCli -Arguments @('--version') | Out-Null
+        Invoke-InstalledPlaywrightCli -Arguments @('install', 'chromium', '--with-deps') | Out-Null
       }
       $script:PlaywrightSource = 'online-install'
     }

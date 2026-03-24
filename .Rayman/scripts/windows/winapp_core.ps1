@@ -201,6 +201,153 @@ function Test-WinAppReadinessReasonNotApplicable {
   return ($Reason.Trim().ToLowerInvariant() -eq 'host_not_windows')
 }
 
+function Get-WinAppCommandInfo {
+  param(
+    [string[]]$Names
+  )
+
+  foreach ($name in @($Names)) {
+    if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      return [pscustomobject]@{
+        available = $true
+        name = [string]$name
+        path = [string]$cmd.Source
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    available = $false
+    name = ''
+    path = ''
+  }
+}
+
+function Get-WinAppBackendProbe {
+  param(
+    [object]$DesktopSession,
+    [bool]$UiaAvailable
+  )
+
+  $hostIsWindows = Test-WinAppHostIsWindows
+  $desktopAvailable = ($null -ne $DesktopSession -and [bool](Get-PropValue -Object $DesktopSession -Name 'available' -Default $false))
+  $desktopReason = [string](Get-PropValue -Object $DesktopSession -Name 'reason' -Default '')
+
+  $appiumInfo = Get-WinAppCommandInfo -Names @('appium.cmd', 'appium')
+  $appiumReason = if (-not $hostIsWindows) {
+    'host_not_windows'
+  } elseif (-not [bool]$appiumInfo.available) {
+    'command_missing'
+  } else {
+    'command_present_driver_install_unverified'
+  }
+
+  $winAppDriverCandidates = New-Object System.Collections.Generic.List[string]
+  foreach ($root in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$root)) {
+      $winAppDriverCandidates.Add((Join-Path $root 'Windows Application Driver\WinAppDriver.exe')) | Out-Null
+    }
+  }
+  foreach ($fallbackCandidate in @(
+      'C:\Program Files (x86)\Windows Application Driver\WinAppDriver.exe',
+      'C:\Program Files\Windows Application Driver\WinAppDriver.exe'
+    )) {
+    $winAppDriverCandidates.Add($fallbackCandidate) | Out-Null
+  }
+
+  $winAppDriverPath = ''
+  foreach ($candidate in @($winAppDriverCandidates | Select-Object -Unique)) {
+    if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $winAppDriverPath = $candidate
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($winAppDriverPath)) {
+    $winAppDriverCmd = Get-WinAppCommandInfo -Names @('WinAppDriver.exe', 'WinAppDriver')
+    if ([bool]$winAppDriverCmd.available) {
+      $winAppDriverPath = [string]$winAppDriverCmd.path
+    }
+  }
+
+  $winAppDriverReason = if (-not $hostIsWindows) {
+    'host_not_windows'
+  } elseif ([string]::IsNullOrWhiteSpace($winAppDriverPath)) {
+    'service_binary_missing'
+  } else {
+    'service_binary_present'
+  }
+
+  $uiaReason = if (-not $hostIsWindows) {
+    'host_not_windows'
+  } elseif (-not $desktopAvailable) {
+    if ([string]::IsNullOrWhiteSpace($desktopReason)) { 'desktop_session_unavailable' } else { $desktopReason }
+  } elseif ($UiaAvailable) {
+    'uia_ready'
+  } else {
+    'uia_probe_failed'
+  }
+
+  return [pscustomobject]@{
+    appium_windows_driver = [pscustomobject]@{
+      available = ($hostIsWindows -and [bool]$appiumInfo.available)
+      command = [string]$appiumInfo.path
+      reason = $appiumReason
+    }
+    winappdriver_compatible = [pscustomobject]@{
+      available = ($hostIsWindows -and -not [string]::IsNullOrWhiteSpace($winAppDriverPath))
+      command = [string]$winAppDriverPath
+      reason = $winAppDriverReason
+    }
+    uia_direct = [pscustomobject]@{
+      available = ($hostIsWindows -and $desktopAvailable -and $UiaAvailable)
+      command = 'uia-direct'
+      reason = $uiaReason
+    }
+  }
+}
+
+function Select-WinAppBackend {
+  param(
+    [object]$BackendProbe
+  )
+
+  $preference = @('appium_windows_driver', 'winappdriver_compatible', 'uia_direct')
+  $preferredBackend = 'uia_direct'
+  foreach ($candidate in $preference) {
+    $probe = Get-PropValue -Object $BackendProbe -Name $candidate -Default $null
+    if ($null -ne $probe -and [bool](Get-PropValue -Object $probe -Name 'available' -Default $false)) {
+      $preferredBackend = $candidate
+      break
+    }
+  }
+
+  $selectedBackend = 'uia_direct'
+  $selectedBackendReason = if ($preferredBackend -eq 'uia_direct') {
+    'uia_direct_is_the_current_runtime_backend'
+  } else {
+    ('preferred_{0}_degraded_to_uia_direct_until_remote_backend_execution_is_wired' -f $preferredBackend)
+  }
+  $fallbackDecision = if ($preferredBackend -eq $selectedBackend) { 'none' } else { 'used_uia_direct_fallback' }
+  $fallbackReason = if ($preferredBackend -eq $selectedBackend) { '' } else { 'rayman_runtime_executes_via_uia_direct' }
+
+  $preferredProbe = Get-PropValue -Object $BackendProbe -Name $preferredBackend -Default $null
+  $selectedProbe = Get-PropValue -Object $BackendProbe -Name $selectedBackend -Default $null
+
+  return [pscustomobject]@{
+    backend_preference = @($preference)
+    preferred_backend = $preferredBackend
+    preferred_backend_available = [bool](Get-PropValue -Object $preferredProbe -Name 'available' -Default $false)
+    selected_backend = $selectedBackend
+    selected_backend_available = [bool](Get-PropValue -Object $selectedProbe -Name 'available' -Default $false)
+    selected_backend_reason = $selectedBackendReason
+    fallback_decision = $fallbackDecision
+    fallback_reason = $fallbackReason
+  }
+}
+
 function Import-WinAppAssemblies {
   if ($script:RaymanWinAppAssembliesLoaded) { return }
 
@@ -307,6 +454,9 @@ function Get-WinAppReadinessState {
     }
   }
 
+  $backendProbe = Get-WinAppBackendProbe -DesktopSession $desktop -UiaAvailable $uiaAvailable
+  $backendSelection = Select-WinAppBackend -BackendProbe $backendProbe
+
   return [pscustomobject]@{
     schema = 'rayman.winapp.ready.v1'
     generated_at = Get-NowIsoTimestamp
@@ -322,6 +472,15 @@ function Get-WinAppReadinessState {
     reason = $reason
     detail = $detail
     error_message = $errorMessage
+    backend_preference = @($backendSelection.backend_preference)
+    preferred_backend = [string]$backendSelection.preferred_backend
+    preferred_backend_available = [bool]$backendSelection.preferred_backend_available
+    selected_backend = [string]$backendSelection.selected_backend
+    selected_backend_available = [bool]$backendSelection.selected_backend_available
+    selected_backend_reason = [string]$backendSelection.selected_backend_reason
+    fallback_decision = [string]$backendSelection.fallback_decision
+    fallback_reason = [string]$backendSelection.fallback_reason
+    backend_probe = $backendProbe
   }
 }
 
@@ -335,7 +494,7 @@ function Write-WinAppReadinessReport {
   Ensure-Dir -Path $paths.runtime_dir
   Ensure-Dir -Path $paths.logs_dir
   ($State | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $paths.readiness_json_path -Encoding UTF8
-  Write-WinAppLogLine -Path $paths.readiness_log_path -Level 'info' -Message ('ready={0} reason={1} detail={2}' -f ([bool]$State.ready), [string]$State.reason, [string]$State.detail)
+  Write-WinAppLogLine -Path $paths.readiness_log_path -Level 'info' -Message ('ready={0} reason={1} preferred_backend={2} selected_backend={3} fallback_decision={4} detail={5}' -f ([bool]$State.ready), [string]$State.reason, [string](Get-PropValue -Object $State -Name 'preferred_backend' -Default ''), [string](Get-PropValue -Object $State -Name 'selected_backend' -Default ''), [string](Get-PropValue -Object $State -Name 'fallback_decision' -Default ''), [string]$State.detail)
   if (-not [string]::IsNullOrWhiteSpace([string]$State.error_message)) {
     Write-WinAppLogLine -Path $paths.readiness_log_path -Level 'warn' -Message ([string]$State.error_message)
   }
@@ -913,6 +1072,7 @@ function New-WinAppResultSkeleton {
     degraded_reason = ''
     error_message = ''
     detail_log = $DetailLog
+    backend = $null
     launch = $null
     window = $null
     artifacts = $null
@@ -961,6 +1121,13 @@ function Invoke-WinAppFlow {
   Write-WinAppReadinessReport -WorkspaceRoot $WorkspaceRoot -State $readiness | Out-Null
 
   $result = New-WinAppResultSkeleton -WorkspaceRoot $WorkspaceRoot -FlowFile $FlowFile -DefaultTimeoutMs $DefaultTimeoutMs -DetailLog $DetailLog
+  $result['backend'] = [ordered]@{
+    preferred_backend = [string](Get-PropValue -Object $readiness -Name 'preferred_backend' -Default '')
+    selected_backend = [string](Get-PropValue -Object $readiness -Name 'selected_backend' -Default '')
+    selected_backend_reason = [string](Get-PropValue -Object $readiness -Name 'selected_backend_reason' -Default '')
+    fallback_decision = [string](Get-PropValue -Object $readiness -Name 'fallback_decision' -Default '')
+    fallback_reason = [string](Get-PropValue -Object $readiness -Name 'fallback_reason' -Default '')
+  }
   $result['artifacts'] = [ordered]@{
     last_result_json = $ResultPath
     readiness_json = $paths.readiness_json_path

@@ -21,6 +21,7 @@ $playwrightScript = Join-Path $WorkspaceRoot '.Rayman\scripts\pwa\ensure_playwri
 $winAppScript = Join-Path $WorkspaceRoot '.Rayman\scripts\windows\ensure_winapp.ps1'
 $winAppCoreScript = Join-Path $WorkspaceRoot '.Rayman\scripts\windows\winapp_core.ps1'
 $agentCapabilitiesScript = Join-Path $WorkspaceRoot '.Rayman\scripts\agents\ensure_agent_capabilities.ps1'
+$memoryManageScript = Join-Path $WorkspaceRoot '.Rayman\scripts\memory\manage_memory.ps1'
 $schemaValidator = Join-Path $WorkspaceRoot '.Rayman\scripts\testing\validate_json_contracts.py'
 $codexCmd = Resolve-RaymanHostSmokeCommandPath -Names @('codex')
 $pwshCmd = Resolve-RaymanHostSmokeCommandPath -Names @('pwsh.exe', 'pwsh')
@@ -150,9 +151,9 @@ if ([string]::IsNullOrWhiteSpace($pwshCmd)) {
       $status = if ([bool]$winAppJson.ready) { 'PASS' } elseif ($RequireEnvironment) { 'FAIL' } elseif ($notApplicable) { 'PASS' } else { 'WARN' }
       if ($status -eq 'FAIL') { $overall = 'FAIL' } elseif ($status -eq 'WARN' -and $overall -eq 'PASS') { $overall = 'WARN' }
       $detail = if ($notApplicable -and -not [bool]$winAppJson.ready) {
-        ("ready={0} reason={1} (not_applicable_on_current_host)" -f [bool]$winAppJson.ready, $winAppReason)
+        ("ready={0} reason={1} selected_backend={2} preferred_backend={3} fallback={4} (not_applicable_on_current_host)" -f [bool]$winAppJson.ready, $winAppReason, [string]$winAppJson.selected_backend, [string]$winAppJson.preferred_backend, [string]$winAppJson.fallback_decision)
       } else {
-        ("ready={0} reason={1}" -f [bool]$winAppJson.ready, $winAppReason)
+        ("ready={0} reason={1} selected_backend={2} preferred_backend={3} fallback={4}" -f [bool]$winAppJson.ready, $winAppReason, [string]$winAppJson.selected_backend, [string]$winAppJson.preferred_backend, [string]$winAppJson.fallback_decision)
       }
       Add-Step -Steps $steps -Name 'winapp_json' -Status $status -Detail $detail -LogPath $winApp.log_path
     } else {
@@ -245,7 +246,22 @@ if ([string]::IsNullOrWhiteSpace($pwshCmd)) {
       if ($null -ne $json -and $json.schema -eq 'rayman.playwright.windows.v2' -and [string]$json.scope -eq $scope) {
         $stepStatus = if ([bool]$json.success) { 'PASS' } elseif ($RequireEnvironment) { 'FAIL' } else { 'WARN' }
         if ($stepStatus -eq 'FAIL') { $overall = 'FAIL' } elseif ($stepStatus -eq 'WARN' -and $overall -eq 'PASS') { $overall = 'WARN' }
-        Add-Step -Steps $steps -Name ("playwright_{0}" -f $scope) -Status $stepStatus -Detail ("success={0}" -f [bool]$json.success) -LogPath $result.log_path
+        $target = if ($scope -eq 'sandbox') { $json.sandbox } elseif ($scope -eq 'host') { $json.host } else { $json.wsl }
+        $detailParts = New-Object System.Collections.Generic.List[string]
+        $detailParts.Add(("success={0}" -f [bool]$json.success)) | Out-Null
+        if ($null -ne $target) {
+          $failureKind = [string]$target.failure_kind
+          if (-not [string]::IsNullOrWhiteSpace($failureKind)) {
+            $detailParts.Add(("failure_kind={0}" -f $failureKind)) | Out-Null
+          }
+        }
+        if ($scope -eq 'sandbox' -and $null -ne $json.offline_cache) {
+          $missing = @($json.offline_cache.missing_components | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($missing.Count -gt 0) {
+            $detailParts.Add(("missing={0}" -f ($missing -join ','))) | Out-Null
+          }
+        }
+        Add-Step -Steps $steps -Name ("playwright_{0}" -f $scope) -Status $stepStatus -Detail ($detailParts -join '; ') -LogPath $result.log_path
       } else {
         Add-Step -Steps $steps -Name ("playwright_{0}" -f $scope) -Status 'FAIL' -Detail 'ensure-playwright did not emit valid JSON' -LogPath $result.log_path
         $overall = 'FAIL'
@@ -254,6 +270,43 @@ if ([string]::IsNullOrWhiteSpace($pwshCmd)) {
       Add-Step -Steps $steps -Name ("playwright_{0}" -f $scope) -Status 'FAIL' -Detail ("ensure-playwright failed (exit={0})" -f $result.exit_code) -LogPath $result.log_path
       $overall = 'FAIL'
     }
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($pwshCmd) -or -not (Test-Path -LiteralPath $memoryManageScript -PathType Leaf)) {
+  $memoryLog = Join-Path $logDir 'agent_memory_json.log'
+  $detail = if ([string]::IsNullOrWhiteSpace($pwshCmd)) { 'pwsh not found' } else { 'manage_memory.ps1 not found' }
+  Set-Content -LiteralPath $memoryLog -Value $detail -Encoding UTF8
+  Add-Step -Steps $steps -Name 'agent_memory_json' -Status 'FAIL' -Detail $detail -LogPath $memoryLog
+  $overall = 'FAIL'
+} else {
+  $statusStep = Invoke-RaymanHostSmokeStep -Name 'agent_memory_status' -LogDir $logDir -FilePath $pwshCmd -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $memoryManageScript, '-WorkspaceRoot', $WorkspaceRoot, '-Action', 'status', '-Json') -WorkingDirectory $WorkspaceRoot
+  $searchStep = Invoke-RaymanHostSmokeStep -Name 'agent_memory_search' -LogDir $logDir -FilePath $pwshCmd -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $memoryManageScript, '-WorkspaceRoot', $WorkspaceRoot, '-Action', 'search', '-Query', 'release requirements', '-Json') -WorkingDirectory $WorkspaceRoot
+  $summarizeStep = Invoke-RaymanHostSmokeStep -Name 'agent_memory_summarize' -LogDir $logDir -FilePath $pwshCmd -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $memoryManageScript, '-WorkspaceRoot', $WorkspaceRoot, '-Action', 'summarize', '-DrainPending', '-Json') -WorkingDirectory $WorkspaceRoot
+
+  $memoryOk = $true
+  foreach ($stepInfo in @(
+      @{ result = $statusStep; schema = 'rayman.agent_memory.status.v1' },
+      @{ result = $searchStep; schema = 'rayman.agent_memory.search_result.v1' },
+      @{ result = $summarizeStep; schema = 'rayman.agent_memory.summarize_result.v1' }
+    )) {
+    $result = $stepInfo.result
+    if (-not [bool]$result.started -or $result.exit_code -ne 0) {
+      $memoryOk = $false
+      break
+    }
+    $json = Convert-JsonFromCommandOutput -OutputText $result.output
+    if ($null -eq $json -or [string]$json.schema -ne [string]$stepInfo.schema) {
+      $memoryOk = $false
+      break
+    }
+  }
+
+  if ($memoryOk) {
+    Add-Step -Steps $steps -Name 'agent_memory_json' -Status 'PASS' -Detail 'manage_memory status/search/summarize emitted valid JSON' -LogPath $searchStep.log_path
+  } else {
+    Add-Step -Steps $steps -Name 'agent_memory_json' -Status 'FAIL' -Detail 'manage_memory status/search/summarize failed or emitted invalid JSON' -LogPath $searchStep.log_path
+    $overall = 'FAIL'
   }
 }
 

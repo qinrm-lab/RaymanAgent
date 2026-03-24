@@ -268,6 +268,9 @@ function Get-SandboxFailureKindFromMessage([string]$Message) {
   if ($msg.Contains('feature is not enabled') -or $msg.Contains('containers-disposableclientvm') -or $msg.Contains('windowssandbox.exe not found')) {
     return 'feature_not_enabled'
   }
+  if ($msg.Contains('only one running windows sandbox instance') -or $msg.Contains('仅允许一个运行的 windows 沙盒实例') -or $msg.Contains('existing windows sandbox instance is already running')) {
+    return 'existing_instance_running'
+  }
   if ($msg.Contains('exited before bootstrap became ready')) {
     return 'exited_before_ready'
   }
@@ -285,6 +288,9 @@ function Get-SandboxActionRequired([string]$FailureKind) {
     'feature_not_enabled' {
       return '本机未启用 Windows Sandbox；可直接重跑 setup（默认 scope=wsl，并在需要时回退 host），或先设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl。'
     }
+    'existing_instance_running' {
+      return '检测到已有 Windows Sandbox 实例在运行；先关闭已有 Sandbox 窗口，或等待当前 Rayman sandbox session 完成后再重试。'
+    }
     'exited_before_ready' {
       return '若你手工关闭了 Sandbox，本次失败是预期现象；无需等待自动关闭，直接重跑 setup（默认 scope=wsl）或设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl。'
     }
@@ -293,6 +299,9 @@ function Get-SandboxActionRequired([string]$FailureKind) {
     }
     'timeout_no_status' {
       return 'Sandbox 未在超时内产生日志状态；无需等待自动关闭，直接重跑 setup（默认 scope=wsl）或显式设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl。'
+    }
+    'offline_cache_incomplete' {
+      return 'Sandbox 离线缓存不完整；先在 host 执行 .\.Rayman\scripts\pwa\prepare_windows_sandbox_cache.ps1，确认 node-runtime、npm-offline、ms-playwright 都已缓存，再重跑 sandbox。'
     }
     default {
       return '可先重跑 setup；若当前机器不适合 Sandbox，请设置 RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl 或 host。'
@@ -415,6 +424,194 @@ function Get-SandboxHostDiagnostics {
   return ("feature_enabled={0}; hypervisor_present={1}; recent_events={2}" -f $enabled, $hypervisor, $events)
 }
 
+function Get-RunningWindowsSandboxProcesses {
+  $byId = @{}
+  foreach ($name in @('WindowsSandbox', 'WindowsSandboxClient')) {
+    try {
+      foreach ($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+        if ($null -eq $proc) { continue }
+        $byId[[string]$proc.Id] = $proc
+      }
+    } catch {}
+  }
+  return @($byId.Values | Sort-Object Id)
+}
+
+function Format-RunningWindowsSandboxProcesses([object[]]$Processes) {
+  if ($null -eq $Processes -or @($Processes).Count -eq 0) { return '' }
+  $parts = New-Object System.Collections.Generic.List[string]
+  foreach ($proc in @($Processes)) {
+    if ($null -eq $proc) { continue }
+    $entry = ("{0}#{1}" -f [string]$proc.ProcessName, [int]$proc.Id)
+    try {
+      $startedAt = [string]$proc.StartTime.ToString('o')
+      if (-not [string]::IsNullOrWhiteSpace($startedAt)) {
+        $entry = ("{0}@{1}" -f $entry, $startedAt)
+      }
+    } catch {}
+    $parts.Add($entry) | Out-Null
+  }
+  return (@($parts) -join ', ')
+}
+
+function Write-SandboxSessionState(
+  [string]$SessionFile,
+  [int]$ProcessId,
+  [string]$Command,
+  [string]$StatusFile,
+  [string]$BootstrapLogFile,
+  [string]$MarkerFile,
+  [string]$WsbPath
+) {
+  if ([string]::IsNullOrWhiteSpace($SessionFile)) { return }
+  $payload = [ordered]@{
+    schema = 'rayman.playwright.sandbox.session.v1'
+    process_id = $ProcessId
+    command = $Command
+    status_file = $StatusFile
+    log_file = $BootstrapLogFile
+    marker_file = $MarkerFile
+    wsb_path = $WsbPath
+    started_at = (Get-Date).ToString('o')
+  }
+  ($payload | ConvertTo-Json -Depth 5) | Out-File -FilePath $SessionFile -Encoding utf8
+}
+
+function Remove-SandboxSessionState([string]$SessionFile) {
+  if ([string]::IsNullOrWhiteSpace($SessionFile)) { return }
+  Remove-Item -LiteralPath $SessionFile -Force -ErrorAction SilentlyContinue
+}
+
+function Get-ActiveSandboxSession([string]$SessionFile) {
+  $session = Read-JsonSafe -Path $SessionFile
+  if ($null -eq $session) { return $null }
+
+  $pidText = ''
+  if ($session.PSObject.Properties['process_id']) {
+    $pidText = [string]$session.process_id
+  }
+  if ([string]::IsNullOrWhiteSpace($pidText)) { return $null }
+
+  $processId = 0
+  if (-not [int]::TryParse($pidText, [ref]$processId)) { return $null }
+
+  $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+  if ($null -eq $proc) { return $null }
+  return $session
+}
+
+function Wait-ForSandboxBootstrapReady(
+  [int]$SandboxProcessId,
+  [string]$StatusFile,
+  [string]$BootstrapLogFile,
+  [string]$MarkerPath,
+  [int]$TimeoutSeconds,
+  [int]$StartGraceSeconds,
+  [int]$StallSeconds
+) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $waitStartedAt = Get-Date
+  $statusObserved = $false
+  $graceWarned = $false
+  $lastProgressAt = Get-Date
+  $lastPhase = ''
+  $lastMessage = ''
+  $lastError = ''
+
+  Set-PlaywrightStage 'sandbox-wait-ready'
+  while ((Get-Date) -lt $deadline) {
+    $payload = Read-JsonSafe -Path $StatusFile
+    if ($null -ne $payload) {
+      $statusObserved = $true
+      $phase = [string]$payload.phase
+      $message = [string]$payload.message
+      $payloadErr = [string]$payload.error
+      $ok = $false
+      if ($payload.PSObject.Properties['success']) {
+        $ok = [bool]$payload.success
+      }
+
+      if ($phase -ne $lastPhase -or $message -ne $lastMessage -or $payloadErr -ne $lastError) {
+        $lastProgressAt = Get-Date
+        $lastPhase = $phase
+        $lastMessage = $message
+        $lastError = $payloadErr
+        Write-DetailLog ("sandbox progress: phase={0}; message={1}; error={2}" -f $phase, $message, $payloadErr)
+      }
+
+      if ($ok -and $phase -eq 'ready') {
+        break
+      }
+
+      if ($phase -like 'failed*' -or (-not $ok -and $phase -eq 'failed')) {
+        $err = [string]$payload.error
+        if ([string]::IsNullOrWhiteSpace($err)) { $err = [string]$payload.message }
+        if ([string]::IsNullOrWhiteSpace($err)) {
+          $err = 'bootstrap status returned failed phase without detailed error'
+        }
+        throw ("sandbox bootstrap failed: phase={0}; error={1}" -f $phase, $err)
+      }
+    }
+
+    $running = $null
+    if ($SandboxProcessId -gt 0) {
+      $running = Get-Process -Id $SandboxProcessId -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $running) {
+      $statusSnapshot = Read-JsonSafe -Path $StatusFile
+      $bootstrapTail = Get-FileTailText -Path $BootstrapLogFile -Lines 20
+      $hostDiag = Get-SandboxHostDiagnostics
+      if ($null -ne $statusSnapshot) {
+        $phaseSnap = [string]$statusSnapshot.phase
+        $msgSnap = [string]$statusSnapshot.message
+        $errSnap = [string]$statusSnapshot.error
+        throw ("Windows Sandbox exited before bootstrap became ready (phase={0}; message={1}; error={2}; log_tail={3}; host_diag={4})" -f $phaseSnap, $msgSnap, $errSnap, $bootstrapTail, $hostDiag)
+      }
+      throw ("Windows Sandbox exited before bootstrap became ready (status file not available; log_tail={0}; host_diag={1})" -f $bootstrapTail, $hostDiag)
+    }
+
+    if (-not $statusObserved) {
+      $statusAgeSeconds = (New-TimeSpan -Start $waitStartedAt -End (Get-Date)).TotalSeconds
+      if ($statusAgeSeconds -ge $StartGraceSeconds -and -not $graceWarned) {
+        $graceWarned = $true
+        $bootstrapTail = Get-FileTailText -Path $BootstrapLogFile -Lines 20
+        Write-DetailLog ("sandbox bootstrap status still missing after grace period (grace_seconds={0}; status_file={1}; log_tail={2}); continue waiting until timeout" -f $StartGraceSeconds, $StatusFile, $bootstrapTail)
+      }
+    } else {
+      $stallAgeSeconds = (New-TimeSpan -Start $lastProgressAt -End (Get-Date)).TotalSeconds
+      if ($stallAgeSeconds -ge $StallSeconds) {
+        $bootstrapTail = Get-FileTailText -Path $BootstrapLogFile -Lines 20
+        throw ("sandbox bootstrap appears stalled (stall_seconds={0}; phase={1}; message={2}; error={3}; log_tail={4})" -f [int]$stallAgeSeconds, $lastPhase, $lastMessage, $lastError, $bootstrapTail)
+      }
+    }
+
+    Start-Sleep -Seconds 3
+  }
+
+  if ((Get-Date) -ge $deadline) {
+    $bootstrapTail = Get-FileTailText -Path $BootstrapLogFile -Lines 20
+    if (-not $statusObserved) {
+      throw ("timeout waiting sandbox bootstrap ready (timeout_seconds={0}; status_file_never_created={1}; probable_causes=Sandbox logon command not executed or startup too slow; log_tail={2})" -f $TimeoutSeconds, $StatusFile, $bootstrapTail)
+    }
+    throw ("timeout waiting sandbox bootstrap ready (timeout_seconds={0}; last_phase={1}; last_message={2}; last_error={3}; log_tail={4})" -f $TimeoutSeconds, $lastPhase, $lastMessage, $lastError, $bootstrapTail)
+  }
+
+  Set-PlaywrightStage 'sandbox-wait-marker'
+  $markerReady = $false
+  for ($i = 0; $i -lt 5; $i++) {
+    $marker = Read-JsonSafe -Path $MarkerPath
+    if ($null -ne $marker -and (Test-MarkerSuccess -Marker $marker)) {
+      $markerReady = $true
+      break
+    }
+    Start-Sleep -Seconds 2
+  }
+
+  if (-not $markerReady) {
+    throw ("sandbox marker missing or not successful: {0}" -f $MarkerPath)
+  }
+}
+
 $failed = $false
 
 try {
@@ -499,6 +696,8 @@ try {
       failure_kind = ''
       action_required = ''
       command = ''
+      session_file = (Join-Path $SandboxStatusDir 'session.json')
+      attached_to_existing = $false
     }
     proxy = [ordered]@{
       refresh_attempted = $false
@@ -528,6 +727,10 @@ try {
       playwright_pkg_cached = $false
       browser_cached = $false
       reused = $false
+      required = $false
+      missing_components = @()
+      failure_kind = ''
+      action_required = ''
     }
   }
 
@@ -772,7 +975,75 @@ try {
     $statusFile = [string]$summary.sandbox.status_file
     $bootstrapLogFile = [string]$summary.sandbox.log_file
     $wsbPath = Join-Path $sandboxDir 'rayman-pwa.wsb'
+    $sessionFile = [string]$summary.sandbox.session_file
     $proxySnapshotPath = [string]$summary.proxy.snapshot
+
+    $runningSandboxProcesses = @(Get-RunningWindowsSandboxProcesses)
+    $existingSandboxProcessIds = @($runningSandboxProcesses | ForEach-Object { [int]$_.Id })
+    $summary.sandbox.running_instances = @(
+      $runningSandboxProcesses | ForEach-Object {
+        $started = ''
+        try { $started = [string]$_.StartTime.ToString('o') } catch {}
+        [ordered]@{
+          id = [int]$_.Id
+          name = [string]$_.ProcessName
+          started_at = $started
+        }
+      }
+    )
+
+    $activeSession = Get-ActiveSandboxSession -SessionFile $sessionFile
+    if ($null -eq $activeSession -and (Test-Path -LiteralPath $sessionFile -PathType Leaf)) {
+      Remove-SandboxSessionState -SessionFile $sessionFile
+    }
+
+    $startGraceSeconds = Get-EnvIntOrDefault -Name 'RAYMAN_SANDBOX_BOOTSTRAP_START_GRACE_SECONDS' -DefaultValue 90 -MinValue 15 -MaxValue 900
+    $stallSeconds = Get-EnvIntOrDefault -Name 'RAYMAN_SANDBOX_BOOTSTRAP_STALL_SECONDS' -DefaultValue 300 -MinValue 30 -MaxValue 1800
+
+    if ($null -ne $activeSession) {
+      if ($activeSession.PSObject.Properties['status_file']) {
+        $statusFile = [string]$activeSession.status_file
+        $summary.sandbox.status_file = $statusFile
+      }
+      if ($activeSession.PSObject.Properties['log_file']) {
+        $bootstrapLogFile = [string]$activeSession.log_file
+        $summary.sandbox.log_file = $bootstrapLogFile
+      }
+      if ($activeSession.PSObject.Properties['marker_file']) {
+        $summary.sandbox.marker = [string]$activeSession.marker_file
+      }
+      if ($activeSession.PSObject.Properties['command']) {
+        $summary.sandbox.command = [string]$activeSession.command
+      }
+      $summary.sandbox.attached_to_existing = $true
+      $summary.sandbox.detail = ("attaching to existing Rayman sandbox session (pid={0})" -f [int]$activeSession.process_id)
+      Write-DetailLog $summary.sandbox.detail
+      try {
+        Wait-ForSandboxBootstrapReady -SandboxProcessId ([int]$activeSession.process_id) -StatusFile $statusFile -BootstrapLogFile $bootstrapLogFile -MarkerPath ([string]$summary.sandbox.marker) -TimeoutSeconds $TimeoutEffective -StartGraceSeconds $startGraceSeconds -StallSeconds $stallSeconds
+        $summary.sandbox.success = $true
+        $summary.sandbox.failure_kind = ''
+        $summary.sandbox.action_required = ''
+        $summary.sandbox.detail = 'playwright sandbox ready (attached to existing instance)'
+        return $true
+      } catch {
+        $failureKind = Get-SandboxFailureKindFromMessage -Message $_.Exception.Message
+        Set-SandboxFailureState -FailureKind $failureKind
+        $summary.sandbox.guidance = New-SandboxInterventionGuidance -StatusFile $statusFile -BootstrapLog $bootstrapLogFile -DetailLog $DetailLogPath -MarkerFile ([string]$summary.sandbox.marker)
+        $summary.sandbox.detail = ("{0} | guidance={1}" -f $_.Exception.Message, $summary.sandbox.guidance)
+        Write-DetailLog $summary.sandbox.detail $_
+        return $false
+      }
+    }
+
+    if (@($runningSandboxProcesses).Count -gt 0) {
+      $summary.sandbox.executed = $false
+      $summary.sandbox.skipped = $true
+      Set-SandboxFailureState -FailureKind 'existing_instance_running'
+      $summary.sandbox.guidance = New-SandboxInterventionGuidance -StatusFile $statusFile -BootstrapLog $bootstrapLogFile -DetailLog $DetailLogPath -MarkerFile $SandboxMarkerPath
+      $summary.sandbox.detail = ("existing Windows Sandbox instance is already running; processes={0}; action_required={1}" -f (Format-RunningWindowsSandboxProcesses -Processes $runningSandboxProcesses), [string]$summary.sandbox.action_required)
+      Write-DetailLog $summary.sandbox.detail
+      return $false
+    }
 
     Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $bootstrapLogFile -Force -ErrorAction SilentlyContinue
@@ -846,10 +1117,20 @@ try {
           $summary.offline_cache.detail = [string]$cacheResult.detail
           $summary.offline_cache.cache_ready = [bool]$cacheResult.ready_for_offline_playwright
           $summary.offline_cache.reused = [bool]$cacheResult.reused
+          $summary.offline_cache.required = Get-EnvBoolOrDefault -Name 'RAYMAN_SANDBOX_OFFLINE_CACHE_REQUIRE' -DefaultValue $true
           if ($cacheResult.PSObject.Properties['completeness']) {
             $summary.offline_cache.node_cached = [bool]$cacheResult.completeness.node
             $summary.offline_cache.playwright_pkg_cached = [bool]$cacheResult.completeness.playwright_packages
             $summary.offline_cache.browser_cached = [bool]$cacheResult.completeness.browser_cache
+          }
+          if ($cacheResult.PSObject.Properties['missing_components']) {
+            $summary.offline_cache.missing_components = @($cacheResult.missing_components | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+          if ($cacheResult.PSObject.Properties['failure_kind']) {
+            $summary.offline_cache.failure_kind = [string]$cacheResult.failure_kind
+          }
+          if ($cacheResult.PSObject.Properties['action_required']) {
+            $summary.offline_cache.action_required = [string]$cacheResult.action_required
           }
           Write-DetailLog ("offline cache prepare: success={0} ready={1} reused={2}" -f $summary.offline_cache.success, $summary.offline_cache.cache_ready, $summary.offline_cache.reused)
         } else {
@@ -869,6 +1150,28 @@ try {
       Write-DetailLog $summary.offline_cache.detail
     }
 
+    $requireOfflineCache = Get-EnvBoolOrDefault -Name 'RAYMAN_SANDBOX_OFFLINE_CACHE_REQUIRE' -DefaultValue $true
+    $summary.offline_cache.required = $requireOfflineCache
+    if ($requireOfflineCache -and -not [bool]$summary.offline_cache.cache_ready) {
+      $summary.sandbox.skipped = $true
+      $summary.sandbox.executed = $false
+      Set-SandboxFailureState -FailureKind 'offline_cache_incomplete'
+      $missingText = if (@($summary.offline_cache.missing_components).Count -gt 0) {
+        (@($summary.offline_cache.missing_components) -join ', ')
+      } else {
+        'unknown'
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$summary.offline_cache.action_required)) {
+        $summary.offline_cache.action_required = Get-SandboxActionRequired -FailureKind 'offline_cache_incomplete'
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$summary.offline_cache.failure_kind)) {
+        $summary.offline_cache.failure_kind = 'offline_cache_incomplete'
+      }
+      $summary.sandbox.detail = ("sandbox preflight blocked on host: offline cache incomplete; missing={0}; action_required={1}" -f $missingText, [string]$summary.offline_cache.action_required)
+      Write-DetailLog $summary.sandbox.detail
+      return $false
+    }
+
     Set-PlaywrightStage 'sandbox-prepare'
     Info 'preparing Windows Sandbox mapping for Playwright bootstrap'
     Write-DetailLog ("run: {0} -WorkspaceRoot {1}" -f $prepareScript, $WorkspaceRootResolved)
@@ -884,114 +1187,17 @@ try {
     $summary.sandbox.command = "`"$sandboxExe`" `"$wsbPath`""
 
     $sandboxProc = $null
-    $readyObserved = $false
-    $startGraceSeconds = Get-EnvIntOrDefault -Name 'RAYMAN_SANDBOX_BOOTSTRAP_START_GRACE_SECONDS' -DefaultValue 90 -MinValue 15 -MaxValue 900
-    $stallSeconds = Get-EnvIntOrDefault -Name 'RAYMAN_SANDBOX_BOOTSTRAP_STALL_SECONDS' -DefaultValue 300 -MinValue 30 -MaxValue 1800
+    $sessionOwned = $false
     try {
       Set-PlaywrightStage 'sandbox-start'
       Info ("starting Windows Sandbox: {0}" -f $wsbPath)
       Write-DetailLog ("run: {0}" -f $summary.sandbox.command)
       $sandboxProc = Start-Process -FilePath $sandboxExe -ArgumentList @($wsbPath) -PassThru
+      Write-SandboxSessionState -SessionFile $sessionFile -ProcessId ([int]$sandboxProc.Id) -Command ([string]$summary.sandbox.command) -StatusFile $statusFile -BootstrapLogFile $bootstrapLogFile -MarkerFile $SandboxMarkerPath -WsbPath $wsbPath
+      $sessionOwned = $true
       $summary.sandbox.exit_code = 0
 
-      $deadline = (Get-Date).AddSeconds($TimeoutEffective)
-      $waitStartedAt = Get-Date
-      $statusObserved = $false
-      $graceWarned = $false
-      $lastProgressAt = Get-Date
-      $lastPhase = ''
-      $lastMessage = ''
-      $lastError = ''
-      Set-PlaywrightStage 'sandbox-wait-ready'
-      while ((Get-Date) -lt $deadline) {
-        $payload = Read-JsonSafe -Path $statusFile
-        if ($null -ne $payload) {
-          $statusObserved = $true
-          $phase = [string]$payload.phase
-          $message = [string]$payload.message
-          $payloadErr = [string]$payload.error
-          $ok = $false
-          if ($payload.PSObject.Properties['success']) {
-            $ok = [bool]$payload.success
-          }
-
-          if ($phase -ne $lastPhase -or $message -ne $lastMessage -or $payloadErr -ne $lastError) {
-            $lastProgressAt = Get-Date
-            $lastPhase = $phase
-            $lastMessage = $message
-            $lastError = $payloadErr
-            Write-DetailLog ("sandbox progress: phase={0}; message={1}; error={2}" -f $phase, $message, $payloadErr)
-          }
-
-          if ($ok -and $phase -eq 'ready') {
-            $readyObserved = $true
-            break
-          }
-
-          if ($phase -like 'failed*' -or (-not $ok -and $phase -eq 'failed')) {
-            $err = [string]$payload.error
-            if ([string]::IsNullOrWhiteSpace($err)) { $err = [string]$payload.message }
-            if ([string]::IsNullOrWhiteSpace($err)) {
-              $err = 'bootstrap status returned failed phase without detailed error'
-            }
-            throw ("sandbox bootstrap failed: phase={0}; error={1}" -f $phase, $err)
-          }
-        }
-
-        $running = Get-Process -Id $sandboxProc.Id -ErrorAction SilentlyContinue
-        if (-not $running) {
-          $statusSnapshot = Read-JsonSafe -Path $statusFile
-          $bootstrapTail = Get-FileTailText -Path $bootstrapLogFile -Lines 20
-          $hostDiag = Get-SandboxHostDiagnostics
-          if ($null -ne $statusSnapshot) {
-            $phaseSnap = [string]$statusSnapshot.phase
-            $msgSnap = [string]$statusSnapshot.message
-            $errSnap = [string]$statusSnapshot.error
-            throw ("Windows Sandbox exited before bootstrap became ready (phase={0}; message={1}; error={2}; log_tail={3}; host_diag={4})" -f $phaseSnap, $msgSnap, $errSnap, $bootstrapTail, $hostDiag)
-          }
-          throw ("Windows Sandbox exited before bootstrap became ready (status file not available; log_tail={0}; host_diag={1})" -f $bootstrapTail, $hostDiag)
-        }
-
-        if (-not $statusObserved) {
-          $statusAgeSeconds = (New-TimeSpan -Start $waitStartedAt -End (Get-Date)).TotalSeconds
-          if ($statusAgeSeconds -ge $startGraceSeconds -and -not $graceWarned) {
-            $graceWarned = $true
-            $bootstrapTail = Get-FileTailText -Path $bootstrapLogFile -Lines 20
-            Write-DetailLog ("sandbox bootstrap status still missing after grace period (grace_seconds={0}; status_file={1}; log_tail={2}); continue waiting until timeout" -f $startGraceSeconds, $statusFile, $bootstrapTail)
-          }
-        } else {
-          $stallAgeSeconds = (New-TimeSpan -Start $lastProgressAt -End (Get-Date)).TotalSeconds
-          if ($stallAgeSeconds -ge $stallSeconds) {
-            $bootstrapTail = Get-FileTailText -Path $bootstrapLogFile -Lines 20
-            throw ("sandbox bootstrap appears stalled (stall_seconds={0}; phase={1}; message={2}; error={3}; log_tail={4})" -f [int]$stallAgeSeconds, $lastPhase, $lastMessage, $lastError, $bootstrapTail)
-          }
-        }
-
-        Start-Sleep -Seconds 3
-      }
-
-      if (-not $readyObserved) {
-        $bootstrapTail = Get-FileTailText -Path $bootstrapLogFile -Lines 20
-        if (-not $statusObserved) {
-          throw ("timeout waiting sandbox bootstrap ready (timeout_seconds={0}; status_file_never_created={1}; probable_causes=Sandbox logon command not executed or startup too slow; log_tail={2})" -f $TimeoutEffective, $statusFile, $bootstrapTail)
-        }
-        throw ("timeout waiting sandbox bootstrap ready (timeout_seconds={0}; last_phase={1}; last_message={2}; last_error={3}; log_tail={4})" -f $TimeoutEffective, $lastPhase, $lastMessage, $lastError, $bootstrapTail)
-      }
-
-      Set-PlaywrightStage 'sandbox-wait-marker'
-      $markerReady = $false
-      for ($i = 0; $i -lt 5; $i++) {
-        $marker = Read-JsonSafe -Path $SandboxMarkerPath
-        if ($null -ne $marker -and (Test-MarkerSuccess -Marker $marker)) {
-          $markerReady = $true
-          break
-        }
-        Start-Sleep -Seconds 2
-      }
-
-      if (-not $markerReady) {
-        throw ("sandbox marker missing or not successful: {0}" -f $SandboxMarkerPath)
-      }
+      Wait-ForSandboxBootstrapReady -SandboxProcessId ([int]$sandboxProc.Id) -StatusFile $statusFile -BootstrapLogFile $bootstrapLogFile -MarkerPath $SandboxMarkerPath -TimeoutSeconds $TimeoutEffective -StartGraceSeconds $startGraceSeconds -StallSeconds $stallSeconds
 
       $summary.sandbox.success = $true
       $summary.sandbox.failure_kind = ''
@@ -1011,6 +1217,31 @@ try {
         $p = Get-Process -Id $sandboxProc.Id -ErrorAction SilentlyContinue
         if ($null -ne $p) {
           try { Stop-Process -Id $sandboxProc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
+      }
+      if ($autoClose) {
+        $newSandboxProcesses = @(Get-RunningWindowsSandboxProcesses | Where-Object { $existingSandboxProcessIds -notcontains [int]$_.Id })
+        foreach ($proc in $newSandboxProcesses) {
+          try {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-DetailLog ("sandbox auto-close stopped process: {0}#{1}" -f [string]$proc.ProcessName, [int]$proc.Id)
+          } catch {}
+        }
+      }
+      if ($sessionOwned) {
+        $stillRunning = @(Get-RunningWindowsSandboxProcesses | Where-Object { $existingSandboxProcessIds -notcontains [int]$_.Id })
+        if ($autoClose -and @($stillRunning).Count -gt 0) {
+          $sessionGraceDeadline = (Get-Date).AddSeconds(10)
+          while (@($stillRunning).Count -gt 0 -and (Get-Date) -lt $sessionGraceDeadline) {
+            Start-Sleep -Seconds 2
+            $stillRunning = @(Get-RunningWindowsSandboxProcesses | Where-Object { $existingSandboxProcessIds -notcontains [int]$_.Id })
+          }
+        }
+        if (@($stillRunning).Count -eq 0) {
+          Remove-SandboxSessionState -SessionFile $sessionFile
+        } else {
+          $runningText = Format-RunningWindowsSandboxProcesses -Processes $stillRunning
+          Write-DetailLog ("sandbox session retained because process is still running: {0}" -f $runningText)
         }
       }
 
@@ -1101,6 +1332,10 @@ try {
         playwright_pkg_cached = $false
         browser_cached = $false
         reused = $false
+        required = $false
+        missing_components = @()
+        failure_kind = ''
+        action_required = ''
       }
     }
   }
