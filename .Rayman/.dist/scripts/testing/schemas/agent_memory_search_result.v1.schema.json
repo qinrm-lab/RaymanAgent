@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema",
+    "success",
+    "query",
+    "task_key",
+    "task_kind",
+    "scope",
+    "kind",
+    "tags",
+    "memory_hints",
+    "recent_task_summaries",
+    "search_backend",
+    "embedding_model",
+    "fallback_reason"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.agent_memory.search_result.v1" },
+    "success": { "type": "boolean" },
+    "query": { "type": "string" },
+    "task_key": { "type": "string" },
+    "task_kind": { "type": "string" },
+    "scope": { "type": "string" },
+    "kind": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "memory_hints": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "scope",
+          "task_kind",
+          "content",
+          "tags",
+          "confidence",
+          "score",
+          "lexical_score",
+          "semantic_score",
+          "source_task_key",
+          "readonly"
+        ],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0 },
+          "kind": { "type": "string" },
+          "scope": { "type": "string" },
+          "task_kind": { "type": "string" },
+          "content": { "type": "string", "minLength": 1 },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "score": { "type": "number" },
+          "lexical_score": { "type": "number" },
+          "semantic_score": { "type": "number" },
+          "source_task_key": { "type": "string" },
+          "readonly": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "recent_task_summaries": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": [
+          "task_key",
+          "task_kind",
+          "outcome",
+          "success",
+          "summary_text",
+          "files_touched",
+          "lessons",
+          "updated_at"
+        ],
+        "properties": {
+          "task_key": { "type": "string" },
+          "task_kind": { "type": "string" },
+          "outcome": { "type": "string" },
+          "success": { "type": "boolean" },
+          "summary_text": { "type": "string" },
+          "files_touched": { "type": "array" },
+          "lessons": { "type": "array" },
+          "updated_at": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "search_backend": { "type": "string", "enum": ["embedding", "lexical"] },
+    "embedding_model": { "type": "string" },
+    "fallback_reason": { "type": "string" }
+  },
+  "additionalProperties": true
+}

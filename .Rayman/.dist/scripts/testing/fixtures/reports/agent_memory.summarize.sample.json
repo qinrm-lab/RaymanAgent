@@ -1,0 +1,23 @@
+{
+  "schema": "rayman.agent_memory.summarize_result.v1",
+  "success": true,
+  "count": 1,
+  "task_summaries": [
+    {
+      "task_key": "review/1234567890abcdef",
+      "task_kind": "review",
+      "outcome": "success",
+      "success": true,
+      "summary_text": "task_kind=review; outcome=success; episodes=2; stages=review_round,review_result; selected_tools=docs; files=.Rayman/scripts/agents/review_loop.ps1",
+      "episode_ids": [1, 2],
+      "files_touched": [".Rayman/scripts/agents/review_loop.ps1"],
+      "lessons": [
+        {
+          "kind": "playbook",
+          "text": "review succeeded after 2 episode(s). Preferred tools: docs."
+        }
+      ],
+      "updated_at": "2026-03-23T16:30:00+00:00"
+    }
+  ]
+}

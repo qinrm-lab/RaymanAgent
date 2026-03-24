@@ -1,0 +1,30 @@
+{
+  "schema": "rayman.agent_memory.search_result.v1",
+  "success": true,
+  "query": "release requirements",
+  "task_key": "",
+  "task_kind": "",
+  "scope": "workspace",
+  "kind": "",
+  "tags": [],
+  "memory_hints": [
+    {
+      "id": 2,
+      "kind": "constraint",
+      "scope": "workspace",
+      "task_kind": "",
+      "content": "必须先读这个文件: 本文件必须包含全部 Project requirements（按路径文本列出）。",
+      "tags": ["constraint", "requirements"],
+      "confidence": 1.0,
+      "score": 0.3,
+      "lexical_score": 0.25,
+      "semantic_score": 0.0,
+      "source_task_key": "workspace/constraints",
+      "readonly": true
+    }
+  ],
+  "recent_task_summaries": [],
+  "search_backend": "lexical",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "fallback_reason": "embedding_model_unavailable:OSError"
+}

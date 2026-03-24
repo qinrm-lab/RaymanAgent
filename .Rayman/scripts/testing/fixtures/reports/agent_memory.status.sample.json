@@ -1,0 +1,21 @@
+{
+  "schema": "rayman.agent_memory.status.v1",
+  "success": true,
+  "message": "Agent Memory runtime ready",
+  "workspace_root": "E:\\rayman\\software\\RaymanAgent",
+  "memory_root": "E:\\rayman\\software\\RaymanAgent\\.Rayman\\state\\memory",
+  "db_path": "E:\\rayman\\software\\RaymanAgent\\.Rayman\\state\\memory\\memory.sqlite3",
+  "status_path": "E:\\rayman\\software\\RaymanAgent\\.Rayman\\runtime\\memory\\status.json",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "deps_ready": false,
+  "search_backend": "lexical",
+  "fallback_reason": "embedding_model_unavailable:OSError",
+  "prewarm_requested": false,
+  "counts": {
+    "episodes": 0,
+    "task_summaries": 0,
+    "semantic_memories": 0
+  },
+  "generated_at": "2026-03-23T16:13:24+00:00",
+  "python_version": "3.13.5"
+}

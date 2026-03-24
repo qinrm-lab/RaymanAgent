@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema",
+    "success",
+    "message",
+    "workspace_root",
+    "memory_root",
+    "db_path",
+    "status_path",
+    "embedding_model",
+    "deps_ready",
+    "search_backend",
+    "fallback_reason",
+    "prewarm_requested",
+    "counts",
+    "generated_at",
+    "python_version"
+  ],
+  "properties": {
+    "schema": { "const": "rayman.agent_memory.status.v1" },
+    "success": { "type": "boolean" },
+    "message": { "type": "string" },
+    "workspace_root": { "type": "string", "minLength": 1 },
+    "memory_root": { "type": "string", "minLength": 1 },
+    "db_path": { "type": "string", "minLength": 1 },
+    "status_path": { "type": "string", "minLength": 1 },
+    "embedding_model": { "type": "string", "minLength": 1 },
+    "deps_ready": { "type": "boolean" },
+    "search_backend": { "type": "string", "enum": ["embedding", "lexical"] },
+    "fallback_reason": { "type": "string" },
+    "prewarm_requested": { "type": "boolean" },
+    "counts": {
+      "type": "object",
+      "required": ["episodes", "task_summaries", "semantic_memories"],
+      "properties": {
+        "episodes": { "type": "integer", "minimum": 0 },
+        "task_summaries": { "type": "integer", "minimum": 0 },
+        "semantic_memories": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "python_version": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}

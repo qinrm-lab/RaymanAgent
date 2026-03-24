@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema", "success", "count", "task_summaries"],
+  "properties": {
+    "schema": { "const": "rayman.agent_memory.summarize_result.v1" },
+    "success": { "type": "boolean" },
+    "count": { "type": "integer", "minimum": 0 },
+    "task_summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_key",
+          "task_kind",
+          "outcome",
+          "success",
+          "summary_text",
+          "episode_ids",
+          "files_touched",
+          "lessons",
+          "updated_at"
+        ],
+        "properties": {
+          "task_key": { "type": "string" },
+          "task_kind": { "type": "string" },
+          "outcome": { "type": "string" },
+          "success": { "type": "boolean" },
+          "summary_text": { "type": "string" },
+          "episode_ids": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+          "files_touched": { "type": "array", "items": { "type": "string" } },
+          "lessons": { "type": "array" },
+          "updated_at": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
