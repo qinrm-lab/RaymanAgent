@@ -29,6 +29,27 @@ Agent Memory 默认写入 `.Rayman/state/memory/`，采用 `episodic -> summariz
 已有 `.rayman.env.ps1` 不需要删除重建，setup 会自动补齐缺失的 heartbeat 默认项。
 外部分发副本在首次 `setup` 后，还会自动补齐工作区根目录 `.rayman.project.json`，并生成标准 workflow：`.github/workflows/rayman-project-fast-gate.yml`、`.github/workflows/rayman-project-browser-gate.yml`、`.github/workflows/rayman-project-full-gate.yml`。这些 consumer workflow / 配置默认只保留在本地，不建议提交到 external workspace 的 Git。RaymanAgent 源仓库不会自动注入这 3 个 consumer workflow。
 
+### 在 VS Code / Codex 中怎么启动
+
+把 `.Rayman/` 整个目录拷到目标工作区根目录后，Windows 上的最小启动步骤统一是：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.Rayman\setup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.Rayman\rayman.ps1 agent-capabilities --sync
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.Rayman\rayman.ps1 context-update
+```
+
+- 在 **VS Code** 里，核心是先跑一次 `setup.ps1`。它会补齐 `.vscode/tasks.json`、`.vscode/settings.json`、`.vscode/launch.json`、`.github/copilot-instructions.md`、`AGENTS.md`、`.codex/config.toml` 等运行资产。
+- 在 **Codex** 里，不需要单独再装一套 “RaymanAgent 环境”；同一个工作区里只要上述 3 步跑完，Codex 读取的就是该工作区的 `AGENTS.md`、`.Rayman/CONTEXT.md`、`.Rayman/context/skills.auto.md` 和 `.codex/config.toml`。
+- 如果你只是把 `.Rayman` 拷过去但还没跑 `setup.ps1`，VS Code/Codex 都只能看到静态文件，不能算完成环境搭建。
+- 如果担心分发副本不完整，先运行 `bash ./.Rayman/init.sh`；它会调用 `scripts/repair/ensure_complete_rayman.sh`，优先从 `.Rayman/.dist` 自愈缺失资产。
+- 如果要验证“这份拷贝对 VS Code / Codex 都能独立工作”，跑 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.Rayman\rayman.ps1 copy-self-check --strict`。
+
+对 **RaymanAgent 源仓库本身** 也是同样的启动方式。区别只在于：
+
+- source workspace 允许跟踪 authored `.Rayman/` 源码；
+- external workspace 会把 `.Rayman/**`、`.codex/config.toml`、生成的 `.github/*` / `.vscode/*` 当作本地资产处理，默认不建议提交。
+
 ## 拷贝后源码管理噪声控制（默认开启）
 
 - `setup.ps1` 保留全量资产生成，同时会在末尾自动注入 SCM 忽略规则：external workspace 默认写入共享的 `.gitignore`，RaymanAgent source workspace 默认写入本地 `.git/info/exclude`。
