@@ -2,5 +2,6 @@
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Exe</OutputType>
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 </Project>

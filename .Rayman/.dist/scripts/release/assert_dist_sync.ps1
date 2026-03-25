@@ -278,6 +278,7 @@ try {
     'scripts/testing/fixtures/reports/agent_memory.summarize.sample.json'
     'scripts/testing/fixtures/reports/project_gate.fast.sample.json'
     'scripts/testing/fixtures/worker_smoke_app/WorkerSmokeApp.csproj'
+    'scripts/testing/fixtures/worker_smoke_app/Program.cs'
     'scripts/testing/schemas/release_gate.v1.schema.json'
     'scripts/testing/schemas/playwright_windows.v2.schema.json'
     'scripts/testing/schemas/playwright_wsl.v1.schema.json'

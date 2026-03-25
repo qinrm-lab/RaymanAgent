@@ -101,6 +101,65 @@ function Write-RaymanWorkerResponse {
   $Context.Response.Close()
 }
 
+function Get-RaymanWorkerHeaderValue {
+  param(
+    [object]$Headers,
+    [string]$Name
+  )
+
+  if ($null -eq $Headers -or [string]::IsNullOrWhiteSpace([string]$Name)) {
+    return ''
+  }
+
+  if ($Headers -is [System.Collections.Specialized.NameValueCollection]) {
+    $value = $Headers[[string]$Name]
+    if ($null -ne $value) {
+      return [string]$value
+    }
+  }
+
+  if ($Headers -is [System.Collections.IDictionary]) {
+    foreach ($key in @($Headers.Keys)) {
+      if ([string]$key -ieq $Name) {
+        return [string]$Headers[$key]
+      }
+    }
+  }
+
+  foreach ($prop in @($Headers.PSObject.Properties)) {
+    if ([string]$prop.Name -ieq $Name) {
+      return [string]$prop.Value
+    }
+  }
+
+  return ''
+}
+
+function Assert-RaymanWorkerAuthorized {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Headers
+  )
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  if (-not (Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedWorkspaceRoot)) {
+    return
+  }
+
+  $expectedToken = [string](Get-RaymanWorkerAuthToken -WorkspaceRoot $resolvedWorkspaceRoot)
+  if ([string]::IsNullOrWhiteSpace([string]$expectedToken)) {
+    throw ([System.UnauthorizedAccessException]::new('worker LAN mode requires RAYMAN_WORKER_AUTH_TOKEN'))
+  }
+
+  $actualToken = Get-RaymanWorkerHeaderValue -Headers $Headers -Name 'X-Rayman-Worker-Token'
+  if ([string]::IsNullOrWhiteSpace([string]$actualToken)) {
+    throw ([System.UnauthorizedAccessException]::new('worker auth token is required'))
+  }
+  if ($actualToken -ne $expectedToken) {
+    throw ([System.UnauthorizedAccessException]::new('worker auth token is invalid'))
+  }
+}
+
 function Get-RaymanWorkerCurrentSyncManifest {
   param([string]$WorkspaceRoot)
 
@@ -138,10 +197,7 @@ function Send-RaymanWorkerBeacon {
   $udp = New-Object System.Net.Sockets.UdpClient
   try {
     $udp.EnableBroadcast = $true
-    $targets = @(
-      [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Broadcast, (Get-RaymanWorkerDiscoveryPort)),
-      [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, (Get-RaymanWorkerDiscoveryPort))
-    )
+    $targets = @(Get-RaymanWorkerDiscoveryTargets -WorkspaceRoot $WorkspaceRoot)
     foreach ($target in @($targets)) {
       [void]$udp.Send($bytes, $bytes.Length, $target)
     }
@@ -160,7 +216,7 @@ function Start-RaymanWorkerTunnelProcess {
     [string]$WorkingDirectory
   )
 
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, 0)
+  $listener = [System.Net.Sockets.TcpListener]::new((Get-RaymanWorkerBindIPAddress -WorkspaceRoot $WorkspaceRoot), 0)
   $listener.Start()
   $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
   $listener.Stop()
@@ -197,6 +253,7 @@ function Start-RaymanWorkerTunnelProcess {
 
 function Start-RaymanWorkerDebugTunnelServer {
   param(
+    [string]$WorkspaceRoot,
     [int]$TunnelPort,
     [string]$VsdbgPath,
     [string[]]$VsdbgArguments,
@@ -210,7 +267,7 @@ function Start-RaymanWorkerDebugTunnelServer {
     throw ("vsdbg path does not exist: {0}" -f $VsdbgPath)
   }
 
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $TunnelPort)
+  $listener = [System.Net.Sockets.TcpListener]::new((Get-RaymanWorkerBindIPAddress -WorkspaceRoot $WorkspaceRoot), $TunnelPort)
   $listener.Start()
   try {
     $client = $listener.AcceptTcpClient()
@@ -314,6 +371,7 @@ function Invoke-RaymanWorkerRequest {
   }
   $method = [string]$request.HttpMethod
   $currentSync = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $WorkspaceRoot
+  Assert-RaymanWorkerAuthorized -WorkspaceRoot $WorkspaceRoot -Headers $request.Headers
 
   switch ("{0} {1}" -f $method.ToUpperInvariant(), $relativePath.ToLowerInvariant()) {
     'GET /status' {
@@ -396,7 +454,7 @@ function Invoke-RaymanWorkerRequest {
       return [pscustomobject]@{
         schema = 'rayman.worker.debug_tunnel.v1'
         generated_at = (Get-Date).ToString('o')
-        address = (Get-RaymanWorkerPrimaryAddress)
+        address = (Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $WorkspaceRoot)
         port = $port
       }
     }
@@ -669,6 +727,7 @@ function Write-RaymanWorkerTcpResponse {
 
   $reason = switch ($StatusCode) {
     200 { 'OK' }
+    401 { 'Unauthorized' }
     404 { 'Not Found' }
     500 { 'Internal Server Error' }
     default { 'OK' }
@@ -694,6 +753,7 @@ function Invoke-RaymanWorkerRequestData {
   $method = [string]$RequestData.method
   $currentSync = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $WorkspaceRoot
   $body = $RequestData.body_json
+  Assert-RaymanWorkerAuthorized -WorkspaceRoot $WorkspaceRoot -Headers $RequestData.headers
 
   switch ("{0} {1}" -f $method.ToUpperInvariant(), $relativePath.ToLowerInvariant()) {
     'GET /status' {
@@ -764,7 +824,7 @@ function Invoke-RaymanWorkerRequestData {
       return [pscustomobject]@{
         schema = 'rayman.worker.debug_tunnel.v1'
         generated_at = (Get-Date).ToString('o')
-        address = (Get-RaymanWorkerPrimaryAddress)
+        address = (Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $WorkspaceRoot)
         port = $port
       }
     }
@@ -826,13 +886,16 @@ function Start-RaymanWorkerHost {
 
   $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   $hostStartedAt = (Get-Date).ToString('o')
+  if ((Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedRoot) -and [string]::IsNullOrWhiteSpace([string](Get-RaymanWorkerAuthToken -WorkspaceRoot $resolvedRoot))) {
+    throw 'RAYMAN_WORKER_AUTH_TOKEN is required when RAYMAN_WORKER_LAN_ENABLED=1'
+  }
   $syncManifest = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $resolvedRoot
   if ($null -eq $syncManifest) {
     $syncManifest = Set-RaymanWorkerAttachedSyncManifest -WorkspaceRoot $resolvedRoot
   }
 
   $controlPort = Get-RaymanWorkerControlPort
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $controlPort)
+  $listener = [System.Net.Sockets.TcpListener]::new((Get-RaymanWorkerBindIPAddress -WorkspaceRoot $resolvedRoot), $controlPort)
   $listener.Start()
 
   try {
@@ -866,7 +929,8 @@ function Start-RaymanWorkerHost {
         Write-RaymanWorkerTcpResponse -Client $client -StatusCode $statusCode -Payload $payload
       } catch {
         try {
-          Write-RaymanWorkerTcpResponse -Client $client -StatusCode 500 -Payload ([pscustomobject]@{
+          $statusCode = if ($_.Exception -is [System.UnauthorizedAccessException]) { 401 } else { 500 }
+          Write-RaymanWorkerTcpResponse -Client $client -StatusCode $statusCode -Payload ([pscustomobject]@{
             schema = 'rayman.worker.error.v1'
             generated_at = (Get-Date).ToString('o')
             error = $_.Exception.Message
@@ -892,7 +956,7 @@ if (-not $NoMain) {
     if (-not [string]::IsNullOrWhiteSpace([string]$argsJson)) {
       $args = @((ConvertFrom-Json -InputObject $argsJson -ErrorAction Stop) | ForEach-Object { [string]$_ })
     }
-    Start-RaymanWorkerDebugTunnelServer -TunnelPort $TunnelPort -VsdbgPath $VsdbgPath -VsdbgArguments $args -WorkingDirectory $WorkingDirectory
+    Start-RaymanWorkerDebugTunnelServer -WorkspaceRoot $WorkspaceRoot -TunnelPort $TunnelPort -VsdbgPath $VsdbgPath -VsdbgArguments $args -WorkingDirectory $WorkingDirectory
     exit 0
   }
 

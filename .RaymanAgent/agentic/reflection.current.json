@@ -1,13 +1,13 @@
 {
   "schema": "rayman.agentic.reflection.v1",
-  "generated_at": "2026-03-25T15:44:51.3241883+08:00",
+  "generated_at": "2026-03-25T17:59:07.1082387+08:00",
   "workspace_root": "E:\\rayman\\software\\RaymanAgent",
   "stage": "review_loop",
   "task_kind": "maintenance",
-  "task": "清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke",
-  "plan_id": "cb3d64d9ca35483489115aae75ec10e7",
-  "round": 2,
-  "max_rounds": 2,
+  "task": "修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate",
+  "plan_id": "9a77d3152dc34ec5bcf4f8ea9db85a89",
+  "round": 1,
+  "max_rounds": 1,
   "outcome": "done",
   "reason": "tests_passed_and_docs_closed",
   "acceptance_closed": true,
@@ -34,7 +34,7 @@
   "test_exit": 0,
   "error_kind": "ok",
   "diff_summary": {
-    "touched_files_count": 90,
-    "net_line_delta": 9336
+    "touched_files_count": 20,
+    "net_line_delta": 1010
   }
 }

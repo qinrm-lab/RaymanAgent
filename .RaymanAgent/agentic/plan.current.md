@@ -1,14 +1,14 @@
 # Rayman Agentic Plan
 
-- plan_id: cb3d64d9ca35483489115aae75ec10e7
-- generated_at: 2026-03-25T15:32:20.5921968+08:00
+- plan_id: 9a77d3152dc34ec5bcf4f8ea9db85a89
+- generated_at: 2026-03-25T17:59:07.1082387+08:00
 - task_kind: maintenance
 - prompt_key: 
 - pipeline: planner_v1
 
 ## Goal
 
-- 清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke
+- 修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate
 
 ## Constraints
 
@@ -22,7 +22,11 @@
 
 ## Acceptance Criteria
 
-- Task goal remains: 清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke
+- Task goal remains: 修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate
+- `manage_workers` 必须保留带空格路径/参数的 PowerShell 语义。
+- `worker_sync` staged bundle 不得包含 `.env`、`.codex/config.toml`、release zip、`.vscode/*` 与 gitignored 文件。
+- `worker_host` 默认仅允许 loopback 控制面；LAN 模式必须显式开启并要求 token。
+- 定向 Pester、`run_host_smoke.ps1`、`full-gate`、strict host `copy_smoke` 必须通过。
 - Selected tool policy must be written before execution.
 - Doc gate must pass for the active pipeline stage.
 

@@ -288,6 +288,75 @@ function Get-RaymanWorkerPrimaryAddress {
   return '127.0.0.1'
 }
 
+function Get-RaymanWorkerLanEnabled {
+  param([string]$WorkspaceRoot = '')
+
+  if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_LAN_ENABLED' -Default $false)
+  }
+
+  $raw = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED')
+  if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+    return $false
+  }
+  return ($raw -match '^(?i:true|1|yes|y|on)$')
+}
+
+function Get-RaymanWorkerAuthToken {
+  param([string]$WorkspaceRoot = '')
+
+  if (Get-Command Get-RaymanWorkspaceEnvString -ErrorAction SilentlyContinue) {
+    return [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_AUTH_TOKEN' -Default '')
+  }
+
+  $raw = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN')
+  if ($null -eq $raw) {
+    return ''
+  }
+  return [string]$raw
+}
+
+function Get-RaymanWorkerAdvertisedAddress {
+  param([string]$WorkspaceRoot)
+
+  if (Get-RaymanWorkerLanEnabled -WorkspaceRoot $WorkspaceRoot) {
+    return (Get-RaymanWorkerPrimaryAddress)
+  }
+  return '127.0.0.1'
+}
+
+function Get-RaymanWorkerBindIPAddress {
+  param([string]$WorkspaceRoot)
+
+  if (Get-RaymanWorkerLanEnabled -WorkspaceRoot $WorkspaceRoot) {
+    return [System.Net.IPAddress]::Any
+  }
+  return [System.Net.IPAddress]::Loopback
+}
+
+function Get-RaymanWorkerDiscoveryTargets {
+  param([string]$WorkspaceRoot)
+
+  $targets = New-Object System.Collections.Generic.List[System.Net.IPEndPoint]
+  $port = Get-RaymanWorkerDiscoveryPort
+  if (Get-RaymanWorkerLanEnabled -WorkspaceRoot $WorkspaceRoot) {
+    $targets.Add([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Broadcast, $port)) | Out-Null
+  }
+  $targets.Add([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, $port)) | Out-Null
+  return @($targets.ToArray())
+}
+
+function Get-RaymanWorkerControlHeaders {
+  param([string]$WorkspaceRoot = '')
+
+  $headers = @{}
+  $token = [string](Get-RaymanWorkerAuthToken -WorkspaceRoot $WorkspaceRoot)
+  if (-not [string]::IsNullOrWhiteSpace([string]$token)) {
+    $headers['X-Rayman-Worker-Token'] = $token
+  }
+  return $headers
+}
+
 function Get-RaymanWorkerCurrentUser {
   try {
     return ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
@@ -860,7 +929,8 @@ function Get-RaymanWorkerStatusSnapshot {
   $workerId = Get-RaymanWorkerStableId -WorkspaceRoot $resolvedWorkspaceRoot
   $controlPort = Get-RaymanWorkerControlPort
   $discoveryPort = Get-RaymanWorkerDiscoveryPort
-  $primaryAddress = Get-RaymanWorkerPrimaryAddress
+  $lanEnabled = Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedWorkspaceRoot
+  $advertisedAddress = Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $resolvedWorkspaceRoot
   $git = Get-RaymanWorkerGitSnapshot -WorkspaceRoot $resolvedWorkspaceRoot
   $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $resolvedWorkspaceRoot -SyncManifest $SyncManifest
   $entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot)
@@ -888,17 +958,20 @@ function Get-RaymanWorkerStatusSnapshot {
     interactive_session = [Environment]::UserInteractive
     process_id = $ProcessId
     started_at = $HostStartTime
-    address = $primaryAddress
+    address = $advertisedAddress
     debugger_ready = [bool]$vsdbgStatus.debugger_ready
     debugger_path = [string]$vsdbgStatus.debugger_path
     discovery = [pscustomobject]@{
       protocol = 'rayman.worker.beacon.v1'
       port = $discoveryPort
+      scope = if ($lanEnabled) { 'lan' } else { 'loopback' }
     }
     control = [pscustomobject]@{
       protocol = 'rayman.worker.control.v1'
       port = $controlPort
-      base_url = ('http://{0}:{1}/' -f $primaryAddress, $controlPort)
+      base_url = ('http://{0}:{1}/' -f $advertisedAddress, $controlPort)
+      scope = if ($lanEnabled) { 'lan' } else { 'loopback' }
+      auth_required = [bool]$lanEnabled
     }
     capabilities = [pscustomobject]@{
       remote_exec = $true
@@ -1144,18 +1217,46 @@ function Invoke-RaymanWorkerControlRequest {
     [object]$Body = $null,
     [string]$InFile = '',
     [string]$ContentType = 'application/json',
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+    [string]$WorkspaceRoot = ''
   )
 
   $uri = Get-RaymanWorkerControlUri -Worker $Worker -Path $Path
+  $headerWorkspaceRoot = if (-not [string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) {
+    $WorkspaceRoot
+  } elseif ($Worker.PSObject.Properties['workspace_root']) {
+    [string]$Worker.workspace_root
+  } else {
+    ''
+  }
+  $headers = Get-RaymanWorkerControlHeaders -WorkspaceRoot $headerWorkspaceRoot
   try {
     if ($Method -eq 'GET') {
-      return (Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec $TimeoutSeconds)
+      $params = @{
+        Uri = $uri
+        Method = 'Get'
+        TimeoutSec = $TimeoutSeconds
+      }
+      if ($headers.Count -gt 0) {
+        $params['Headers'] = $headers
+      }
+      return (Invoke-RestMethod @params)
     }
 
     if (-not [string]::IsNullOrWhiteSpace([string]$InFile)) {
       $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InFile).Path)
-      $response = Invoke-WebRequest -Uri $uri -Method $Method -Body $bytes -ContentType $ContentType -TimeoutSec $TimeoutSeconds -UseBasicParsing
+      $params = @{
+        Uri = $uri
+        Method = $Method
+        Body = $bytes
+        ContentType = $ContentType
+        TimeoutSec = $TimeoutSeconds
+        UseBasicParsing = $true
+      }
+      if ($headers.Count -gt 0) {
+        $params['Headers'] = $headers
+      }
+      $response = Invoke-WebRequest @params
       if ([string]::IsNullOrWhiteSpace([string]$response.Content)) {
         return $null
       }
@@ -1163,7 +1264,17 @@ function Invoke-RaymanWorkerControlRequest {
     }
 
     $json = if ($null -eq $Body) { '{}' } else { ($Body | ConvertTo-Json -Depth 12) }
-    return (Invoke-RestMethod -Uri $uri -Method $Method -ContentType $ContentType -Body $json -TimeoutSec $TimeoutSeconds)
+    $params = @{
+      Uri = $uri
+      Method = $Method
+      ContentType = $ContentType
+      Body = $json
+      TimeoutSec = $TimeoutSeconds
+    }
+    if ($headers.Count -gt 0) {
+      $params['Headers'] = $headers
+    }
+    return (Invoke-RestMethod @params)
   } catch {
     $payload = $null
     try {
@@ -1235,7 +1346,7 @@ function Invoke-RaymanWorkerRemoteCommand {
     timeout_seconds = (Get-RaymanWorkerExecutionTimeoutSeconds)
   }
 
-  $response = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/exec' -Body $body -TimeoutSeconds ([int]$body.timeout_seconds + 10)
+  $response = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/exec' -Body $body -TimeoutSeconds ([int]$body.timeout_seconds + 10) -WorkspaceRoot $WorkspaceRoot
   $outputLines = @()
   if ($null -ne $response -and $response.PSObject.Properties['output_lines']) {
     $outputLines = @($response.output_lines | ForEach-Object { [string]$_ })
@@ -1407,6 +1518,7 @@ function New-RaymanWorkerDebugManifest {
   }
   $sourceMap = [ordered]@{}
   $sourceMap[$executionRoot] = $resolvedWorkspaceRoot
+  $advertisedAddress = Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $resolvedWorkspaceRoot
 
   return [pscustomobject]@{
     schema = 'rayman.worker.debug_session.v1'
@@ -1414,9 +1526,9 @@ function New-RaymanWorkerDebugManifest {
     mode = $Mode
     worker_id = $workerId
     worker_name = (Get-RaymanWorkerDisplayName -WorkspaceRoot $resolvedWorkspaceRoot)
-    address = (Get-RaymanWorkerPrimaryAddress)
+    address = $advertisedAddress
     control_port = (Get-RaymanWorkerControlPort)
-    control_url = ('http://{0}:{1}/' -f (Get-RaymanWorkerPrimaryAddress), (Get-RaymanWorkerControlPort))
+    control_url = ('http://{0}:{1}/' -f $advertisedAddress, (Get-RaymanWorkerControlPort))
     workspace_root = $resolvedWorkspaceRoot
     execution_root = $executionRoot
     workspace_mode = if ($null -ne $SyncManifest -and $SyncManifest.PSObject.Properties['mode']) { [string]$SyncManifest.mode } else { 'attached' }

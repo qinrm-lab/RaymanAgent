@@ -116,6 +116,51 @@ Describe 'worker common helpers' {
     }
   }
 
+  It 'advertises loopback-only control metadata by default' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_loopback_status_' + [Guid]::NewGuid().ToString('N'))
+    $lanBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED')
+    $tokenBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN')
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+      [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED', $null)
+      [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $null)
+
+      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $root
+
+      $status.address | Should -Be '127.0.0.1'
+      $status.control.base_url | Should -Be ('http://127.0.0.1:{0}/' -f (Get-RaymanWorkerControlPort))
+      $status.control.scope | Should -Be 'loopback'
+      $status.control.auth_required | Should -Be $false
+    } finally {
+      [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED', $lanBackup)
+      [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $tokenBackup)
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'loads the worker auth token from workspace config' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_auth_header_' + [Guid]::NewGuid().ToString('N'))
+    $tokenBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN')
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+      Set-Content -LiteralPath (Join-Path $root '.rayman.env.ps1') -Encoding UTF8 -Value "`$env:RAYMAN_WORKER_AUTH_TOKEN = 'workspace-secret'"
+      Remove-Item Env:RAYMAN_WORKER_AUTH_TOKEN -ErrorAction SilentlyContinue
+
+      $headers = Get-RaymanWorkerControlHeaders -WorkspaceRoot $root
+
+      $headers['X-Rayman-Worker-Token'] | Should -Be 'workspace-secret'
+    } finally {
+      if ($null -eq $tokenBackup) {
+        Remove-Item Env:RAYMAN_WORKER_AUTH_TOKEN -ErrorAction SilentlyContinue
+      } else {
+        [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $tokenBackup)
+      }
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'times out worker native capture instead of hanging the host' {
     $powershellHost = (Get-Command powershell.exe -ErrorAction Stop).Source
 

@@ -39,7 +39,7 @@ $tunnel = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '
     debugger_path = $debuggerPath
     debugger_arguments = @($debuggerArgs)
     working_directory = $workingDirectory
-  }) -TimeoutSeconds 30
+  }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
 
 $client = New-Object System.Net.Sockets.TcpClient
 $client.Connect([string]$tunnel.address, [int]$tunnel.port)

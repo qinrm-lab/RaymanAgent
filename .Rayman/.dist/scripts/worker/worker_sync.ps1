@@ -58,7 +58,7 @@ function Get-RaymanWorkerSyncSegmentExcludes {
   )
 }
 
-function Test-RaymanWorkerSyncExcluded {
+function Get-RaymanWorkerSyncRelativePath {
   param(
     [string]$Root,
     [string]$Path
@@ -66,7 +66,66 @@ function Test-RaymanWorkerSyncExcluded {
 
   $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
   $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
-  $relative = $resolvedPath.Substring($resolvedRoot.Length).TrimStart('\', '/')
+  return $resolvedPath.Substring($resolvedRoot.Length).TrimStart('\', '/')
+}
+
+function Get-RaymanWorkerSyncNoiseRules {
+  param([string]$WorkspaceRoot)
+
+  if (-not (Get-Command Get-RaymanScmTrackedNoiseRules -ErrorAction SilentlyContinue)) {
+    return @()
+  }
+
+  $rules = Get-RaymanScmTrackedNoiseRules -WorkspaceRoot $WorkspaceRoot
+  if ($null -eq $rules -or -not $rules.PSObject.Properties['All']) {
+    return @()
+  }
+  return @($rules.All)
+}
+
+function Get-RaymanWorkerSyncIgnoredPathLookup {
+  param(
+    [string]$WorkspaceRoot,
+    [string[]]$RelativePaths = @()
+  )
+
+  $lookup = @{}
+  $normalized = @($RelativePaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Replace('\', '/') } | Select-Object -Unique)
+  if ($normalized.Count -eq 0) {
+    return $lookup
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $git -or [string]::IsNullOrWhiteSpace([string]$git.Source)) {
+    return $lookup
+  }
+
+  try {
+    $ignoredOutput = (($normalized -join "`n") | & $git.Source -C $WorkspaceRoot check-ignore --stdin 2>$null)
+    if ($LASTEXITCODE -notin @(0, 1)) {
+      return $lookup
+    }
+    foreach ($line in @($ignoredOutput)) {
+      $candidate = [string]$line
+      if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+        continue
+      }
+      $lookup[$candidate.Replace('\', '/')] = $true
+    }
+  } catch {}
+
+  return $lookup
+}
+
+function Test-RaymanWorkerSyncExcluded {
+  param(
+    [string]$Root,
+    [string]$Path,
+    [object[]]$NoiseRules = @()
+  )
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+  $relative = Get-RaymanWorkerSyncRelativePath -Root $resolvedRoot -Path $Path
   $segments = @($relative -split '[\\/]')
   foreach ($name in @(Get-RaymanWorkerSyncSegmentExcludes)) {
     if ($segments -contains $name) { return $true }
@@ -76,6 +135,17 @@ function Test-RaymanWorkerSyncExcluded {
     if ($relative.Equals($normalizedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
     if ($relative.StartsWith($normalizedPrefix + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
   }
+
+  $normalizedRelative = $relative.Replace('\', '/')
+  foreach ($rule in @($NoiseRules)) {
+    if ($null -eq $rule) { continue }
+    if (Get-Command Test-RaymanScmTrackedNoiseRuleMatch -ErrorAction SilentlyContinue) {
+      if (Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath $normalizedRelative -Rule $rule) {
+        return $true
+      }
+    }
+  }
+
   return $false
 }
 
@@ -105,14 +175,26 @@ function New-RaymanWorkerSyncBundle {
   $payloadRoot = Join-Path $stageRoot 'payload'
   Ensure-RaymanWorkerDirectory -Path $payloadRoot
 
+  $noiseRules = @(Get-RaymanWorkerSyncNoiseRules -WorkspaceRoot $resolvedRoot)
   $files = @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
+  $candidates = New-Object System.Collections.Generic.List[object]
   $included = New-Object System.Collections.Generic.List[string]
   foreach ($file in $files) {
-    if (Test-RaymanWorkerSyncExcluded -Root $resolvedRoot -Path $file.FullName) { continue }
-    $relative = $file.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/')
-    $destination = Join-Path $payloadRoot $relative
-    Copy-RaymanWorkerSyncFile -Source $file.FullName -Destination $destination
-    $included.Add(($relative -replace '\\', '/')) | Out-Null
+    if (Test-RaymanWorkerSyncExcluded -Root $resolvedRoot -Path $file.FullName -NoiseRules $noiseRules) { continue }
+    $relative = Get-RaymanWorkerSyncRelativePath -Root $resolvedRoot -Path $file.FullName
+    $candidates.Add([pscustomobject]@{
+        source = [string]$file.FullName
+        relative = $relative.Replace('\', '/')
+      }) | Out-Null
+  }
+
+  $ignoredLookup = Get-RaymanWorkerSyncIgnoredPathLookup -WorkspaceRoot $resolvedRoot -RelativePaths @($candidates | ForEach-Object { [string]$_.relative })
+  foreach ($candidate in @($candidates.ToArray())) {
+    $relative = [string]$candidate.relative
+    if ($ignoredLookup.ContainsKey($relative)) { continue }
+    $destination = Join-Path $payloadRoot ($relative -replace '/', '\')
+    Copy-RaymanWorkerSyncFile -Source ([string]$candidate.source) -Destination $destination
+    $included.Add($relative) | Out-Null
   }
 
   $manifest = [pscustomobject]@{

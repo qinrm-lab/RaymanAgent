@@ -155,6 +155,7 @@ function Resolve-RaymanHostSmokeWorkerFixture {
   $projectRelative = '.Rayman\scripts\testing\fixtures\worker_smoke_app\WorkerSmokeApp.csproj'
   $projectPath = Join-Path $WorkspaceRoot $projectRelative
   $outputDir = Join-Path $WorkspaceRoot '.Rayman\runtime\test_fixtures\worker_smoke_app'
+  $intermediateDir = Join-Path $outputDir 'obj'
   $programPath = Join-Path $outputDir 'WorkerSmokeApp.dll'
   $programRelative = ''
   try {
@@ -168,6 +169,7 @@ function Resolve-RaymanHostSmokeWorkerFixture {
     detail = ''
     project_path = $projectPath
     project_relative = $projectRelative
+    output_dir = $outputDir
     program_path = $programPath
     program_relative = $programRelative
     log_path = ''
@@ -187,6 +189,14 @@ function Resolve-RaymanHostSmokeWorkerFixture {
   if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
   }
+  if (-not (Test-Path -LiteralPath $intermediateDir -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $intermediateDir | Out-Null
+  }
+
+  $intermediateDirArg = $intermediateDir
+  if (-not $intermediateDirArg.EndsWith('\')) {
+    $intermediateDirArg += '\'
+  }
 
   $buildStep = Invoke-RaymanHostSmokeStep -Name 'worker_loopback_fixture_build' -LogDir $LogDir -FilePath $dotnetCmd -ArgumentList @(
     'build',
@@ -195,7 +205,9 @@ function Resolve-RaymanHostSmokeWorkerFixture {
     'Debug',
     '-nologo',
     '-o',
-    $outputDir
+    $outputDir,
+    ("-p:MSBuildProjectExtensionsPath={0}" -f $intermediateDirArg),
+    ("-p:BaseIntermediateOutputPath={0}" -f $intermediateDirArg)
   ) -WorkingDirectory $WorkspaceRoot -TimeoutSeconds 180
   $result.log_path = [string]$buildStep.log_path
 
@@ -509,7 +521,9 @@ if (-not (Test-RaymanWindowsPlatform)) {
     'RAYMAN_WORKER_DISCOVERY_PORT',
     'RAYMAN_WORKER_CONTROL_PORT',
     'RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS',
-    'RAYMAN_WORKER_VSDBG_PATH'
+    'RAYMAN_WORKER_VSDBG_PATH',
+    'RAYMAN_WORKER_LAN_ENABLED',
+    'RAYMAN_WORKER_AUTH_TOKEN'
   )
   $workerEnvBackup = @{}
   foreach ($name in $workerEnvNames) {
@@ -525,6 +539,8 @@ if (-not (Test-RaymanWindowsPlatform)) {
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_CONTROL_PORT', [string](Get-RaymanHostSmokeFreeTcpPort))
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS', '5')
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_VSDBG_PATH', $pwshCmd)
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED', '0')
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $null)
 
     $workerHostProcess = Start-Process -FilePath $pwshCmd -ArgumentList @(
       '-NoProfile',
@@ -564,12 +580,12 @@ if (-not (Test-RaymanWindowsPlatform)) {
     if ($workerOk) {
       $statusStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_status' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('status', '--json')
       $statusJson = if ($statusStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $statusStep.output } else { $null }
-      if ($statusStep.exit_code -ne 0 -or $null -eq $statusJson -or [string]$statusJson.schema -ne 'rayman.worker.status.v1' -or -not [bool]$statusJson.debugger_ready) {
+      if ($statusStep.exit_code -ne 0 -or $null -eq $statusJson -or [string]$statusJson.schema -ne 'rayman.worker.status.v1' -or -not [bool]$statusJson.debugger_ready -or [string]$statusJson.address -ne '127.0.0.1' -or [string]$statusJson.control.base_url -notmatch '^http://127\.0\.0\.1:') {
         Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'FAIL' -Detail ("status failed (exit={0})" -f $statusStep.exit_code) -LogPath $statusStep.log_path
         $overall = 'FAIL'
         $workerOk = $false
       } else {
-        Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'PASS' -Detail ("debugger_ready={0}" -f [bool]$statusJson.debugger_ready) -LogPath $statusStep.log_path
+        Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'PASS' -Detail ("debugger_ready={0} control={1}" -f [bool]$statusJson.debugger_ready, [string]$statusJson.control.base_url) -LogPath $statusStep.log_path
       }
     }
 
@@ -606,6 +622,35 @@ if (-not (Test-RaymanWindowsPlatform)) {
         $workerOk = $false
       } else {
         Add-Step -Steps $steps -Name 'worker_loopback_sync_staged' -Status 'PASS' -Detail 'staged sync succeeded' -LogPath $syncStagedStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $stagingRoot = ''
+      if ($null -ne $syncStagedJson -and $syncStagedJson.PSObject.Properties['sync_manifest']) {
+        $syncManifest = $syncStagedJson.sync_manifest
+        if ($null -ne $syncManifest -and $syncManifest.PSObject.Properties['staging_root']) {
+          $stagingRoot = [string]$syncManifest.staging_root
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($stagingRoot) -or -not (Test-Path -LiteralPath $stagingRoot -PathType Container)) {
+        Add-Step -Steps $steps -Name 'worker_loopback_fixture_stage' -Status 'FAIL' -Detail 'staged sync manifest missing staging_root'
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        $stageRelativeDir = Split-Path -Parent (($workerFixtureProgramRelative -replace '/', '\'))
+        $stageTargetDir = if ([string]::IsNullOrWhiteSpace($stageRelativeDir)) { $stagingRoot } else { Join-Path $stagingRoot $stageRelativeDir }
+        New-Item -ItemType Directory -Force -Path $stageTargetDir | Out-Null
+        foreach ($artifact in @(Get-ChildItem -LiteralPath ([string]$workerFixture.output_dir) -File -Force -ErrorAction SilentlyContinue)) {
+          Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $stageTargetDir $artifact.Name) -Force
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $stageTargetDir 'WorkerSmokeApp.dll') -PathType Leaf)) {
+          Add-Step -Steps $steps -Name 'worker_loopback_fixture_stage' -Status 'FAIL' -Detail ("staged fixture missing output: {0}" -f $workerFixtureProgramRelative)
+          $overall = 'FAIL'
+          $workerOk = $false
+        } else {
+          Add-Step -Steps $steps -Name 'worker_loopback_fixture_stage' -Status 'PASS' -Detail ("staged fixture path={0}" -f $workerFixtureProgramRelative)
+        }
       }
     }
 
@@ -690,6 +735,7 @@ if ([string]::IsNullOrWhiteSpace([string]$pythonResolution.path)) {
 
 $report = [pscustomobject]@{
   schema = 'rayman.testing.host_smoke.v1'
+  generated_at = (Get-Date).ToString('o')
   workspace_root = $WorkspaceRoot
   require_environment = [bool]$RequireEnvironment
   include_wsl = [bool]$IncludeWsl

@@ -114,13 +114,43 @@ Describe 'host smoke worker loopback coverage' {
     $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\run_host_smoke.ps1'
     $raw = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
 
+    $raw | Should -Match 'worker_loopback_fixture_build'
     $raw | Should -Match 'worker_loopback_discover'
     $raw | Should -Match 'worker_loopback_use'
     $raw | Should -Match 'worker_loopback_status'
     $raw | Should -Match 'worker_loopback_exec'
     $raw | Should -Match 'worker_loopback_sync_attached'
     $raw | Should -Match 'worker_loopback_sync_staged'
+    $raw | Should -Match 'worker_loopback_fixture_stage'
     $raw | Should -Match 'worker_loopback_debug_prepare'
     $raw | Should -Match 'worker_loopback_clear'
+    $raw | Should -Match 'generated_at'
+  }
+
+  It 'builds the worker smoke fixture project from source when dotnet is available' {
+    $dotnet = Get-Command dotnet.exe, dotnet -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $dotnet -or [string]::IsNullOrWhiteSpace([string]$dotnet.Source)) {
+      Set-ItResult -Skipped -Because 'dotnet not found'
+      return
+    }
+
+    $projectPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\fixtures\worker_smoke_app\WorkerSmokeApp.csproj'
+    $outputDir = Join-Path $script:WorkspaceRoot '.Rayman\runtime\test_fixtures\worker_smoke_app_pester'
+    $intermediateDir = Join-Path $outputDir 'obj'
+    $fixtureRoot = Split-Path -Parent $projectPath
+    try {
+      if (Test-Path -LiteralPath $outputDir -PathType Container) {
+        Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+      }
+
+      & $dotnet.Source build $projectPath -c Debug -nologo -o $outputDir "-p:MSBuildProjectExtensionsPath=$intermediateDir\\" "-p:BaseIntermediateOutputPath=$intermediateDir\\" | Out-Null
+
+      $LASTEXITCODE | Should -Be 0
+      (Test-Path -LiteralPath (Join-Path $outputDir 'WorkerSmokeApp.dll') -PathType Leaf) | Should -Be $true
+      (Test-Path -LiteralPath (Join-Path $fixtureRoot 'obj') -PathType Container) | Should -Be $false
+      (Test-Path -LiteralPath (Join-Path $fixtureRoot 'bin') -PathType Container) | Should -Be $false
+    } finally {
+      Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
 }

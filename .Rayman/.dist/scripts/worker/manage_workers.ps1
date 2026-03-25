@@ -70,7 +70,41 @@ function Resolve-RaymanWorkerSelection {
 function Format-RaymanWorkerCommandText {
   param([string[]]$CommandParts)
 
-  return ((@($CommandParts | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ').Trim())
+  $tokens = @($CommandParts | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+  if ($tokens.Count -eq 0) {
+    return ''
+  }
+  if ($tokens.Count -eq 1) {
+    $single = [string]$tokens[0]
+    if ($single -match '[\|\;\(\)\$]') {
+      return $single
+    }
+  }
+
+  $rendered = New-Object System.Collections.Generic.List[string]
+  $safeTokenPattern = '^[A-Za-z0-9_\-./:\\=]+$'
+  $rendered.Add('&') | Out-Null
+  foreach ($token in @($tokens)) {
+    if ([string]::IsNullOrEmpty([string]$token)) {
+      $rendered.Add("''") | Out-Null
+    } elseif ($token -match $safeTokenPattern) {
+      $rendered.Add($token) | Out-Null
+    } else {
+      $rendered.Add(("'{0}'" -f ($token -replace "'", "''"))) | Out-Null
+    }
+  }
+  return (($rendered.ToArray()) -join ' ')
+}
+
+function Get-RaymanWorkerScheduledTaskArguments {
+  param(
+    [string]$WorkerHostScript,
+    [string]$WorkspaceRoot
+  )
+
+  $commandText = ("& '{0}' -WorkspaceRoot '{1}'" -f $WorkerHostScript.Replace("'", "''"), $WorkspaceRoot.Replace("'", "''"))
+  $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($commandText))
+  return ('-NoProfile -ExecutionPolicy Bypass -EncodedCommand {0}' -f $encoded)
 }
 
 function New-RaymanWorkerCliErrorResult {
@@ -123,7 +157,7 @@ function Install-RaymanLocalWorker {
     $resolvedRoot
   )
 
-  $taskAction = New-ScheduledTaskAction -Execute $psHost -Argument (Format-RaymanWorkerCommandText -CommandParts $actionArguments)
+  $taskAction = New-ScheduledTaskAction -Execute $psHost -Argument (Get-RaymanWorkerScheduledTaskArguments -WorkerHostScript $workerHostScript -WorkspaceRoot $resolvedRoot)
   $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userName
   $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
   Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Description 'Rayman Worker login autostart' -Force | Out-Null
@@ -218,7 +252,7 @@ function Discover-RaymanWorkers {
             address = '127.0.0.1'
             control_port = (Get-RaymanWorkerControlPort)
             control_url = ('http://127.0.0.1:{0}/' -f (Get-RaymanWorkerControlPort))
-          }) -Method GET -Path '/status' -TimeoutSeconds 5
+          }) -Method GET -Path '/status' -TimeoutSeconds 5 -WorkspaceRoot $resolvedRoot
       if ($null -ne $loopbackStatus -and [string]$loopbackStatus.schema -eq 'rayman.worker.status.v1') {
         $discoveredWorkers = @([pscustomobject]@{
               worker_id = [string]$loopbackStatus.worker_id
@@ -262,7 +296,7 @@ function Get-RaymanWorkerLiveStatus {
     [object]$Worker
   )
 
-  $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds 10
+  $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds 10 -WorkspaceRoot $WorkspaceRoot
   if ($null -ne $status) {
     [void](Merge-RaymanWorkerRegistry -WorkspaceRoot $WorkspaceRoot -Workers @([pscustomobject]@{
           worker_id = [string]$status.worker_id
@@ -294,7 +328,7 @@ function Invoke-RaymanWorkerSyncAction {
           mode = 'staged'
           bundle_name = [System.IO.Path]::GetFileName([string]$bundle.bundle_path)
           bundle_base64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes([string]$bundle.bundle_path))
-        }) -TimeoutSeconds 300
+        }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot
     $active = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode 'staged' -SyncManifest $syncManifest
     return [pscustomobject]@{
       schema = 'rayman.worker.sync.result.v1'
@@ -308,7 +342,7 @@ function Invoke-RaymanWorkerSyncAction {
 
   $syncManifest = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/sync' -Body ([pscustomobject]@{
         mode = 'attached'
-      }) -TimeoutSeconds 30
+      }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
   $active = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode 'attached' -SyncManifest $syncManifest
   return [pscustomobject]@{
     schema = 'rayman.worker.sync.result.v1'
@@ -335,7 +369,7 @@ function Invoke-RaymanWorkerDebugAction {
         program = $Program
         process_id = $ProcessId
         sync_manifest = $syncManifest
-      }) -TimeoutSeconds 30
+      }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
 
   if ($null -ne $manifest -and $manifest.PSObject.Properties['source_file_map']) {
     $map = [ordered]@{}
@@ -360,7 +394,7 @@ function Invoke-RaymanWorkerUpgradeAction {
   $response = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/upgrade' -Body ([pscustomobject]@{
         package_name = [System.IO.Path]::GetFileName([string]$package.package_path)
         package_base64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes([string]$package.package_path))
-      }) -TimeoutSeconds 300
+      }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot
 
   $status = $null
   $deadline = (Get-Date).AddSeconds(45)

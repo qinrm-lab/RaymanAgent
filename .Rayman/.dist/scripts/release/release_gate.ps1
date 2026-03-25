@@ -1406,6 +1406,12 @@ $laneDefinitions = @(
     Schema = 'rayman.testing.host_smoke.v1'
     SuccessProperty = ''
     OverallProperty = 'overall'
+    RequireGeneratedAt = $true
+    FreshnessPaths = @(
+      '.Rayman/scripts/testing'
+      '.Rayman/scripts/worker'
+      '.Rayman/rayman.ps1'
+    )
     MissingInProject = 'WARN'
     MissingInStandard = 'WARN'
     FailInProject = 'WARN'
@@ -1426,7 +1432,21 @@ foreach ($lane in $laneDefinitions) {
   }
 
   $laneReport = Get-JsonOrNull -Path $laneReportPath
-  $laneEval = Get-TestLaneReportEvaluation -Report $laneReport -ExpectedSchema ([string]$lane.Schema) -SuccessProperty ([string]$lane.SuccessProperty) -OverallProperty ([string]$lane.OverallProperty) -WorkspaceRoot $WorkspaceRoot
+  $laneEvalArgs = @{
+    Report = $laneReport
+    ExpectedSchema = [string]$lane.Schema
+    SuccessProperty = [string]$lane.SuccessProperty
+    OverallProperty = [string]$lane.OverallProperty
+    WorkspaceRoot = $WorkspaceRoot
+    ReportPath = $laneReportPath
+  }
+  if ($lane.PSObject.Properties['FreshnessPaths']) {
+    $laneEvalArgs['FreshnessPaths'] = @($lane.FreshnessPaths)
+  }
+  if ($lane.PSObject.Properties['RequireGeneratedAt']) {
+    $laneEvalArgs['RequireGeneratedAt'] = [bool]$lane.RequireGeneratedAt
+  }
+  $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
   if ([string]$lane.Name -eq 'Bash逻辑单测' -and [string]$laneEval.status -eq 'FAIL' -and $null -ne $laneReport) {
     $laneReason = [string](Get-PropValue -Object $laneReport -Name 'reason' -Default '')
     $laneExitCode = [string](Get-PropValue -Object $laneReport -Name 'exit_code' -Default '')
@@ -1529,7 +1549,21 @@ foreach ($lane in $projectGateDefinitions) {
   }
 
   $laneReport = Get-JsonOrNull -Path $laneReportPath
-  $laneEval = Get-TestLaneReportEvaluation -Report $laneReport -ExpectedSchema ([string]$lane.Schema) -SuccessProperty '' -OverallProperty 'overall' -WorkspaceRoot $WorkspaceRoot
+  $laneEvalArgs = @{
+    Report = $laneReport
+    ExpectedSchema = [string]$lane.Schema
+    SuccessProperty = ''
+    OverallProperty = 'overall'
+    WorkspaceRoot = $WorkspaceRoot
+    ReportPath = $laneReportPath
+  }
+  if ($lane.PSObject.Properties['FreshnessPaths']) {
+    $laneEvalArgs['FreshnessPaths'] = @($lane.FreshnessPaths)
+  }
+  if ($lane.PSObject.Properties['RequireGeneratedAt']) {
+    $laneEvalArgs['RequireGeneratedAt'] = [bool]$lane.RequireGeneratedAt
+  }
+  $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
   $detailParts = New-Object System.Collections.Generic.List[string]
   $detailParts.Add([string]$laneEval.detail) | Out-Null
   if ($null -ne $laneReport) {

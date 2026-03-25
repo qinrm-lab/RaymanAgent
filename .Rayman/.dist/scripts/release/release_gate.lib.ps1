@@ -120,13 +120,106 @@ function Test-ReportWorkspaceRootMatch {
   return ((Get-PathComparisonValue -PathValue $reportRoot) -eq (Get-PathComparisonValue -PathValue $WorkspaceRoot))
 }
 
+function Get-ReportGeneratedAtUtc {
+  param(
+    [object]$Report
+  )
+
+  if ($null -eq $Report) { return $null }
+  $prop = $Report.PSObject.Properties['generated_at']
+  if ($null -eq $prop -or [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+    return $null
+  }
+  try {
+    return ([datetimeoffset]::Parse([string]$prop.Value)).UtcDateTime
+  } catch {
+    return $null
+  }
+}
+
+function Get-ReportFreshnessBaseline {
+  param(
+    [object]$Report,
+    [string]$ReportPath = ''
+  )
+
+  $generatedAtUtc = Get-ReportGeneratedAtUtc -Report $Report
+  if ($null -ne $generatedAtUtc) {
+    return [pscustomobject]@{
+      source = 'generated_at'
+      timestamp_utc = $generatedAtUtc
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ReportPath) -and (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      source = 'file_mtime'
+      timestamp_utc = (Get-Item -LiteralPath $ReportPath).LastWriteTimeUtc
+    }
+  }
+
+  return [pscustomobject]@{
+    source = ''
+    timestamp_utc = $null
+  }
+}
+
+function Get-LatestFreshnessInput {
+  param(
+    [string]$WorkspaceRoot,
+    [string[]]$Paths = @()
+  )
+
+  $latestTimestamp = $null
+  $latestPath = ''
+  if ($null -eq $Paths) {
+    return [pscustomobject]@{
+      path = ''
+      timestamp_utc = $null
+    }
+  }
+
+  foreach ($pathValue in @($Paths)) {
+    if ([string]::IsNullOrWhiteSpace([string]$pathValue)) { continue }
+    $candidate = [string]$pathValue
+    if (-not (Test-AbsolutePathText -PathValue $candidate) -and -not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+      $candidate = Join-Path $WorkspaceRoot $candidate
+    }
+    if (-not (Test-Path -LiteralPath $candidate)) { continue }
+
+    $items = @()
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $items = @(Get-Item -LiteralPath $candidate -Force)
+    } elseif (Test-Path -LiteralPath $candidate -PathType Container) {
+      $items = @(Get-ChildItem -LiteralPath $candidate -Recurse -File -Force -ErrorAction SilentlyContinue)
+    }
+
+    foreach ($item in $items) {
+      if ($null -eq $item) { continue }
+      $timestampUtc = $item.LastWriteTimeUtc
+      if ($null -eq $latestTimestamp -or $timestampUtc -gt $latestTimestamp) {
+        $latestTimestamp = $timestampUtc
+        $latestPath = [string]$item.FullName
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    path = $latestPath
+    timestamp_utc = $latestTimestamp
+  }
+}
+
 function Get-TestLaneReportEvaluation {
   param(
     [object]$Report,
     [string]$ExpectedSchema,
     [string]$SuccessProperty = 'success',
     [string]$OverallProperty = '',
-    [string]$WorkspaceRoot = ''
+    [string]$WorkspaceRoot = '',
+    [string]$ReportPath = '',
+    [string[]]$FreshnessPaths = @(),
+    [switch]$RequireGeneratedAt
   )
 
   if ($null -eq $Report) {
@@ -152,6 +245,49 @@ function Get-TestLaneReportEvaluation {
     return [pscustomobject]@{
       status = 'STALE'
       detail = ("stale_report_workspace_mismatch:{0}" -f $reportRoot)
+    }
+  }
+
+  $generatedAtRaw = ''
+  if ($null -ne $Report.PSObject.Properties['generated_at'] -and $null -ne $Report.generated_at) {
+    $generatedAtRaw = [string]$Report.generated_at
+  }
+  $generatedAtUtc = Get-ReportGeneratedAtUtc -Report $Report
+  if ($RequireGeneratedAt) {
+    if ([string]::IsNullOrWhiteSpace($generatedAtRaw)) {
+      return [pscustomobject]@{
+        status = 'STALE'
+        detail = 'stale_report_missing_generated_at'
+      }
+    }
+    if ($null -eq $generatedAtUtc) {
+      return [pscustomobject]@{
+        status = 'STALE'
+        detail = ("stale_report_invalid_generated_at:{0}" -f $generatedAtRaw)
+      }
+    }
+  }
+
+  if ($null -ne $FreshnessPaths -and @($FreshnessPaths).Count -gt 0) {
+    $baseline = Get-ReportFreshnessBaseline -Report $Report -ReportPath $ReportPath
+    if ($null -eq $baseline.timestamp_utc) {
+      return [pscustomobject]@{
+        status = 'STALE'
+        detail = 'stale_report_missing_freshness_timestamp'
+      }
+    }
+
+    $latestInput = Get-LatestFreshnessInput -WorkspaceRoot $WorkspaceRoot -Paths $FreshnessPaths
+    if ($null -ne $latestInput.timestamp_utc -and $latestInput.timestamp_utc -gt $baseline.timestamp_utc.AddSeconds(1)) {
+      $latestInputPath = if ([string]::IsNullOrWhiteSpace([string]$latestInput.path)) {
+        ''
+      } else {
+        Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath ([string]$latestInput.path)
+      }
+      return [pscustomobject]@{
+        status = 'STALE'
+        detail = ("stale_report_older_than_inputs:{0}" -f $latestInputPath)
+      }
     }
   }
 

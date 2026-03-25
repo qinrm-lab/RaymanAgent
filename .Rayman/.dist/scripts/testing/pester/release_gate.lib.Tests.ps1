@@ -60,4 +60,43 @@ Describe 'release_gate.lib' {
     $result.status | Should -Be 'STALE'
     $result.detail | Should -Match 'stale_report_workspace_mismatch'
   }
+
+  It 'marks reports without generated_at as STALE when freshness is required' {
+    $result = Get-TestLaneReportEvaluation -Report ([pscustomobject]@{
+        schema = 'rayman.testing.host_smoke.v1'
+        overall = 'PASS'
+        workspace_root = 'C:\CurrentWorkspace'
+      }) -ExpectedSchema 'rayman.testing.host_smoke.v1' -SuccessProperty '' -OverallProperty 'overall' -WorkspaceRoot 'C:\CurrentWorkspace' -RequireGeneratedAt
+
+    $result.status | Should -Be 'STALE'
+    $result.detail | Should -Be 'stale_report_missing_generated_at'
+  }
+
+  It 'marks reports older than lane inputs as STALE' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_release_gate_stale_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $inputPath = Join-Path $root 'input.txt'
+      $reportPath = Join-Path $root 'host_smoke.report.json'
+
+      Set-Content -LiteralPath $inputPath -Encoding UTF8 -Value 'input'
+      Set-Content -LiteralPath $reportPath -Encoding UTF8 -Value '{}'
+
+      $nowUtc = [datetime]::UtcNow
+      (Get-Item -LiteralPath $reportPath).LastWriteTimeUtc = $nowUtc.AddMinutes(-5)
+      (Get-Item -LiteralPath $inputPath).LastWriteTimeUtc = $nowUtc
+
+      $result = Get-TestLaneReportEvaluation -Report ([pscustomobject]@{
+          schema = 'rayman.testing.host_smoke.v1'
+          overall = 'PASS'
+          workspace_root = $root
+          generated_at = ($nowUtc.AddMinutes(-5).ToString('o'))
+        }) -ExpectedSchema 'rayman.testing.host_smoke.v1' -SuccessProperty '' -OverallProperty 'overall' -WorkspaceRoot $root -ReportPath $reportPath -FreshnessPaths @('input.txt') -RequireGeneratedAt
+
+      $result.status | Should -Be 'STALE'
+      $result.detail | Should -Match 'stale_report_older_than_inputs'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
