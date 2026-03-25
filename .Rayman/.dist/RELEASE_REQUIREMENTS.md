@@ -206,7 +206,16 @@
 - init 后必须保证：
   - `.vscode/tasks.json` 存在
   - `.vscode/settings.json` 存在
+  - `.vscode/launch.json` 存在
 - VSCode 能直接识别 Rayman 相关任务
+- VSCode 必须存在这些 worker 入口：
+  - `Rayman: Worker Discover`
+  - `Rayman: Worker Status`
+  - `Rayman: Worker Sync`
+  - `Rayman: Worker Upgrade`
+  - `Rayman: Worker Debug Prepare`
+  - `Rayman Worker: Launch .NET (Active Worker)`
+  - `Rayman Worker: Attach .NET (Active Worker)`
 
 ---
 
@@ -245,6 +254,11 @@
   - `index.summary.latest_bundle.age_hours` 必须 `<= 24`（可通过 `RAYMAN_RELEASE_TELEMETRY_MAX_AGE_HOURS` 调整）
   - 默认允许自动生成一次新 telemetry bundle 后重试（`RAYMAN_RELEASE_TELEMETRY_AUTO_EXPORT=1`）
   - 若需绕过，必须显式设置 `RAYMAN_ALLOW_STALE_TELEMETRY=1` 且提供 `RAYMAN_BYPASS_REASON`
+- worker 远程执行链路：
+  - `rayman.ps1 worker` 命令面必须存在
+  - `.Rayman/scripts/worker/*.ps1` source / `.dist` 镜像必须齐全
+  - setup / tracked-noise / release gate 必须纳入 `.vscode/launch.json`
+  - 远程发现、同步、调试准备、升级至少要有可追踪 runtime 状态文件
 
 ---
 

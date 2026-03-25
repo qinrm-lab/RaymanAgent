@@ -16,6 +16,11 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
     . $commonPath
 }
 
+$workerCommonPath = Join-Path $PSScriptRoot '..\worker\worker_common.ps1'
+if (Test-Path -LiteralPath $workerCommonPath -PathType Leaf) {
+    . $workerCommonPath
+}
+
 # 导入核心模块
 $CoreModulePath = Join-Path $PSScriptRoot "..\core\Rayman-Core.psm1"
 if (Test-Path $CoreModulePath) {
@@ -560,6 +565,61 @@ function Invoke-RaymanCommand {
         [string]$Command,
         [string]$Kind = ''
     )
+
+    if (Get-Command Get-RaymanWorkerActiveExecutionContext -ErrorAction SilentlyContinue) {
+        $workerExecutionContext = $null
+        try {
+            $workerExecutionContext = Get-RaymanWorkerActiveExecutionContext -WorkspaceRoot $WorkspaceRoot
+        } catch {
+            $workerExecutionContext = $null
+        }
+
+        if ($null -ne $workerExecutionContext) {
+            $remote = Invoke-RaymanWorkerRemoteCommand -WorkspaceRoot $WorkspaceRoot -CommandText $Command
+            Set-LastExitCodeCompat -Value ([int]$remote.exit_code)
+            $summary = [ordered]@{
+                schema = 'rayman.dotnet.exec.v1'
+                generated_at = (Get-Date).ToString('o')
+                workspace_root = $WorkspaceRoot
+                requested_command = $Command
+                requested_kind = $Kind
+                selected_host = 'worker'
+                fallback_host = ''
+                success = [bool]$remote.success
+                final_exit_code = [int]$remote.exit_code
+                windows_exit_code = $null
+                wsl_exit_code = $null
+                windows_timed_out = $false
+                windows_error_message = ''
+                windows_invoked_via = ''
+                windows_workspace = ''
+                strict_mode = $false
+                windows_preferred = $false
+                timeout_seconds = Get-RaymanWorkerExecutionTimeoutSeconds
+                host_is_windows = Test-IsWindowsPlatformCompat
+                can_use_windows_bridge = $false
+                bridge_reason = 'active_worker'
+                reason = 'active_worker_remote_exec'
+                error_message = [string]$remote.error_message
+                detail_log = $script:DotNetExecDetailPath
+                owned_root_pid = $null
+                cleanup_attempted = $false
+                cleanup_result = ''
+                cleanup_reason = ''
+                cleanup_pids = @()
+                execution_host = 'worker'
+                worker_id = [string]$remote.worker_id
+                worker_name = [string]$remote.worker_name
+                workspace_mode = [string]$remote.workspace_mode
+                sync_manifest = $remote.sync_manifest
+            }
+            Save-DotNetExecSummary -SummaryPath $script:DotNetExecSummaryPath -Summary $summary
+            foreach ($line in @($remote.output_lines)) {
+                Write-DotNetExecDetail -LogPath $script:DotNetExecDetailPath -Message ([string]$line)
+            }
+            return @($remote.output_lines)
+        }
+    }
 
     if ($Kind -ne 'dotnet') {
         return Invoke-Expression $Command 2>&1

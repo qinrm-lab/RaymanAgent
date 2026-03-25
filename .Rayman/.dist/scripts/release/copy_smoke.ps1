@@ -835,7 +835,8 @@ function Get-CopySmokeExternalBlockedTargets {
       '.github/workflows/rayman-project-browser-gate.yml',
       '.github/workflows/rayman-project-full-gate.yml',
       '.vscode/tasks.json',
-      '.vscode/settings.json'
+      '.vscode/settings.json',
+      '.vscode/launch.json'
     )) {
     if (Test-Path -LiteralPath (Join-Path $WorkspaceRoot $candidate)) {
       $targets.Add($candidate) | Out-Null
@@ -1145,17 +1146,81 @@ function Resolve-CopySmokeVsCodeClientProcessId([object]$ProcessInfo) {
   return 0
 }
 
-function Get-CopySmokeArchivedVsCodeAuditRootPids {
+function Resolve-CopySmokeArchivedVsCodeAuditCandidatePids([object]$AuditReport) {
+  $result = [ordered]@{
+    verified_pids = @()
+    ambiguous_pids = @()
+    proof = 'none'
+  }
+
+  if ($null -eq $AuditReport) {
+    return [pscustomobject]$result
+  }
+
+  $verified = New-Object 'System.Collections.Generic.HashSet[int]'
+  $ambiguous = New-Object 'System.Collections.Generic.HashSet[int]'
+
+  if ($AuditReport.PSObject.Properties['owned_pids']) {
+    foreach ($pidValue in @($AuditReport.owned_pids)) {
+      $pidInt = 0
+      if ([int]::TryParse([string]$pidValue, [ref]$pidInt) -and $pidInt -gt 0) {
+        [void]$verified.Add($pidInt)
+      }
+    }
+    if ($verified.Count -gt 0) {
+      $result.proof = 'owned_pids'
+    }
+  }
+
+  if ($verified.Count -eq 0 -and $AuditReport.PSObject.Properties['workspace_match']) {
+    foreach ($entry in @($AuditReport.workspace_match)) {
+      if ($null -eq $entry) { continue }
+      $matched = $false
+      if ($entry.PSObject.Properties['matched']) {
+        $matched = [bool]$entry.matched
+      }
+      if (-not $matched) { continue }
+
+      $pidInt = 0
+      if ([int]::TryParse([string]$entry.pid, [ref]$pidInt) -and $pidInt -gt 0) {
+        [void]$verified.Add($pidInt)
+      }
+    }
+    if ($verified.Count -gt 0) {
+      $result.proof = 'workspace_match'
+    }
+  }
+
+  if ($verified.Count -eq 0 -and $AuditReport.PSObject.Properties['new_pids']) {
+    foreach ($pidValue in @($AuditReport.new_pids)) {
+      $pidInt = 0
+      if ([int]::TryParse([string]$pidValue, [ref]$pidInt) -and $pidInt -gt 0) {
+        [void]$ambiguous.Add($pidInt)
+      }
+    }
+  }
+
+  $result.verified_pids = @($verified | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+  $result.ambiguous_pids = @($ambiguous | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+  return [pscustomobject]$result
+}
+
+function Get-CopySmokeArchivedVsCodeAuditAnalysis {
   param(
     [string]$WorkspaceRoot,
     [object[]]$SetupRuns = @()
   )
 
   if (-not (Get-Command Get-RaymanVsCodeProcessSnapshot -ErrorAction SilentlyContinue)) {
-    return @()
+    return [pscustomobject]@{
+      root_pids = @()
+      candidate_pids = @()
+      ambiguous_pids = @()
+    }
   }
 
   $candidateSet = New-Object 'System.Collections.Generic.HashSet[int]'
+  $ambiguousSet = New-Object 'System.Collections.Generic.HashSet[int]'
   foreach ($setupRun in @($SetupRuns)) {
     if ($null -eq $setupRun) { continue }
     $auditPath = ''
@@ -1167,24 +1232,37 @@ function Get-CopySmokeArchivedVsCodeAuditRootPids {
     }
     try {
       $audit = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-      foreach ($pidValue in @($audit.new_pids)) {
-        $pidInt = 0
-        if ([int]::TryParse([string]$pidValue, [ref]$pidInt) -and $pidInt -gt 0) {
-          [void]$candidateSet.Add($pidInt)
+      $auditCandidateSet = Resolve-CopySmokeArchivedVsCodeAuditCandidatePids -AuditReport $audit
+      foreach ($pidValue in @($auditCandidateSet.verified_pids)) {
+        if ([int]$pidValue -gt 0) {
+          [void]$candidateSet.Add([int]$pidValue)
+        }
+      }
+      foreach ($pidValue in @($auditCandidateSet.ambiguous_pids)) {
+        if ([int]$pidValue -gt 0) {
+          [void]$ambiguousSet.Add([int]$pidValue)
         }
       }
     } catch {}
   }
 
   $candidatePids = @($candidateSet | ForEach-Object { [int]$_ } | Sort-Object -Unique)
-  if ($candidatePids.Count -eq 0) {
-    return @()
+  $currentSnapshot = @(Get-RaymanVsCodeProcessSnapshot -WorkspaceRootPath $WorkspaceRoot)
+  $candidateSnapshot = @()
+  if ($candidatePids.Count -gt 0) {
+    $candidateSnapshot = @($currentSnapshot | Where-Object { [int]$_.pid -in $candidatePids })
+  }
+  $ambiguousPids = @()
+  if ($ambiguousSet.Count -gt 0) {
+    $ambiguousPids = @($currentSnapshot | Where-Object { [int]$_.pid -in @($ambiguousSet | ForEach-Object { [int]$_ }) } | ForEach-Object { [int]$_.pid } | Sort-Object -Unique)
   }
 
-  $currentSnapshot = @(Get-RaymanVsCodeProcessSnapshot -WorkspaceRootPath $WorkspaceRoot)
-  $candidateSnapshot = @($currentSnapshot | Where-Object { [int]$_.pid -in $candidatePids })
   if ($candidateSnapshot.Count -eq 0) {
-    return @()
+    return [pscustomobject]@{
+      root_pids = @()
+      candidate_pids = @()
+      ambiguous_pids = @($ambiguousPids)
+    }
   }
 
   $candidateLookup = New-Object 'System.Collections.Generic.HashSet[int]'
@@ -1208,10 +1286,17 @@ function Get-CopySmokeArchivedVsCodeAuditRootPids {
     $rootPids.Add($pidValue) | Out-Null
   }
 
-  if ($rootPids.Count -gt 0) {
-    return @($rootPids.ToArray() | Sort-Object -Unique)
+  $rootPidResult = if ($rootPids.Count -gt 0) {
+    @($rootPids.ToArray() | Sort-Object -Unique)
+  } else {
+    @($candidateSnapshot | ForEach-Object { [int]$_.pid } | Sort-Object -Unique)
   }
-  return $candidatePids
+
+  return [pscustomobject]@{
+    root_pids = @($rootPidResult)
+    candidate_pids = @($candidateSnapshot | ForEach-Object { [int]$_.pid } | Sort-Object -Unique)
+    ambiguous_pids = @($ambiguousPids)
+  }
 }
 
 function Stop-CopySmokeArchivedVsCodeWindows {
@@ -1221,7 +1306,12 @@ function Stop-CopySmokeArchivedVsCodeWindows {
     [int[]]$AlreadyCleanedPids = @()
   )
 
-  $rootPids = @(Get-CopySmokeArchivedVsCodeAuditRootPids -WorkspaceRoot $WorkspaceRoot -SetupRuns $SetupRuns)
+  $analysis = Get-CopySmokeArchivedVsCodeAuditAnalysis -WorkspaceRoot $WorkspaceRoot -SetupRuns $SetupRuns
+  $rootPids = @($analysis.root_pids)
+  $ambiguousPids = @($analysis.ambiguous_pids)
+  if ($ambiguousPids.Count -gt 0) {
+    Warn ("skipped ambiguous vscode cleanup: {0}" -f ($ambiguousPids -join ', '))
+  }
   if ($rootPids.Count -eq 0) {
     return @()
   }

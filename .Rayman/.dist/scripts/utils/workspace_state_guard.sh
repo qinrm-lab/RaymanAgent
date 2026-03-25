@@ -69,7 +69,9 @@ if [[ -n "${foreign_root}" ]]; then
     "${workspace_root}/.Rayman/runtime/project_gates" \
     "${workspace_root}/.Rayman/runtime/mcp" \
     "${workspace_root}/.Rayman/runtime/pwa-tests" \
-    "${workspace_root}/.Rayman/runtime/winapp-tests"; do
+    "${workspace_root}/.Rayman/runtime/winapp-tests" \
+    "${workspace_root}/.Rayman/runtime/memory" \
+    "${workspace_root}/.rag"; do
     if [[ -e "${dir_path}" ]]; then
       rm -rf "${dir_path}"
       removed=$((removed + 1))
@@ -85,6 +87,22 @@ if [[ -n "${foreign_root}" ]]; then
     rm -f "${file_path}"
     removed=$((removed + 1))
   done < <(find "${workspace_root}/.Rayman/state" -maxdepth 1 -type f \( -name 'release_gate_report.*' -o -name 'diagnostics_*' -o -name 'last_*' \) -print0 2>/dev/null || true)
+
+  for legacy_path in \
+    "${workspace_root}/.Rayman/state/chroma_db" \
+    "${workspace_root}/.Rayman/state/rag.db"; do
+    if [[ -e "${legacy_path}" ]]; then
+      rm -rf "${legacy_path}"
+      removed=$((removed + 1))
+    fi
+  done
+
+  if [[ -d "${workspace_root}/.Rayman/state/memory" ]]; then
+    while IFS= read -r -d '' entry_path; do
+      rm -rf "${entry_path}"
+      removed=$((removed + 1))
+    done < <(find "${workspace_root}/.Rayman/state/memory" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
+  fi
 fi
 
 mkdir -p "$(dirname "${marker_path}")"

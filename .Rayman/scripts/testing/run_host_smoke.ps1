@@ -92,6 +92,84 @@ function Convert-JsonFromCommandOutput {
   return $null
 }
 
+function Get-RaymanHostSmokeFreeTcpPort {
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $listener.Start()
+  try {
+    return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+  } finally {
+    $listener.Stop()
+  }
+}
+
+function Get-RaymanHostSmokeFreeUdpPort {
+  $udp = New-Object System.Net.Sockets.UdpClient([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, 0))
+  try {
+    return ([System.Net.IPEndPoint]$udp.Client.LocalEndPoint).Port
+  } finally {
+    $udp.Dispose()
+  }
+}
+
+function Save-RaymanHostSmokeFileSnapshot {
+  param(
+    [System.Collections.Generic.List[object]]$Snapshots,
+    [string]$Path
+  )
+
+  $exists = Test-Path -LiteralPath $Path -PathType Leaf
+  $bytes = @()
+  if ($exists) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+  }
+  $Snapshots.Add([pscustomobject]@{
+      path = $Path
+      exists = $exists
+      bytes = $bytes
+    }) | Out-Null
+}
+
+function Restore-RaymanHostSmokeFileSnapshots {
+  param([System.Collections.Generic.List[object]]$Snapshots)
+
+  foreach ($entry in @($Snapshots.ToArray())) {
+    $path = [string]$entry.path
+    if ([bool]$entry.exists) {
+      $parent = Split-Path -Parent $path
+      if (-not [string]::IsNullOrWhiteSpace([string]$parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+      }
+      [System.IO.File]::WriteAllBytes($path, [byte[]]$entry.bytes)
+    } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Invoke-RaymanHostSmokeWorkerCli {
+  param(
+    [string]$Name,
+    [string]$PowerShellPath,
+    [string]$WorkspaceRoot,
+    [string]$LogDir,
+    [string[]]$WorkerArgs
+  )
+
+  $argumentList = @(
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    (Join-Path $WorkspaceRoot '.Rayman\rayman.ps1'),
+    'worker'
+  )
+  if ($null -ne $WorkerArgs) {
+    $argumentList += @($WorkerArgs)
+  }
+
+  return (Invoke-RaymanHostSmokeStep -Name $Name -LogDir $LogDir -FilePath $PowerShellPath -ArgumentList $argumentList -WorkingDirectory $WorkspaceRoot)
+}
+
 $steps = New-Object 'System.Collections.Generic.List[object]'
 $overall = 'PASS'
 
@@ -307,6 +385,204 @@ if ([string]::IsNullOrWhiteSpace($pwshCmd) -or -not (Test-Path -LiteralPath $mem
   } else {
     Add-Step -Steps $steps -Name 'agent_memory_json' -Status 'FAIL' -Detail 'manage_memory status/search/summarize failed or emitted invalid JSON' -LogPath $searchStep.log_path
     $overall = 'FAIL'
+  }
+}
+
+$workerHostScript = Join-Path $WorkspaceRoot '.Rayman\scripts\worker\worker_host.ps1'
+$workerFixtureProgramRelative = '.Rayman\scripts\testing\fixtures\worker_smoke_app\WorkerSmokeApp.dll'
+$workerFixtureProgramPath = Join-Path $WorkspaceRoot $workerFixtureProgramRelative
+if (-not (Test-RaymanWindowsPlatform)) {
+  Add-Step -Steps $steps -Name 'worker_loopback' -Status 'WARN' -Detail 'worker smoke skipped on non-Windows host'
+  if ($overall -eq 'PASS') { $overall = 'WARN' }
+} elseif ([string]::IsNullOrWhiteSpace($pwshCmd)) {
+  Add-Step -Steps $steps -Name 'worker_loopback' -Status 'FAIL' -Detail 'pwsh not found'
+  $overall = 'FAIL'
+} elseif (-not (Test-Path -LiteralPath $workerHostScript -PathType Leaf)) {
+  Add-Step -Steps $steps -Name 'worker_loopback' -Status 'FAIL' -Detail ("worker host script missing: {0}" -f $workerHostScript)
+  $overall = 'FAIL'
+} elseif (-not (Test-Path -LiteralPath $workerFixtureProgramPath -PathType Leaf)) {
+  Add-Step -Steps $steps -Name 'worker_loopback' -Status 'FAIL' -Detail ("worker smoke fixture missing: {0}" -f $workerFixtureProgramRelative)
+  $overall = 'FAIL'
+} else {
+  $workerSnapshots = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($path in @(
+      (Join-Path $WorkspaceRoot '.Rayman\state\workers\registry.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\state\workers\active.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\workers\discovery.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\workers\debug.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\host.status.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\beacon.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\sync.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\upgrade.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\debug.session.last.json'),
+      (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\vsdbg.last.json')
+    )) {
+    Save-RaymanHostSmokeFileSnapshot -Snapshots $workerSnapshots -Path $path
+  }
+
+  $workerRuntimeDirs = @(
+    (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\uploads'),
+    (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\staging'),
+    (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\sync-temp'),
+    (Join-Path $WorkspaceRoot '.Rayman\runtime\worker\upgrade-temp')
+  )
+  $workerRuntimeDirExists = @{}
+  foreach ($dir in $workerRuntimeDirs) {
+    $workerRuntimeDirExists[$dir] = (Test-Path -LiteralPath $dir -PathType Container)
+  }
+
+  $workerEnvNames = @(
+    'RAYMAN_WORKER_DISCOVERY_PORT',
+    'RAYMAN_WORKER_CONTROL_PORT',
+    'RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS',
+    'RAYMAN_WORKER_VSDBG_PATH'
+  )
+  $workerEnvBackup = @{}
+  foreach ($name in $workerEnvNames) {
+    $workerEnvBackup[$name] = [Environment]::GetEnvironmentVariable($name)
+  }
+
+  $workerHostProcess = $null
+  $workerHostStdoutLog = Join-Path $logDir 'worker_loopback_host.stdout.log'
+  $workerHostStderrLog = Join-Path $logDir 'worker_loopback_host.stderr.log'
+  $workerOk = $true
+  try {
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_PORT', [string](Get-RaymanHostSmokeFreeUdpPort))
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_CONTROL_PORT', [string](Get-RaymanHostSmokeFreeTcpPort))
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS', '5')
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_VSDBG_PATH', $pwshCmd)
+
+    $workerHostProcess = Start-Process -FilePath $pwshCmd -ArgumentList @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      $workerHostScript,
+      '-WorkspaceRoot',
+      $WorkspaceRoot
+    ) -WorkingDirectory $WorkspaceRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $workerHostStdoutLog -RedirectStandardError $workerHostStderrLog
+
+    Start-Sleep -Seconds 1
+
+    $discoverStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_discover' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('discover', '--json')
+    $discoverJson = if ($discoverStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $discoverStep.output } else { $null }
+    if ($discoverStep.exit_code -ne 0 -or $null -eq $discoverJson -or @($discoverJson.workers).Count -lt 1) {
+      Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'FAIL' -Detail ("discover failed (exit={0})" -f $discoverStep.exit_code) -LogPath $discoverStep.log_path
+      $overall = 'FAIL'
+      $workerOk = $false
+    } else {
+      Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'PASS' -Detail ("workers={0}" -f @($discoverJson.workers).Count) -LogPath $discoverStep.log_path
+    }
+
+    $workerId = if ($workerOk) { [string]@($discoverJson.workers)[0].worker_id } else { '' }
+    if ($workerOk) {
+      $useStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_use' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('use', '--id', $workerId, '--json')
+      $useJson = if ($useStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $useStep.output } else { $null }
+      if ($useStep.exit_code -ne 0 -or $null -eq $useJson -or [string]$useJson.worker_id -ne $workerId) {
+        Add-Step -Steps $steps -Name 'worker_loopback_use' -Status 'FAIL' -Detail ("use failed (exit={0})" -f $useStep.exit_code) -LogPath $useStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_use' -Status 'PASS' -Detail ("worker_id={0}" -f $workerId) -LogPath $useStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $statusStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_status' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('status', '--json')
+      $statusJson = if ($statusStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $statusStep.output } else { $null }
+      if ($statusStep.exit_code -ne 0 -or $null -eq $statusJson -or [string]$statusJson.schema -ne 'rayman.worker.status.v1' -or -not [bool]$statusJson.debugger_ready) {
+        Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'FAIL' -Detail ("status failed (exit={0})" -f $statusStep.exit_code) -LogPath $statusStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'PASS' -Detail ("debugger_ready={0}" -f [bool]$statusJson.debugger_ready) -LogPath $statusStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $execStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_exec' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('exec', '--json', 'Write-Output', 'worker-smoke-ok')
+      $execJson = if ($execStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $execStep.output } else { $null }
+      if ($execStep.exit_code -ne 0 -or $null -eq $execJson -or -not [bool]$execJson.success -or ($execJson.output_lines -notcontains 'worker-smoke-ok')) {
+        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'FAIL' -Detail ("exec failed (exit={0})" -f $execStep.exit_code) -LogPath $execStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'PASS' -Detail 'remote exec succeeded' -LogPath $execStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $syncAttachedStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_sync_attached' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('sync', '--mode', 'attached', '--json')
+      $syncAttachedJson = if ($syncAttachedStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $syncAttachedStep.output } else { $null }
+      if ($syncAttachedStep.exit_code -ne 0 -or $null -eq $syncAttachedJson -or [string]$syncAttachedJson.mode -ne 'attached') {
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'FAIL' -Detail ("attached sync failed (exit={0})" -f $syncAttachedStep.exit_code) -LogPath $syncAttachedStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'PASS' -Detail 'attached sync succeeded' -LogPath $syncAttachedStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $syncStagedStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_sync_staged' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('sync', '--mode', 'staged', '--json')
+      $syncStagedJson = if ($syncStagedStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $syncStagedStep.output } else { $null }
+      if ($syncStagedStep.exit_code -ne 0 -or $null -eq $syncStagedJson -or [string]$syncStagedJson.mode -ne 'staged') {
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_staged' -Status 'FAIL' -Detail ("staged sync failed (exit={0})" -f $syncStagedStep.exit_code) -LogPath $syncStagedStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_staged' -Status 'PASS' -Detail 'staged sync succeeded' -LogPath $syncStagedStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $debugStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_debug_prepare' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('debug', '--mode', 'launch', '--program', ($workerFixtureProgramRelative -replace '\\', '/'), '--json')
+      $debugJson = if ($debugStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $debugStep.output } else { $null }
+      $hasSourceMap = $false
+      if ($null -ne $debugJson -and $debugJson.PSObject.Properties['source_file_map']) {
+        $sourceFileMap = $debugJson.source_file_map
+        if ($sourceFileMap -is [System.Collections.IDictionary]) {
+          $hasSourceMap = ($sourceFileMap.Count -gt 0)
+        } elseif ($null -ne $sourceFileMap) {
+          $hasSourceMap = (@($sourceFileMap.PSObject.Properties).Count -gt 0)
+        }
+      }
+      if ($debugStep.exit_code -ne 0 -or $null -eq $debugJson -or [string]$debugJson.schema -ne 'rayman.worker.debug_session.v1' -or -not [bool]$debugJson.debugger_ready -or -not $hasSourceMap) {
+        Add-Step -Steps $steps -Name 'worker_loopback_debug_prepare' -Status 'FAIL' -Detail ("debug prepare failed (exit={0})" -f $debugStep.exit_code) -LogPath $debugStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_debug_prepare' -Status 'PASS' -Detail ("workspace_mode={0}" -f [string]$debugJson.workspace_mode) -LogPath $debugStep.log_path
+      }
+    }
+
+    $clearStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_clear' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('clear', '--json')
+    $clearJson = if ($clearStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $clearStep.output } else { $null }
+    if ($clearStep.exit_code -ne 0 -or $null -eq $clearJson -or [string]$clearJson.schema -ne 'rayman.worker.clear.result.v1') {
+      Add-Step -Steps $steps -Name 'worker_loopback_clear' -Status 'FAIL' -Detail ("clear failed (exit={0})" -f $clearStep.exit_code) -LogPath $clearStep.log_path
+      $overall = 'FAIL'
+    } else {
+      Add-Step -Steps $steps -Name 'worker_loopback_clear' -Status 'PASS' -Detail 'active worker cleared' -LogPath $clearStep.log_path
+    }
+  } finally {
+    if ($null -ne $workerHostProcess) {
+      try {
+        if (-not $workerHostProcess.HasExited) {
+          Stop-Process -Id $workerHostProcess.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 400
+        }
+      } catch {}
+    }
+
+    foreach ($name in $workerEnvNames) {
+      [Environment]::SetEnvironmentVariable($name, $workerEnvBackup[$name])
+    }
+    Restore-RaymanHostSmokeFileSnapshots -Snapshots $workerSnapshots
+    foreach ($dir in $workerRuntimeDirs) {
+      if (-not [bool]$workerRuntimeDirExists[$dir] -and (Test-Path -LiteralPath $dir -PathType Container)) {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+      }
+    }
   }
 }
 

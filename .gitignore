@@ -32,6 +32,7 @@ test-results/
 .env
 .vscode/tasks.json
 .vscode/settings.json
+.vscode/launch.json
 .cursorrules
 .clinerules
 .codex/config.toml

@@ -24,6 +24,7 @@ Git bootstrap 运行结果会写入 `.Rayman/runtime/git.bootstrap.last.json`。
 Agent Memory 默认写入 `.Rayman/state/memory/`，采用 `episodic -> summarizer -> semantic` 三层结构；运行时状态写入 `.Rayman/runtime/memory/status.json`。
 `setup.ps1` 会优先预热 Agent Memory，本地 embedding 模型不可用时自动降级为 lexical fallback，并把状态写入 runtime。
 `setup.ps1` 会幂等清理废弃记忆数据；若检测到 `.Rayman` 来自其他工作区副本，还会把 Agent Memory 数据库与 memory runtime 重置为空，避免旧项目记忆串到新项目。
+检测到跨工作区拷贝时，legacy `.rag/` 根目录也会在预清理阶段直接删除，不再复用旧向量库。
 `setup.ps1` 还会删除引用 legacy RAG 路径的历史 snapshot manifest / archive，避免废弃快照继续占用空间。
 已有 `.rayman.env.ps1` 不需要删除重建，setup 会自动补齐缺失的 heartbeat 默认项。
 外部分发副本在首次 `setup` 后，还会自动补齐工作区根目录 `.rayman.project.json`，并生成标准 workflow：`.github/workflows/rayman-project-fast-gate.yml`、`.github/workflows/rayman-project-browser-gate.yml`、`.github/workflows/rayman-project-full-gate.yml`。这些 consumer workflow / 配置默认只保留在本地，不建议提交到 external workspace 的 Git。RaymanAgent 源仓库不会自动注入这 3 个 consumer workflow。
@@ -31,10 +32,10 @@ Agent Memory 默认写入 `.Rayman/state/memory/`，采用 `episodic -> summariz
 ## 拷贝后源码管理噪声控制（默认开启）
 
 - `setup.ps1` 保留全量资产生成，同时会在末尾自动注入 SCM 忽略规则：external workspace 默认写入共享的 `.gitignore`，RaymanAgent source workspace 默认写入本地 `.git/info/exclude`。
-- external workspace 默认只保留业务源码、业务文档，以及 `.<SolutionName>/` 下的 requirements / agentic 文档；会忽略整个 `.Rayman/`、`.SolutionName`、`.rayman.project.json`、`.rayman.env.ps1`、`.cursorrules`、`.clinerules`、`.codex/config.toml`、`.github/copilot-instructions.md`、`.github/model-policy.md`、`.github/instructions/`、`.github/agents/`、`.github/skills/`、`.github/prompts/`、`rayman-project-*.yml`、生成的 `.vscode/tasks.json` / `.vscode/settings.json`，以及 `bin/`、`obj/`、`.artifacts/`、`test-results/` 等构建噪声。
+- external workspace 默认只保留业务源码、业务文档，以及 `.<SolutionName>/` 下的 requirements / agentic 文档；会忽略整个 `.Rayman/`、`.SolutionName`、`.rayman.project.json`、`.rayman.env.ps1`、`.cursorrules`、`.clinerules`、`.codex/config.toml`、`.github/copilot-instructions.md`、`.github/model-policy.md`、`.github/instructions/`、`.github/agents/`、`.github/skills/`、`.github/prompts/`、`rayman-project-*.yml`、生成的 `.vscode/tasks.json` / `.vscode/settings.json` / `.vscode/launch.json`，以及 `bin/`、`obj/`、`.artifacts/`、`test-results/` 等构建噪声。
 - RaymanAgent source workspace 允许跟踪 authored `.Rayman/` 源码、模板和文档，但默认忽略本地/生成资产，例如 `.Rayman/context/skills.auto.md`、`.Rayman/state/`、`.Rayman/runtime/`、`.Rayman/logs/`、`.Rayman/temp/`、`.Rayman/tmp/`、`.Rayman/mcp/*.bak`、`.Rayman/release/*.zip`、`.Rayman/release/*.tar.gz`、`.Rayman/release/*notes*.md`、`.rayman.env.ps1`、`.cursorrules`、`.clinerules`、`.vscode/*`、`.env`、`.codex/config.toml`。
 - setup 末尾会输出 `modified/added/untracked/total` 统计；超过软阈值（默认 `100`）时，会提示主要来源目录。
-- 若检测到 `.Rayman/**`、`.SolutionName`、`.rayman.project.json`、`.rayman.env.ps1`、`.cursorrules`、`.clinerules`、`.codex/config.toml`、`.github/copilot-instructions.md`、`.github/model-policy.md`、`.github/instructions/**`、`.github/agents/**`、`.github/skills/**`、`.github/prompts/**`、`rayman-project-*.yml`、`.vscode/tasks.json`、`.vscode/settings.json` 已被 Git 跟踪：
+- 若检测到 `.Rayman/**`、`.SolutionName`、`.rayman.project.json`、`.rayman.env.ps1`、`.cursorrules`、`.clinerules`、`.codex/config.toml`、`.github/copilot-instructions.md`、`.github/model-policy.md`、`.github/instructions/**`、`.github/agents/**`、`.github/skills/**`、`.github/prompts/**`、`rayman-project-*.yml`、`.vscode/tasks.json`、`.vscode/settings.json`、`.vscode/launch.json` 已被 Git 跟踪：
   - external workspace 会严格阻断，并给出精确 `git rm -r --cached -- ...` 修复命令；这类仓库只建议提交业务源码、业务文档，以及 `.<SolutionName>/` 下的 requirements / agentic 文档。
   - Rayman 源仓库允许 authored `.Rayman/` 与 `.SolutionName`，但仍会阻断本地/生成资产入库。
 - 非 Rayman 的常见产物目录（`.dotnet10/`、`dist/`、`publish/`、`.tmp/`、`.temp/`）若被 Git 跟踪，会在 setup / release-gate 中单独告警，但默认不阻断。
@@ -242,6 +243,8 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
   - 有影响。当前这次 sandbox 分支会判定失败（常见为 `exited_before_ready`）。
 - 需要等系统自动关闭吗？
   - 不需要。`RAYMAN_SANDBOX_AUTO_CLOSE` 是脚本 `finally` 的收尾行为，不是你要手工等待的步骤。
+- 如果 Playwright 汇总状态已经显示 `scope=wsl` 且 `success=true` 呢？
+  - 说明本次没有走 Windows Sandbox；无需手工补关闭，问题应优先从 host / copy-smoke / VS Code 窗口回收链路排查。
 - 为什么默认会优先走 wsl？
   - 默认 `RAYMAN_PLAYWRIGHT_SETUP_SCOPE=wsl`；若 WSL 路径失败，setup 会自动回退 `scope=host` 以优先保证初始化完成。
 - 如何强制严格 sandbox？
@@ -249,7 +252,7 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 
 ## VS Code 打开自动启动 Rayman（Windows）
 
-- 运行一次 `init.cmd` 后，Rayman 会自动写入 `.vscode/tasks.json` + `.vscode/settings.json`。
+- 运行一次 `init.cmd` 后，Rayman 会自动写入 `.vscode/tasks.json` + `.vscode/settings.json` + `.vscode/launch.json`。
 - 之后每次你用 VS Code 打开该 solution/workspace，默认只会触发一个自动任务：
 - `Rayman: Folder Open Bootstrap`
 - 默认 profile=`conservative`：只同步必跑 watcher/session 去重与 pending task；`daily health`、`context refresh`、轻量依赖检查改为 stale-only。
@@ -258,6 +261,7 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 - 原来的 `Rayman: Auto Start Watchers`、`Rayman: Check Pending Task`、`Rayman: Daily Health Check`、`Rayman: Check Win Deps`、`Rayman: Check WSL Deps` 仍保留，但改为手动任务，不再在 folderOpen 时并发触发。
 - `Rayman: Stop Watchers` 会显式传 `-IncludeResidualCleanup -OwnerPid ${env:VSCODE_PID}`，用于清理当前 workspace 的残留 watcher / MCP / exitwatch 进程树。
 - Rayman 只负责清理自己启动的 watcher / bootstrap / 依赖检查残留进程；VS Code 扩展自身的 `wsl.exe ... codex app-server` 不属于 Rayman 清理范围。
+- strict `copy-self-check` / `copy smoke` 现在只会回收已确认归属临时 workspace 的 VS Code 进程；如果归属无法证明，会记录 `skipped ambiguous vscode cleanup`，不会再为了收尾去强杀当前工作窗口。
 
 环境变量：
 
@@ -269,6 +273,58 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 - `RAYMAN_AUTO_SAVE_WATCH_ENABLED=0`：自动启动时在共享 `win-watch.ps1` 内启用 auto-save
 - `RAYMAN_VSCODE_EXIT_LINKED_STOP_ENABLED=0`：关闭 VS Code owner 退出后按 session 自动回收后台服务
 - `RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED=1`：如确实需要，再显式开启对普通 VS Code 窗口的监控
+
+## LAN Worker / Remote .NET Debugging
+
+Rayman 现在支持 `开发机 -> 工作机` 的局域网 worker 链路。v1 假设环境是**受控独立局域网**，因此 discovery 默认采用“发现即信任”；如果后续进入普通办公网或跨网段，必须补 pairing / auth。
+
+约束：
+
+- Worker 仅支持 Windows。
+- Worker 依赖已登录的交互式用户会话。
+- 一台工作机的一个 workspace 对应一个 worker。
+- 开发机可以发现多台 worker，但一次只绑定 1 台 active worker。
+- 远程源码级调试当前只承诺 `.NET-first`。
+
+首次部署：
+
+1. 在工作机打开目标仓库根目录。
+2. 本地手工执行：`.\.Rayman\rayman.ps1 worker install-local`
+3. 这会注册按用户登录自启的 `Rayman Worker` 任务，并立即拉起轻量 host。
+
+开发机日常使用：
+
+1. 发现工作机：`.\.Rayman\rayman.ps1 worker discover`
+2. 查看缓存：`.\.Rayman\rayman.ps1 worker list`
+3. 绑定 active worker：`.\.Rayman\rayman.ps1 worker use --id <workerId>`
+4. 查看远端状态：`.\.Rayman\rayman.ps1 worker status`
+5. 执行远端命令：`.\.Rayman\rayman.ps1 worker exec -- dotnet build`
+
+源码同步：
+
+- attached：工作机直接使用自己已有的 repo/worktree
+  - `.\.Rayman\rayman.ps1 worker sync --mode attached`
+- staged：开发机把当前源码快照打包后下发到工作机 staging 目录
+  - `.\.Rayman\rayman.ps1 worker sync --mode staged`
+
+VS Code 调试：
+
+1. 先执行 `Rayman: Worker Debug Prepare`
+2. 然后启动：
+   - `Rayman Worker: Launch .NET (Active Worker)`
+   - `Rayman Worker: Attach .NET (Active Worker)`
+3. 若自动识别到的目标程序不对，可先设置 `RAYMAN_WORKER_DEBUG_PROGRAM`
+4. 若 attach，需要输入工作机上的远程进程 PID
+
+远程升级：
+
+- 开发机执行：`.\.Rayman\rayman.ps1 worker upgrade`
+- 当前开发机的 `.Rayman` 包会推送到 active worker，并在工作机上自动切换重启
+
+退出远程模式：
+
+- 清空 active worker：`.\.Rayman\rayman.ps1 worker clear`
+- 清空后 `dispatch` / `review-loop` / `test-fix` 会回退本地执行
 
 ## Prompt → Requirements 自动同步（可选）
 
@@ -347,6 +403,7 @@ bash ./.Rayman/run/watch.sh
 - `[ pwsh-only ]` `rayman.ps1 linux-test`：Run Linux tests in WSL with dependency bootstrap.
 - `[ all ]` `rayman dispatch`：Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`：Manage Rayman-scoped Codex accounts, switching, and CLI execution.
+- `[ windows-only ]` `rayman.ps1 worker`：Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`：Sync or inspect Rayman-managed Codex capabilities.
 #### Diagnostics
 - `[ pwsh-only ]` `rayman.ps1 agent-contract`：Check agent assets, instructions, and generated-context contracts.

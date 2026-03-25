@@ -26,6 +26,7 @@ winapp-inspect	windows-only	automation	Export the Windows control tree for flow 
 linux-test	pwsh-only	automation	Run Linux tests in WSL with dependency bootstrap.	0
 dispatch	all	automation	Route a task to codex, copilot, or local backends.	1
 codex	all	automation	Manage Rayman-scoped Codex accounts, switching, and CLI execution.	1
+worker	windows-only	automation	Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.	1
 agent-capabilities	pwsh-only	automation	Sync or inspect Rayman-managed Codex capabilities.	1
 agent-contract	pwsh-only	diagnostics	Check agent assets, instructions, and generated-context contracts.	0
 review-loop	pwsh-only	automation	Run the dispatch plus test-fix review loop.	1

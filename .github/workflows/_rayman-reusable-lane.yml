@@ -9,6 +9,10 @@ on:
       artifact_name:
         required: true
         type: string
+      job_timeout_minutes:
+        required: false
+        type: number
+        default: 360
       run_fast_contract:
         required: false
         type: boolean
@@ -25,6 +29,14 @@ on:
         required: false
         type: boolean
         default: false
+      run_fast_gate:
+        required: false
+        type: boolean
+        default: false
+      run_browser_gate:
+        required: false
+        type: boolean
+        default: false
       host_smoke_args:
         required: false
         type: string
@@ -37,6 +49,10 @@ on:
         required: false
         type: string
         default: ""
+      enable_attestation:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,6 +63,7 @@ permissions:
 jobs:
   lane:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +127,16 @@ jobs:
             }
           }
           & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+
+      - name: Run project fast gate
+        if: inputs.run_fast_gate
+        shell: pwsh
+        run: ./.Rayman/rayman.ps1 fast-gate
+
+      - name: Run project browser gate
+        if: inputs.run_browser_gate
+        shell: pwsh
+        run: ./.Rayman/rayman.ps1 browser-gate
 
       - name: Run distributable consumer contract
         if: inputs.run_copy_smoke
@@ -206,13 +233,13 @@ jobs:
             .Rayman/logs/**
 
       - name: Generate artifact attestation
-        if: always()
+        if: ${{ always() && inputs.enable_attestation }}
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: .Rayman/runtime/ci-artifacts/${{ inputs.artifact_name }}.manifest.json
 
       - name: Verify artifact attestation
-        if: always()
+        if: ${{ always() && inputs.enable_attestation }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,6 +250,6 @@ jobs:
           }
           $gh = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $gh) {
-            throw 'gh CLI not found for attestation verification'
+            throw 'gh CLI not found for attestation verification; install GitHub CLI on this runner or disable enable_attestation.'
           }
           & $gh.Source attestation verify $manifestPath --repo $env:GITHUB_REPOSITORY

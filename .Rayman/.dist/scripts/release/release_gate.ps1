@@ -769,6 +769,11 @@ if (-not (Test-Path -LiteralPath $tasksPath -PathType Leaf)) {
       'Rayman: Ensure Agent Capabilities',
       'Rayman: Ensure WinApp Automation',
       'Rayman: Check Win Deps',
+      'Rayman: Worker Discover',
+      'Rayman: Worker Status',
+      'Rayman: Worker Sync',
+      'Rayman: Worker Upgrade',
+      'Rayman: Worker Debug Prepare',
       'Rayman: Test & Fix',
       'Rayman: Release Gate'
     )
@@ -783,6 +788,32 @@ if (-not (Test-Path -LiteralPath $tasksPath -PathType Leaf)) {
     }
   } catch {
     Add-Result -Results $results -Name 'VSCode任务注册' -Status FAIL -Detail ("tasks.json 解析失败: {0}" -f $_.Exception.Message) -Action '修复 tasks.json 格式'
+  }
+}
+
+$launchPath = Join-Path $WorkspaceRoot '.vscode\launch.json'
+if (-not (Test-Path -LiteralPath $launchPath -PathType Leaf)) {
+  Add-Result -Results $results -Name 'VSCode调试注册' -Status FAIL -Detail '.vscode/launch.json 不存在' -Action '运行 ./.Rayman/setup.ps1'
+} else {
+  try {
+    $launchJson = Read-JsoncFile -Path $launchPath
+    $launchNames = @()
+    if ($launchJson.configurations) { $launchNames = @($launchJson.configurations | ForEach-Object { [string]$_.name }) }
+    $requiredLaunchNames = @(
+      'Rayman Worker: Launch .NET (Active Worker)',
+      'Rayman Worker: Attach .NET (Active Worker)'
+    )
+    $missingLaunchNames = @()
+    foreach ($name in $requiredLaunchNames) {
+      if ($launchNames -notcontains $name) { $missingLaunchNames += $name }
+    }
+    if ($missingLaunchNames.Count -eq 0) {
+      Add-Result -Results $results -Name 'VSCode调试注册' -Status PASS -Detail '关键 worker 调试入口均已注册'
+    } else {
+      Add-Result -Results $results -Name 'VSCode调试注册' -Status FAIL -Detail ("缺少 launch 配置: " + ($missingLaunchNames -join ', ')) -Action '重新运行 setup 生成 launch.json'
+    }
+  } catch {
+    Add-Result -Results $results -Name 'VSCode调试注册' -Status FAIL -Detail ("launch.json 解析失败: {0}" -f $_.Exception.Message) -Action '修复 launch.json 格式'
   }
 }
 

@@ -7,7 +7,7 @@
 ## Workspace Snapshot
 
 - Root: `.`
-- Top-level entries: .clinerules, .codex, .cursorrules, .env, .gitattributes, .github, .gitignore, .Rayman, .rayman.env.ps1, .RaymanAgent, .SolutionName, .venv, .vscode, AGENTS.md, clash_report_20260321_202028.zip, codex_list.log, codex_list2.log, codex_login_main.log, codex_status.log, menu_run.log, testResults.xml
+- Top-level entries: .clinerules, .codex, .cursorrules, .env, .gitattributes, .github, .gitignore, .Rayman, .rayman.env.ps1, .RaymanAgent, .SolutionName, .venv, .vscode, AGENTS.md, clash_report_20260321_202028.zip, codex_list.log, codex_list2.log, codex_login_main.log, codex_status.log, menu_run.log, RaymanAgent.sln, testResults.xml
 
 ## Governance & Agent Assets
 
@@ -60,6 +60,7 @@
 - utils
 - watch
 - windows
+- worker
 
 ## Agent Config
 
@@ -98,6 +99,7 @@
 - `[ windows-only ]` `rayman.ps1 watch-stop`：Stop background watchers and helper processes.
 - `[ all ]` `rayman dispatch`：Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`：Manage Rayman-scoped Codex accounts, switching, and CLI execution.
+- `[ windows-only ]` `rayman.ps1 worker`：Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`：Sync or inspect Rayman-managed Codex capabilities.
 - `[ pwsh-only ]` `rayman.ps1 review-loop`：Run the dispatch plus test-fix review loop.
 - `[ pwsh-only ]` `rayman.ps1 release-gate`：Run release readiness checks and reports.

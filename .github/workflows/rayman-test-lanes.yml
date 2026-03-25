@@ -25,6 +25,7 @@ jobs:
       run_fast_contract: true
       run_pester: true
       run_bats: true
+      enable_attestation: ${{ github.event_name != 'pull_request' }}
 
   fast-contract-windows:
     permissions:
@@ -39,3 +40,5 @@ jobs:
       run_fast_contract: true
       run_pester: true
       run_host_smoke: true
+      run_fast_gate: true
+      enable_attestation: ${{ github.event_name != 'pull_request' }}

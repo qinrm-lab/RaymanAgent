@@ -2140,6 +2140,7 @@ function Get-RaymanScmTrackedNoiseRules {
         [pscustomobject]@{ Key = 'workspace_env'; Label = '.rayman.env.ps1'; QueryRoot = '.rayman.env.ps1'; Path = '.rayman.env.ps1'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_tasks'; Label = '.vscode/tasks.json'; QueryRoot = '.vscode/tasks.json'; Path = '.vscode/tasks.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_settings'; Label = '.vscode/settings.json'; QueryRoot = '.vscode/settings.json'; Path = '.vscode/settings.json'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'vscode_launch'; Label = '.vscode/launch.json'; QueryRoot = '.vscode/launch.json'; Path = '.vscode/launch.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'root_env'; Label = '.env'; QueryRoot = '.env'; Path = '.env'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'codex_config'; Label = '.codex/config.toml'; QueryRoot = '.codex/config.toml'; Path = '.codex/config.toml'; Recursive = $false; Kind = 'rayman' }
     )
@@ -2163,6 +2164,7 @@ function Get-RaymanScmTrackedNoiseRules {
         [pscustomobject]@{ Key = 'project_full_gate'; Label = '.github/workflows/rayman-project-full-gate.yml'; QueryRoot = '.github/workflows/rayman-project-full-gate.yml'; Path = '.github/workflows/rayman-project-full-gate.yml'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_tasks'; Label = '.vscode/tasks.json'; QueryRoot = '.vscode/tasks.json'; Path = '.vscode/tasks.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_settings'; Label = '.vscode/settings.json'; QueryRoot = '.vscode/settings.json'; Path = '.vscode/settings.json'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'vscode_launch'; Label = '.vscode/launch.json'; QueryRoot = '.vscode/launch.json'; Path = '.vscode/launch.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'full_copy_dir'; Label = '.Rayman_full_for_copy/**'; QueryRoot = '.Rayman_full_for_copy'; Path = '.Rayman_full_for_copy'; Recursive = $true; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'full_bundle_dir'; Label = 'Rayman_full_bundle/**'; QueryRoot = 'Rayman_full_bundle'; Path = 'Rayman_full_bundle'; Recursive = $true; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'sandbox_verify_dir'; Label = '.tmp_sandbox_verify_*/**'; QueryRoot = ':(glob).tmp_sandbox_verify_*'; Path = '.tmp_sandbox_verify_*/'; Pattern = '^\.tmp_sandbox_verify_[^/]+(?:/.*)?$'; Recursive = $false; Kind = 'rayman' }

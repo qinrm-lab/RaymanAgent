@@ -22,6 +22,7 @@ Describe 'governance review docs' {
     $raw | Should -Match '`under-tested`'
     $raw | Should -Match '`platform-opportunity`'
     $raw | Should -Match 'Agentic planner pipeline'
+    $raw | Should -Match 'LAN worker / remote debug'
   }
 
   It 'tracks the 2026 roadmap with P0 P1 P2 priorities and official platform references' {
@@ -35,6 +36,7 @@ Describe 'governance review docs' {
     $raw | Should -Match 'Codex SDK'
     $raw | Should -Match 'background mode'
     $raw | Should -Match 'planner_v1'
+    $raw | Should -Match 'LAN worker fleet'
     $raw | Should -Match 'artifact attestations'
     $raw | Should -Match 'Playwright'
     $raw | Should -Match 'Appium Windows Driver'
@@ -68,5 +70,16 @@ Describe 'governance review docs' {
     $readme | Should -Match 'RAYMAN_AGENT_OPENAI_OPTIONAL'
     $readme | Should -Match '\.RaymanAgent/agentic/'
     $readme | Should -Match 'plan -> tool/subagent select -> execute -> reflect -> verify -> doc close'
+    $readme | Should -Match 'rayman\.ps1 worker'
+    $readme | Should -Match 'Rayman Worker: Launch \.NET \(Active Worker\)'
+  }
+
+  It 'keeps reusable lane attestation verification as a hard gate when enabled' {
+    $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\_rayman-reusable-lane.yml') -Raw -Encoding UTF8
+
+    $workflow | Should -Match 'actions/attest-build-provenance@v1'
+    $workflow | Should -Match '& \$gh\.Source attestation verify'
+    $workflow | Should -Match "throw 'gh CLI not found for attestation verification;"
+    $workflow | Should -Not -Match 'skipping attestation verification on this runner'
   }
 }

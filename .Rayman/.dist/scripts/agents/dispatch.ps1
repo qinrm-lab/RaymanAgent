@@ -18,6 +18,11 @@ if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
 
+$workerCommonPath = Join-Path $PSScriptRoot '..\worker\worker_common.ps1'
+if (Test-Path -LiteralPath $workerCommonPath -PathType Leaf) {
+  . $workerCommonPath
+}
+
 $agenticHelperPath = Join-Path $PSScriptRoot 'agentic_pipeline.ps1'
 if (Test-Path -LiteralPath $agenticHelperPath -PathType Leaf) {
   . $agenticHelperPath
@@ -927,6 +932,35 @@ function Invoke-RaymanDispatchLocalCommand {
   return [pscustomobject]$result
 }
 
+function Invoke-RaymanDispatchExecutionCommand {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$CommandText,
+    [string]$DetailLogPath
+  )
+
+  if (Get-Command Get-RaymanWorkerActiveExecutionContext -ErrorAction SilentlyContinue) {
+    $workerContext = $null
+    try {
+      $workerContext = Get-RaymanWorkerActiveExecutionContext -WorkspaceRoot $WorkspaceRoot
+    } catch {
+      $workerContext = $null
+    }
+
+    if ($null -ne $workerContext) {
+      return (Invoke-RaymanWorkerRemoteCommand -WorkspaceRoot $WorkspaceRoot -CommandText $CommandText -DetailLogPath $DetailLogPath)
+    }
+  }
+
+  $localResult = Invoke-RaymanDispatchLocalCommand -CommandText $CommandText -DetailLogPath $DetailLogPath
+  $localResult | Add-Member -MemberType NoteProperty -Name execution_host -Value 'local' -Force
+  $localResult | Add-Member -MemberType NoteProperty -Name worker_id -Value '' -Force
+  $localResult | Add-Member -MemberType NoteProperty -Name worker_name -Value '' -Force
+  $localResult | Add-Member -MemberType NoteProperty -Name workspace_mode -Value '' -Force
+  $localResult | Add-Member -MemberType NoteProperty -Name sync_manifest -Value $null -Force
+  return $localResult
+}
+
 function Test-PolicyBlocked {
   param(
     [object]$PolicyConfig,
@@ -1406,6 +1440,11 @@ $exitCode = 0
 $success = $true
 $errorMessage = ''
 $agenticPrepareResults = New-Object System.Collections.Generic.List[object]
+$executionHost = 'local'
+$executionWorkerId = ''
+$executionWorkerName = ''
+$executionWorkspaceMode = ''
+$executionSyncManifest = $null
 
 if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   $delegated = $true
@@ -1477,8 +1516,13 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
       $prepareText = [string]$prepareCommand
       if ([string]::IsNullOrWhiteSpace($prepareText)) { continue }
       Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("agentic prepare: {0}" -f $prepareText)
-      $prepareResult = Invoke-RaymanDispatchLocalCommand -CommandText $prepareText -DetailLogPath $detailLog
+      $prepareResult = Invoke-RaymanDispatchExecutionCommand -WorkspaceRoot $WorkspaceRoot -CommandText $prepareText -DetailLogPath $detailLog
       $agenticPrepareResults.Add($prepareResult) | Out-Null
+      $executionHost = if ($prepareResult.PSObject.Properties['execution_host']) { [string]$prepareResult.execution_host } else { 'local' }
+      $executionWorkerId = if ($prepareResult.PSObject.Properties['worker_id']) { [string]$prepareResult.worker_id } else { '' }
+      $executionWorkerName = if ($prepareResult.PSObject.Properties['worker_name']) { [string]$prepareResult.worker_name } else { '' }
+      $executionWorkspaceMode = if ($prepareResult.PSObject.Properties['workspace_mode']) { [string]$prepareResult.workspace_mode } else { '' }
+      $executionSyncManifest = if ($prepareResult.PSObject.Properties['sync_manifest']) { $prepareResult.sync_manifest } else { $null }
       if (-not [bool]$prepareResult.success) {
         $exitCode = [int]$prepareResult.exit_code
         $success = $false
@@ -1487,20 +1531,30 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
       }
     }
     if ($success) {
-      $fallbackResult = Invoke-RaymanDispatchLocalCommand -CommandText $executedCommand -DetailLogPath $detailLog
+      $fallbackResult = Invoke-RaymanDispatchExecutionCommand -WorkspaceRoot $WorkspaceRoot -CommandText $executedCommand -DetailLogPath $detailLog
       $exitCode = [int]$fallbackResult.exit_code
       $success = [bool]$fallbackResult.success
       $errorMessage = [string]$fallbackResult.error_message
+      $executionHost = if ($fallbackResult.PSObject.Properties['execution_host']) { [string]$fallbackResult.execution_host } else { 'local' }
+      $executionWorkerId = if ($fallbackResult.PSObject.Properties['worker_id']) { [string]$fallbackResult.worker_id } else { '' }
+      $executionWorkerName = if ($fallbackResult.PSObject.Properties['worker_name']) { [string]$fallbackResult.worker_name } else { '' }
+      $executionWorkspaceMode = if ($fallbackResult.PSObject.Properties['workspace_mode']) { [string]$fallbackResult.workspace_mode } else { '' }
+      $executionSyncManifest = if ($fallbackResult.PSObject.Properties['sync_manifest']) { $fallbackResult.sync_manifest } else { $null }
     }
   }
 } elseif (-not [string]::IsNullOrWhiteSpace($Command)) {
   if ($selectedBackend -eq 'local') {
     $executedCommand = $Command
     if (-not $DryRun) {
-      $localResult = Invoke-RaymanDispatchLocalCommand -CommandText $Command -DetailLogPath $detailLog
+      $localResult = Invoke-RaymanDispatchExecutionCommand -WorkspaceRoot $WorkspaceRoot -CommandText $Command -DetailLogPath $detailLog
       $exitCode = [int]$localResult.exit_code
       $success = [bool]$localResult.success
       $errorMessage = [string]$localResult.error_message
+      $executionHost = if ($localResult.PSObject.Properties['execution_host']) { [string]$localResult.execution_host } else { 'local' }
+      $executionWorkerId = if ($localResult.PSObject.Properties['worker_id']) { [string]$localResult.worker_id } else { '' }
+      $executionWorkerName = if ($localResult.PSObject.Properties['worker_name']) { [string]$localResult.worker_name } else { '' }
+      $executionWorkspaceMode = if ($localResult.PSObject.Properties['workspace_mode']) { [string]$localResult.workspace_mode } else { '' }
+      $executionSyncManifest = if ($localResult.PSObject.Properties['sync_manifest']) { $localResult.sync_manifest } else { $null }
     }
   } else {
     $delegated = $true
@@ -1568,6 +1622,11 @@ $summary = [ordered]@{
   dry_run = [bool]$DryRun
   delegated = $delegated
   executed_command = $executedCommand
+  execution_host = $executionHost
+  worker_id = $executionWorkerId
+  worker_name = $executionWorkerName
+  workspace_mode = $executionWorkspaceMode
+  sync_manifest = $executionSyncManifest
   system_slim_active = $systemSlimActive
   system_slim_feature = $systemSlimFeature
   delegation_target = $delegationTarget

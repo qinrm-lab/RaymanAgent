@@ -1313,6 +1313,7 @@ switch ($cmd) {
     Exit-RaymanCli -ExitCode $(if ($?) { 0 } else { 1 }) -CommandName $cmd -InputArgs $CliArgs
   }
   "codex" { & "$PSScriptRoot\scripts\codex\manage_accounts.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "worker" { & "$PSScriptRoot\scripts\worker\manage_workers.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "health-check" { & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" @CliArgs; break }
   "one-click-health" {
     $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)

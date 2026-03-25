@@ -19,6 +19,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Setup bootstrap | `rayman init`, `init.sh`, `init.ps1`, `init.cmd`, `setup.ps1` | 初始化工作区、准备 Git、requirements、workflow、context、watch/bootstrap 默认值 | `bash`, `powershell.exe`, `git`, optional `gh`, optional WSL | `copy-self-check`, `host-smoke`, `release-gate`, `common.workspace.Tests` | `stable` |
 | CLI surface | `rayman`, `rayman.ps1`, `commands.txt`, README commands block | 命令目录驱动 help、README 命令块和 CLI parity | `bash`, `pwsh`/`powershell.exe` | `command_catalog.Tests`, `verify_cli_parity.ps1`, `host-smoke` | `stable` |
+| LAN worker / remote debug | `rayman.ps1 worker`, `.vscode/launch.json`, worker tasks | 发现局域网 Windows worker、绑定 active worker、同步源码、远程执行、准备 .NET 调试和自升级 | Windows work machine, UDP broadcast, HTTP control plane, VS Code pipe transport | worker Pester coverage partial, release gate, setup merge | `under-tested` |
 | Workspace hygiene | setup SCM ignore / tracked-noise block / dist parity | source workspace 默认只忽略本地生成物，external workspace 默认忽略整套 Rayman 资产 | `git`, `.git/info/exclude`, `.gitignore` | `contract_scm_tracked_noise.sh`, `assert_dist_sync.*`, `common.workspace.Tests` | `stable` |
 
 ## 2. Watch / Alerts / Lifecycle

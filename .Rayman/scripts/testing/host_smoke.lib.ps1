@@ -142,21 +142,160 @@ function Get-RaymanHostSmokeMergedOutput {
   return ($sections -join [Environment]::NewLine)
 }
 
+function Get-RaymanHostSmokeStepTimeoutSeconds {
+  $raw = [Environment]::GetEnvironmentVariable('RAYMAN_HOST_SMOKE_STEP_TIMEOUT_SECONDS')
+  $parsed = 0
+  if (-not [string]::IsNullOrWhiteSpace([string]$raw) -and [int]::TryParse([string]$raw, [ref]$parsed)) {
+    if ($parsed -lt 5) { return 5 }
+    if ($parsed -gt 1800) { return 1800 }
+    return $parsed
+  }
+  return 180
+}
+
+function Invoke-RaymanHostSmokeCommandCapture {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList = @(),
+    [string]$WorkingDirectory = '',
+    [int]$TimeoutSeconds = 0
+  )
+
+  if ($TimeoutSeconds -le 0) {
+    $TimeoutSeconds = Get-RaymanHostSmokeStepTimeoutSeconds
+  }
+
+  $result = [ordered]@{
+    success = $false
+    started = $false
+    exit_code = -1
+    output = ''
+    stdout = @()
+    stderr = @()
+    command = ''
+    file_path = [string]$FilePath
+    error = ''
+    timed_out = $false
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$FilePath)) {
+    $result.error = 'file_path_missing'
+    return [pscustomobject]$result
+  }
+
+  $quotedArgs = @($ArgumentList | ForEach-Object {
+        $arg = [string]$_
+        if ([string]::IsNullOrWhiteSpace($arg)) { return "''" }
+        if ($arg -match '[\s"]') {
+          return ('"' + ($arg -replace '"', '\"') + '"')
+        }
+        return $arg
+      })
+  $result.command = ((@([string]$FilePath) + $quotedArgs) -join ' ').Trim()
+
+  $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_host_smoke_capture_' + [Guid]::NewGuid().ToString('N'))
+  $stdoutPath = $tempBase + '.stdout.txt'
+  $stderrPath = $tempBase + '.stderr.txt'
+  $job = $null
+
+  try {
+    $job = Start-Job -ScriptBlock {
+      param(
+        [string]$TargetPath,
+        [string[]]$TargetArgs,
+        [string]$TargetWorkingDirectory
+      )
+
+      $ErrorActionPreference = 'Continue'
+      if (-not [string]::IsNullOrWhiteSpace([string]$TargetWorkingDirectory)) {
+        Set-Location -LiteralPath $TargetWorkingDirectory
+      }
+
+      $lines = New-Object System.Collections.Generic.List[string]
+      try {
+        foreach ($item in @(& $TargetPath @TargetArgs 2>&1)) {
+          $lines.Add([string]$item) | Out-Null
+        }
+        $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+        return [pscustomobject]@{
+          exit_code = $exitCode
+          output_lines = @($lines.ToArray())
+          error = ''
+        }
+      } catch {
+        $message = $_.Exception.Message
+        if (-not [string]::IsNullOrWhiteSpace([string]$message)) {
+          $lines.Add([string]$message) | Out-Null
+        }
+        $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
+        return [pscustomobject]@{
+          exit_code = $exitCode
+          output_lines = @($lines.ToArray())
+          error = $message
+        }
+      }
+    } -ArgumentList @([string]$FilePath, @($ArgumentList), [string]$WorkingDirectory)
+    $result.started = $true
+    if ($null -eq (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+      $result.timed_out = $true
+      try { Stop-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {}
+      $result.exit_code = 124
+    } else {
+      $jobResult = Receive-Job -Job $job -ErrorAction SilentlyContinue
+      if ($null -ne $jobResult) {
+        $result.exit_code = if ($jobResult.PSObject.Properties['exit_code']) { [int]$jobResult.exit_code } else { 0 }
+        $result.stdout = if ($jobResult.PSObject.Properties['output_lines']) {
+          @($jobResult.output_lines | ForEach-Object { [string]$_ })
+        } else {
+          @()
+        }
+        if ($jobResult.PSObject.Properties['error'] -and -not [string]::IsNullOrWhiteSpace([string]$jobResult.error)) {
+          $result.error = [string]$jobResult.error
+        }
+      }
+    }
+    if ([bool]$result.timed_out) {
+      $result.error = ("command timed out after {0} seconds" -f $TimeoutSeconds)
+    }
+    $result.output = [string](@($result.stdout + $result.stderr) -join [Environment]::NewLine)
+    $result.success = (-not [bool]$result.timed_out -and $result.exit_code -eq 0)
+  } catch {
+    $result.error = $_.Exception.Message
+    $result.output = [string](@($result.stdout + $result.stderr) -join [Environment]::NewLine)
+  } finally {
+    if ($null -ne $job) {
+      try { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    try { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } catch {}
+    try { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  return [pscustomobject]$result
+}
+
 function Invoke-RaymanHostSmokeStep {
   param(
     [string]$Name,
     [string]$LogDir,
     [string]$FilePath,
     [string[]]$ArgumentList = @(),
-    [string]$WorkingDirectory = ''
+    [string]$WorkingDirectory = '',
+    [int]$TimeoutSeconds = 0
   )
 
   $logPath = Join-Path $LogDir ("{0}.log" -f $Name)
   if (-not (Test-Path -LiteralPath $LogDir -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
   }
-  $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory
+  $capture = Invoke-RaymanHostSmokeCommandCapture -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
   $outputText = Get-RaymanHostSmokeMergedOutput -Capture $capture
+  if ([bool]$capture.timed_out) {
+    if (-not [string]::IsNullOrWhiteSpace($outputText)) {
+      $outputText = $outputText + [Environment]::NewLine + $capture.error
+    } else {
+      $outputText = [string]$capture.error
+    }
+  }
   Set-Content -LiteralPath $logPath -Value $outputText -Encoding UTF8
 
   return [pscustomobject]@{
@@ -167,6 +306,7 @@ function Invoke-RaymanHostSmokeStep {
     exit_code = if ([bool]$capture.started) { [int]$capture.exit_code } else { -1 }
     started = [bool]$capture.started
     launch_error = [string]$capture.error
+    timed_out = [bool]$capture.timed_out
     command = [string]$capture.command
   }
 }
@@ -192,7 +332,7 @@ function Resolve-RaymanHostSmokePythonCommand {
       continue
     }
 
-    $capture = Invoke-RaymanNativeCommandCapture -FilePath $commandPath -ArgumentList @('--version') -WorkingDirectory $WorkingDirectory
+    $capture = Invoke-RaymanHostSmokeCommandCapture -FilePath $commandPath -ArgumentList @('--version') -WorkingDirectory $WorkingDirectory
     $outputText = Get-RaymanHostSmokeMergedOutput -Capture $capture
     $status = if ([bool]$capture.started -and [int]$capture.exit_code -eq 0) {
       'ok'

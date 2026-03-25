@@ -40,6 +40,7 @@ Describe 'workspace_state_guard' {
 
       $result.scrubbed | Should -BeTrue
       $result.removed_count | Should -BeGreaterThan 0
+      @($result.removed_paths) | Should -Contain (Join-Path $root ('.' + 'rag'))
       (Test-Path -LiteralPath (Join-Path $root '.Rayman\logs')) | Should -BeFalse
       (Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\dotnet.exec.last.json')) | Should -BeFalse
       (Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\memory')) | Should -BeFalse
