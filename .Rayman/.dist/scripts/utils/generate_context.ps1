@@ -68,6 +68,83 @@ function Get-FilePreviewLine([string]$Path) {
 	}
 }
 
+function Get-PreferredNewLine([string]$Text) {
+	if ($Text -match "`r`n") { return "`r`n" }
+	if ($Text -match "`n") { return "`n" }
+	return "`r`n"
+}
+
+function Convert-NewLineText {
+	param(
+		[string]$Text,
+		[string]$NewLine
+	)
+
+	$normalized = ($Text -replace "`r`n", "`n") -replace "`r", "`n"
+	if ($NewLine -eq "`n") {
+		return $normalized
+	}
+	return ($normalized -replace "`n", $NewLine)
+}
+
+function Set-Utf8BomTextIfChanged {
+	param(
+		[string]$Path,
+		[string]$Text,
+		[string]$NewLine = "`r`n"
+	)
+
+	$rendered = Convert-NewLineText -Text $Text -NewLine $NewLine
+	$existing = ''
+	if (Test-Path -LiteralPath $Path -PathType Leaf) {
+		$existing = [System.IO.File]::ReadAllText($Path)
+	}
+
+	if ($existing -ceq $rendered) {
+		return $false
+	}
+
+	$enc = New-Object System.Text.UTF8Encoding($true)
+	[System.IO.File]::WriteAllText($Path, $rendered, $enc)
+	return $true
+}
+
+function Get-StableTopLevelEntries([string]$WorkspaceRoot) {
+	$git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+	if ($null -ne $git -and -not [string]::IsNullOrWhiteSpace([string]$git.Source)) {
+		try {
+			$tracked = @(& $git.Source -C $WorkspaceRoot ls-files --cached --full-name 2>$null)
+			if ($LASTEXITCODE -eq 0) {
+				$entryMap = [ordered]@{}
+				foreach ($line in @($tracked)) {
+					$normalized = ([string]$line).Replace('\', '/').Trim()
+					if ([string]::IsNullOrWhiteSpace($normalized)) {
+						continue
+					}
+
+					$topLevel = ($normalized -split '/')[0]
+					if ([string]::IsNullOrWhiteSpace($topLevel)) {
+						continue
+					}
+
+					if (-not $entryMap.Contains($topLevel)) {
+						$entryMap[$topLevel] = $true
+					}
+				}
+
+				if ($entryMap.Count -gt 0) {
+					return @($entryMap.Keys | Sort-Object)
+				}
+			}
+		} catch {}
+	}
+
+	return @(Get-ChildItem -LiteralPath $WorkspaceRoot -Force -ErrorAction SilentlyContinue |
+			Where-Object { $_.Name -notin @('.git', 'node_modules') } |
+			Select-Object -ExpandProperty Name |
+			Sort-Object)
+}
+
 function Get-PropValue([object]$Object, [string]$Name, $Default = $null) {
 	if ($null -eq $Object) { return $Default }
 	$prop = $Object.PSObject.Properties[$Name]
@@ -111,7 +188,7 @@ if (-not (Test-Path -LiteralPath $skillsPath -PathType Leaf)) {
 }
 
 $workspaceName = Split-Path -Leaf $WorkspaceRoot
-$topLevel = @(Get-ChildItem -LiteralPath $WorkspaceRoot -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @('.git','node_modules') } | Select-Object -ExpandProperty Name | Sort-Object)
+$topLevel = @(Get-StableTopLevelEntries -WorkspaceRoot $WorkspaceRoot)
 $scriptGroups = @()
 $scriptsRoot = Join-Path $WorkspaceRoot '.Rayman\scripts'
 if (Test-Path -LiteralPath $scriptsRoot -PathType Container) {
@@ -219,24 +296,9 @@ $lines.Add("- Summary: " + ($(if ([string]::IsNullOrWhiteSpace($skillsHeadline))
 $lines.Add("")
 $lines.Add("## Agent Capabilities")
 $lines.Add("")
-if ($null -ne $capabilityReport) {
-	$activeCapabilities = @($capabilityReport.active_capabilities | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-	$playwrightReport = Get-PropValue -Object $capabilityReport -Name 'playwright' -Default $null
-	$winAppReport = Get-PropValue -Object $capabilityReport -Name 'winapp' -Default $null
-	$lines.Add('- Report: `.Rayman\runtime\agent_capabilities.report.md`')
-	$lines.Add("- Active: " + ($(if ($activeCapabilities.Count -gt 0) { ($activeCapabilities -join ', ') } else { '(none)' })))
-	$lines.Add(('- Codex config: `{0}`' -f $(if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) { '.codex\config.toml' } else { '(missing)' })))
-	$lines.Add(('- Workspace trust: `{0}` ({1})' -f [string]$capabilityReport.workspace_trust_status, [string]$capabilityReport.workspace_trust_reason))
-	$lines.Add(('- Managed capability block: `{0}`' -f [string]([bool]$capabilityReport.managed_block_present).ToString().ToLowerInvariant()))
-	$lines.Add(('- Multi-agent supported/effective: `{0}` / `{1}`' -f [string]([bool](Get-PropValue -Object $capabilityReport -Name 'multi_agent_supported' -Default $false)).ToString().ToLowerInvariant(), [string]([bool](Get-PropValue -Object $capabilityReport -Name 'multi_agent_effective' -Default $false)).ToString().ToLowerInvariant()))
-	$lines.Add(('- Multi-agent degraded reason: `{0}`' -f [string](Get-PropValue -Object $capabilityReport -Name 'multi_agent_degraded_reason' -Default '')))
-	$lines.Add(('- Multi-agent roles: {0}' -f $(if (@(Get-PropValue -Object $capabilityReport -Name 'multi_agent_roles' -Default @()).Count -gt 0) { ((@(Get-PropValue -Object $capabilityReport -Name 'multi_agent_roles' -Default @()) | ForEach-Object { [string]$_ }) -join ', ') } else { '(none)' })))
-	$lines.Add(('- Playwright ready: `{0}` ({1})' -f [string]([bool](Get-PropValue -Object $playwrightReport -Name 'ready' -Default $false)).ToString().ToLowerInvariant(), [string](Get-PropValue -Object $playwrightReport -Name 'reason' -Default 'unknown')))
-	$lines.Add(('- WinApp ready: `{0}` ({1})' -f [string]([bool](Get-PropValue -Object $winAppReport -Name 'ready' -Default $false)).ToString().ToLowerInvariant(), [string](Get-PropValue -Object $winAppReport -Name 'reason' -Default 'unknown')))
-} else {
-	$lines.Add('- Report: `.Rayman\runtime\agent_capabilities.report.md` (not generated yet)')
-	$lines.Add('- Summary: run `rayman agent-capabilities --sync` to materialize `.codex\config.toml`, MCP capability status, and Codex multi-agent status.')
-}
+$lines.Add('- Report: `.Rayman\runtime\agent_capabilities.report.md`')
+$lines.Add(('- Codex config: `{0}`' -f $(if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) { '.codex\config.toml' } else { '(missing)' })))
+$lines.Add('- Summary: active capabilities, workspace trust, and readiness are environment-specific; inspect the runtime report instead of committing those values into `.Rayman\CONTEXT.md`.')
 $lines.Add("")
 $lines.Add("## Recommended Entry Points")
 $lines.Add("")
@@ -249,6 +311,8 @@ $recommendedBlock = if (Get-Command Get-RaymanContextRecommendedBlock -ErrorActi
 } else {
 	@()
 }
+$recommendedBlock = @($recommendedBlock)
+$recommendedEntries = @($recommendedEntries)
 $recommendedToWrite = if ($recommendedBlock.Count -gt 0) { $recommendedBlock } elseif ($recommendedEntries.Count -gt 0) { $recommendedEntries } else {
 	@(
 		'<!-- RAYMAN:RECOMMENDED:BEGIN -->'
@@ -263,7 +327,17 @@ $recommendedToWrite = if ($recommendedBlock.Count -gt 0) { $recommendedBlock } e
 Add-Lines -Target $lines -Items $recommendedToWrite
 $lines.Add("")
 
-$lines | Set-Content -LiteralPath $contextPath -Encoding UTF8
+$existingContext = ''
+if (Test-Path -LiteralPath $contextPath -PathType Leaf) {
+	$existingContext = [System.IO.File]::ReadAllText($contextPath)
+}
+$newLine = Get-PreferredNewLine -Text $existingContext
+$contextText = ($lines -join "`r`n")
+$updated = Set-Utf8BomTextIfChanged -Path $contextPath -Text $contextText -NewLine $newLine
 
-Write-ContextInfo ("[context] wrote: {0}" -f (Get-RelativeDisplayPath -BasePath $WorkspaceRoot -TargetPath $contextPath))
+if ($updated) {
+	Write-ContextInfo ("[context] wrote: {0}" -f (Get-RelativeDisplayPath -BasePath $WorkspaceRoot -TargetPath $contextPath))
+} else {
+	Write-ContextInfo ("[context] unchanged: {0}" -f (Get-RelativeDisplayPath -BasePath $WorkspaceRoot -TargetPath $contextPath))
+}
 Write-ContextInfo ("[context] skills: {0}" -f (Get-RelativeDisplayPath -BasePath $WorkspaceRoot -TargetPath $skillsPath))

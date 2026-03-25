@@ -1,14 +1,14 @@
 # Rayman Agentic Plan
 
-- plan_id: 9a77d3152dc34ec5bcf4f8ea9db85a89
-- generated_at: 2026-03-25T17:59:07.1082387+08:00
+- plan_id: 1245769107cd4cc58946b5ba98cf1175
+- generated_at: 2026-03-25T19:03:32.6355851+08:00
 - task_kind: maintenance
 - prompt_key: 
 - pipeline: planner_v1
 
 ## Goal
 
-- 修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate
+- 消除 `.Rayman/CONTEXT.md` 与 `.Rayman/codex_fix_prompt.txt` 的非幂等污染；让 `generate_context` / `inject_codex_fix_prompt` 在完整回归后不再把 source workspace 写脏
 
 ## Constraints
 
@@ -22,11 +22,13 @@
 
 ## Acceptance Criteria
 
-- Task goal remains: 修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate
-- `manage_workers` 必须保留带空格路径/参数的 PowerShell 语义。
-- `worker_sync` staged bundle 不得包含 `.env`、`.codex/config.toml`、release zip、`.vscode/*` 与 gitignored 文件。
-- `worker_host` 默认仅允许 loopback 控制面；LAN 模式必须显式开启并要求 token。
-- 定向 Pester、`run_host_smoke.ps1`、`full-gate`、strict host `copy_smoke` 必须通过。
+- Task goal remains: 消除 `.Rayman/CONTEXT.md` 与 `.Rayman/codex_fix_prompt.txt` 的非幂等污染；让 `generate_context` / `inject_codex_fix_prompt` 在完整回归后不再把 source workspace 写脏
+- `inject_codex_fix_prompt` 不得再注入时间戳；重复执行时内容必须保持稳定。
+- `inject_codex_fix_prompt` 在缺失进程级 `RAYMAN_SKILLS_SELECTED` 时，必须能回读 runtime 的 skills state。
+- `generate_context` 的 top-level snapshot 必须基于稳定输入，不得吸入未跟踪本地文件。
+- `generate_context` 不得把 runtime capability 细节固化进已跟踪的 `.Rayman/CONTEXT.md`。
+- 定向 Pester、`assert_dist_sync.ps1`、`full-gate`、strict host `copy_smoke` 必须通过。
+- 回归前后 `.Rayman/CONTEXT.md` / `.Rayman/codex_fix_prompt.txt` / `.Rayman/.dist/codex_fix_prompt.txt` hash 必须保持不变。
 - Selected tool policy must be written before execution.
 - Doc gate must pass for the active pipeline stage.
 

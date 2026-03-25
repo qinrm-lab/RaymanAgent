@@ -1,15 +1,15 @@
 {
   "schema": "rayman.agentic.reflection.v1",
-  "generated_at": "2026-03-25T17:59:07.1082387+08:00",
+  "generated_at": "2026-03-25T19:03:32.6355851+08:00",
   "workspace_root": "E:\\rayman\\software\\RaymanAgent",
   "stage": "review_loop",
   "task_kind": "maintenance",
-  "task": "修复 3 个 worker review finding：命令转义、staged sync 过滤、本地默认 loopback + 显式 LAN 鉴权；并通过定向回归与发布 gate",
-  "plan_id": "9a77d3152dc34ec5bcf4f8ea9db85a89",
+  "task": "消除 `.Rayman/CONTEXT.md` 与 `.Rayman/codex_fix_prompt.txt` 的非幂等污染；让 `generate_context` / `inject_codex_fix_prompt` 在完整回归后不再把 source workspace 写脏",
+  "plan_id": "1245769107cd4cc58946b5ba98cf1175",
   "round": 1,
   "max_rounds": 1,
   "outcome": "done",
-  "reason": "tests_passed_and_docs_closed",
+  "reason": "non_polluting_regression_passed",
   "acceptance_closed": true,
   "policy_ok": true,
   "doc_gate_pass": true,
@@ -34,7 +34,7 @@
   "test_exit": 0,
   "error_kind": "ok",
   "diff_summary": {
-    "touched_files_count": 20,
-    "net_line_delta": 1010
+    "touched_files_count": 15,
+    "net_line_delta": 291
   }
 }

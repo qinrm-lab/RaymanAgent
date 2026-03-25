@@ -6,9 +6,14 @@ RAYMAN_DIR="$ROOT_DIR/.Rayman"
 PROMPT_FILE="$RAYMAN_DIR/codex_fix_prompt.txt"
 BASE_FILE="$RAYMAN_DIR/templates/codex_fix_prompt.base.txt"
 AUTO_MD="$RAYMAN_DIR/context/skills.auto.md"
+SKILLS_ENV_FILE="$RAYMAN_DIR/runtime/skills.env"
 
 SKILLS_SELECTED="${RAYMAN_SKILLS_SELECTED:-}"
-NOW="$(date +"%Y-%m-%d %H:%M:%S")"
+if [[ -z "$SKILLS_SELECTED" && -f "$SKILLS_ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$SKILLS_ENV_FILE" || true
+  SKILLS_SELECTED="${RAYMAN_SKILLS_SELECTED:-}"
+fi
 
 begin_marker='<!-- RAYMAN:SKILLS:BEGIN -->'
 end_marker='<!-- RAYMAN:SKILLS:END -->'
@@ -17,7 +22,6 @@ header="$(cat <<EOF
 $begin_marker
 # Skills（自动注入）
 
-- 时间：$NOW
 - 推断结果：${SKILLS_SELECTED:-（未生成）}
 - 详细建议：$AUTO_MD
 
@@ -59,5 +63,10 @@ else
     printf "%s\n\n" "$header"
     cat "$PROMPT_FILE"
   } > "$PROMPT_FILE.tmp"
+fi
+
+if cmp -s "$PROMPT_FILE" "$PROMPT_FILE.tmp"; then
+  rm -f "$PROMPT_FILE.tmp"
+else
   mv "$PROMPT_FILE.tmp" "$PROMPT_FILE"
 fi

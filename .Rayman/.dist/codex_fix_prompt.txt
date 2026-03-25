@@ -1,8 +1,7 @@
-<!-- RAYMAN:SKILLS:BEGIN -->
+﻿<!-- RAYMAN:SKILLS:BEGIN -->
 # Skills（自动注入）
 
-- 时间：未生成
-- 推断结果：（未生成）
+- 推断结果：docs,spreadsheets
 - 详细建议：.Rayman/context/skills.auto.md
 
 要求：
@@ -41,3 +40,23 @@
 # 验收标准:
 # - ...
 <!-- RAYMAN:USER_PROMPT:END -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

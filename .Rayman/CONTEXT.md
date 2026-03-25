@@ -7,7 +7,7 @@
 ## Workspace Snapshot
 
 - Root: `.`
-- Top-level entries: .clinerules, .codex, .cursorrules, .env, .gitattributes, .github, .gitignore, .Rayman, .rayman.env.ps1, .RaymanAgent, .SolutionName, .venv, .vscode, AGENTS.md, clash_report_20260321_202028.zip, codex_list.log, codex_list2.log, codex_login_main.log, codex_status.log, menu_run.log, RaymanAgent.sln, testResults.xml
+- Top-level entries: .gitattributes, .github, .gitignore, .Rayman, .RaymanAgent, .SolutionName, AGENTS.md
 
 ## Governance & Agent Assets
 
@@ -82,15 +82,8 @@
 ## Agent Capabilities
 
 - Report: `.Rayman\runtime\agent_capabilities.report.md`
-- Active: openai_docs, web_auto_test, winapp_auto_test
 - Codex config: `.codex\config.toml`
-- Workspace trust: `trusted` (matched_user_config)
-- Managed capability block: `true`
-- Multi-agent supported/effective: `true` / `true`
-- Multi-agent degraded reason: ``
-- Multi-agent roles: rayman_explorer, rayman_reviewer, rayman_docs_researcher, rayman_browser_debugger, rayman_winapp_debugger, rayman_worker
-- Playwright ready: `true` (summary_success)
-- WinApp ready: `true` (ready)
+- Summary: active capabilities, workspace trust, and readiness are environment-specific; inspect the runtime report instead of committing those values into `.Rayman\CONTEXT.md`.
 
 ## Recommended Entry Points
 
@@ -106,4 +99,3 @@
 - `[ pwsh-only ]` `rayman.ps1 context-update`：Regenerate local context and auto-skill artifacts.
 - `[ pwsh-only ]` `rayman.ps1 one-click-health`：Force daily health check and refresh proxy health snapshot.
 <!-- RAYMAN:RECOMMENDED:END -->
-

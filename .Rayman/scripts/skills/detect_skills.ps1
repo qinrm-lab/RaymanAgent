@@ -168,8 +168,11 @@ if (Test-Path -LiteralPath $CapReport -PathType Leaf) {
 $lines.Add("> Agent capabilities：" + $capSummary)
 $lines.Add("")
 
+$selectedSkills = ($ordered -join ",")
+[Environment]::SetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', $selectedSkills, 'Process')
+
 $lines | Set-Content -Path $OutMd -Encoding UTF8
-('$env:RAYMAN_SKILLS_SELECTED="' + ($ordered -join ",") + '"') | Set-Content -Path $OutEnv -Encoding UTF8
+('$env:RAYMAN_SKILLS_SELECTED="' + $selectedSkills + '"') | Set-Content -Path $OutEnv -Encoding UTF8
 
 Write-Host ("[skills] selected: " + ($ordered -join ","))
 Write-Host ("[skills] wrote: " + $OutMd)
