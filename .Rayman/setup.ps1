@@ -2708,8 +2708,17 @@ if (Test-Path -LiteralPath $launchFile -PathType Leaf) {
         Write-Host "⚠️ 更新 .vscode/launch.json 失败，可能是 JSON 格式不正确。请手动修复。" -ForegroundColor Yellow
     } else {
         $launchObj = if ($null -ne $launchDoc.Obj) { $launchDoc.Obj } else { @{ version = '0.2.0'; configurations = @(); inputs = @() } }
-        if (-not $launchObj.ContainsKey('configurations')) { $launchObj['configurations'] = @() }
-        if (-not $launchObj.ContainsKey('inputs')) { $launchObj['inputs'] = @() }
+        $hasConfigurations = $false
+        $hasInputs = $false
+        if ($launchObj -is [System.Collections.IDictionary]) {
+            $hasConfigurations = [bool]$launchObj.Contains('configurations')
+            $hasInputs = [bool]$launchObj.Contains('inputs')
+        } else {
+            $hasConfigurations = ($null -ne $launchObj.PSObject.Properties['configurations'])
+            $hasInputs = ($null -ne $launchObj.PSObject.Properties['inputs'])
+        }
+        if (-not $hasConfigurations) { $launchObj['configurations'] = @() }
+        if (-not $hasInputs) { $launchObj['inputs'] = @() }
 
         $filteredConfigs = @($launchObj['configurations'] | Where-Object { [string]$_.name -notlike 'Rayman Worker:*' })
         $filteredInputs = @($launchObj['inputs'] | Where-Object { [string]$_.id -ne 'raymanWorkerAttachProcessId' })
