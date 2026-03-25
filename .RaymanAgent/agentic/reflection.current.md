@@ -1,17 +1,17 @@
 # Rayman Reflection
 
-- generated_at: 2026-03-25T15:32:20.6837904+08:00
+- generated_at: 2026-03-25T15:44:51.3241883+08:00
 - plan_id: cb3d64d9ca35483489115aae75ec10e7
-- round: 1
+- round: 2
 - max_rounds: 2
-- outcome: replan
-- reason: tests_failed_but_budget_remaining
-- test_exit: 1
-- error_kind: in_progress
+- outcome: done
+- reason: tests_passed_and_docs_closed
+- test_exit: 0
+- error_kind: ok
 
 ## Acceptance
 
-- acceptance_closed: false
+- acceptance_closed: true
 - doc_gate_pass: true
 - policy_ok: true
 
