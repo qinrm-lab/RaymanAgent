@@ -1,5 +1,6 @@
 BeforeAll {
   . (Join-Path $PSScriptRoot '..\..\pwa\playwright_ready.lib.ps1')
+  $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 }
 
 Describe 'playwright_ready.lib' {
@@ -30,5 +31,12 @@ Describe 'playwright_ready.lib' {
   It 'converts string booleans flexibly' {
     Convert-ToBoolFlexible -Value 'yes' -ParameterName 'Require' | Should -BeTrue
     Convert-ToBoolFlexible -Value 'off' -ParameterName 'Require' | Should -BeFalse
+  }
+
+  It 'keeps sandbox offline cache gating enabled by default' {
+    $raw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\pwa\ensure_playwright_ready.ps1') -Raw -Encoding UTF8
+
+    $needle = [regex]::Escape("RAYMAN_SANDBOX_OFFLINE_CACHE_REQUIRE' -DefaultValue `$true")
+    ([regex]::Matches($raw, $needle)).Count | Should -Be 2
   }
 }

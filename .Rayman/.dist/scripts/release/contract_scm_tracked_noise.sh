@@ -353,7 +353,8 @@ function Get-ExternalBlockedTrackedTargets {
       '.github/workflows/rayman-project-browser-gate.yml',
       '.github/workflows/rayman-project-full-gate.yml',
       '.vscode/tasks.json',
-      '.vscode/settings.json'
+      '.vscode/settings.json',
+      '.vscode/launch.json'
     )) {
     if (Test-Path -LiteralPath (Join-Path $WorkspaceRoot $candidate)) {
       $targets.Add($candidate) | Out-Null
@@ -646,7 +647,8 @@ function Get-SourceBlockedTrackedTargets([string]$WorkspaceRoot) {
     '.cursorrules',
     '.clinerules',
     '.vscode/tasks.json',
-    '.vscode/settings.json'
+    '.vscode/settings.json',
+    '.vscode/launch.json'
   ) | Where-Object { Test-Path -LiteralPath (Join-Path $WorkspaceRoot $_) }
 }
 

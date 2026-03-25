@@ -54,11 +54,13 @@ function Get-RaymanManagedAssetContracts {
     @{ path = '.github/skills/openai-docs-research/SKILL.md'; tokens = @('name: openai-docs-research', 'OpenAI Docs MCP') }
     @{ path = '.github/skills/browser-e2e-debug/SKILL.md'; tokens = @('name: browser-e2e-debug', 'Playwright MCP') }
     @{ path = '.github/skills/winapp-debug/SKILL.md'; tokens = @('name: winapp-debug', 'Rayman WinApp MCP') }
+    @{ path = '.github/skills/worker-remote-debug/SKILL.md'; tokens = @('name: worker-remote-debug', 'rayman.ps1 worker', 'Rayman Worker: Launch .NET (Active Worker)') }
     @{ path = '.github/skills/rayman-release-gate/SKILL.md'; tokens = @('name: rayman-release-gate', '.Rayman/RELEASE_REQUIREMENTS.md') }
     @{ path = '.github/prompts/bugfix.prompt.md'; tokens = @('description:', '{{TASK}}') }
     @{ path = '.github/prompts/refactor.prompt.md'; tokens = @('description:', '{{TASK}}') }
     @{ path = '.github/prompts/tests.prompt.md'; tokens = @('description:', '{{TASK}}') }
     @{ path = '.github/prompts/release-triage.prompt.md'; tokens = @('description:', '{{TASK}}') }
+    @{ path = '.github/prompts/worker-debug.prompt.md'; tokens = @('description:', '{{TASK}}', 'worker debug') }
     @{ path = '.Rayman/scripts/utils/generate_context.ps1'; tokens = @('skills.auto.md', 'CONTEXT.md', '## Agent Capabilities') }
     @{ path = '.Rayman/scripts/utils/request_attention.ps1'; tokens = @('param', 'Message') }
     @{ path = '.Rayman/scripts/skills/detect_skills.ps1'; tokens = @('skills.auto.md', 'Agent capabilities') }
@@ -73,11 +75,11 @@ function Get-RaymanManagedAssetContracts {
     @{ path = '.Rayman/config/codex_agents/rayman_browser_debugger.toml'; tokens = @('name = "rayman_browser_debugger"', 'description =', 'model = "gpt-5.4"', 'mcp_servers.playwright.enabled = true', 'browser-e2e-debug') }
     @{ path = '.Rayman/config/codex_agents/rayman_winapp_debugger.toml'; tokens = @('name = "rayman_winapp_debugger"', 'description =', 'model = "gpt-5.4"', 'mcp_servers.raymanWinApp.enabled = true', 'winapp-debug') }
     @{ path = '.Rayman/config/codex_agents/rayman_worker.toml'; tokens = @('name = "rayman_worker"', 'description =', 'model = "gpt-5.3-codex"', 'sandbox_mode = "workspace-write"') }
-    @{ path = '.Rayman/README.md'; tokens = @('rayman.ps1 context-update', 'rayman.ps1 agent-contract', 'rayman agent-capabilities', '.codex/config.toml', '.Rayman/release/FEATURE_INVENTORY.md', '.github/model-policy.md') }
+    @{ path = '.Rayman/README.md'; tokens = @('rayman.ps1 context-update', 'rayman.ps1 agent-contract', 'rayman agent-capabilities', 'rayman.ps1 worker', '.codex/config.toml', '.Rayman/release/FEATURE_INVENTORY.md', '.github/model-policy.md') }
     @{ path = '.Rayman/release/FEATURE_INVENTORY.md'; tokens = @('Rayman Feature Inventory', 'Entrypoints And Setup', 'Watch / Alerts / Lifecycle', 'Agent / Capability / Prompt Governance', 'Browser / PWA / WinApp', 'Release / CI / Security', 'State / Transfer / Docs / Telemetry') }
     @{ path = '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md'; tokens = @('Rayman Enhancement Roadmap 2026', 'P0', 'P1', 'P2', 'Codex SDK', 'artifact attestations', 'Appium Windows Driver') }
-    @{ path = '.Rayman/rayman.ps1'; tokens = @('"context-update"', '"agent-contract"', '"agent-capabilities"', '"codex"', '"ensure-winapp"', '"winapp-test"', '"winapp-inspect"') }
-    @{ path = '.Rayman/setup.ps1'; tokens = @('Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts', 'gh auth setup-git') }
+    @{ path = '.Rayman/rayman.ps1'; tokens = @('"context-update"', '"agent-contract"', '"agent-capabilities"', '"codex"', '"worker"', '"ensure-winapp"', '"winapp-test"', '"winapp-inspect"') }
+    @{ path = '.Rayman/setup.ps1'; tokens = @('Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts', '.vscode/launch.json', 'gh auth setup-git') }
     @{ path = '.Rayman/scripts/windows/ensure_winapp.ps1'; tokens = @('winapp.ready.windows.json', 'RAYMAN_WINAPP_REQUIRE') }
     @{ path = '.Rayman/scripts/windows/winapp_core.ps1'; tokens = @('rayman.winapp.ready.v1', 'rayman.winapp.flow.result.v1', 'System.Windows.Automation') }
     @{ path = '.Rayman/scripts/windows/run_winapp_flow.ps1'; tokens = @('rayman.winapp.flow.result.v1', 'winapp.flow.sample.json') }

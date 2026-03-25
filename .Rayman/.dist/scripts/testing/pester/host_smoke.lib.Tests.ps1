@@ -1,4 +1,5 @@
 BeforeAll {
+  $script:WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
   . (Join-Path $PSScriptRoot '..\..\..\common.ps1')
   . (Join-Path $PSScriptRoot '..\host_smoke.lib.ps1')
 }
@@ -30,6 +31,28 @@ Describe 'host smoke native capture' {
       $result.exit_code | Should -Be 7
       $result.output | Should -Match 'host smoke stderr'
       $logText | Should -Match 'host smoke stderr'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'times out long-running steps and marks them as timed out' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_host_smoke_timeout_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      $logDir = Join-Path $root 'logs'
+      New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+      $psHost = Resolve-RaymanPowerShellHost
+      $psHost | Should -Not -BeNullOrEmpty
+
+      $result = Invoke-RaymanHostSmokeStep -Name 'timeout_step' -LogDir $logDir -FilePath $psHost -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 5') -WorkingDirectory $root -TimeoutSeconds 1
+      $logText = Get-Content -LiteralPath $result.log_path -Raw -Encoding UTF8
+
+      $result.started | Should -Be $true
+      $result.timed_out | Should -Be $true
+      $result.exit_code | Should -Be 124
+      $result.launch_error | Should -Match 'timed out'
+      $logText | Should -Match 'timed out'
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -83,5 +106,21 @@ exit 0
       $env:PATH = $pathBackup
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
+  }
+}
+
+Describe 'host smoke worker loopback coverage' {
+  It 'keeps worker loopback steps in the host smoke lane' {
+    $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\run_host_smoke.ps1'
+    $raw = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+
+    $raw | Should -Match 'worker_loopback_discover'
+    $raw | Should -Match 'worker_loopback_use'
+    $raw | Should -Match 'worker_loopback_status'
+    $raw | Should -Match 'worker_loopback_exec'
+    $raw | Should -Match 'worker_loopback_sync_attached'
+    $raw | Should -Match 'worker_loopback_sync_staged'
+    $raw | Should -Match 'worker_loopback_debug_prepare'
+    $raw | Should -Match 'worker_loopback_clear'
   }
 }

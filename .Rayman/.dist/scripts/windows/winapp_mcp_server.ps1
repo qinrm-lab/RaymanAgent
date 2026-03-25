@@ -335,3 +335,4 @@ while ($true) {
 }
 
 Write-WinAppLogLine -Path $serverLog -Level 'info' -Message 'server_stop'
+

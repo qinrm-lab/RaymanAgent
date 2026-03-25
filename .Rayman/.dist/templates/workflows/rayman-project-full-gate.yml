@@ -15,6 +15,9 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   full-gate-linux:
     runs-on: ubuntu-latest
@@ -27,7 +30,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install Rayman full gate dependencies
         shell: bash

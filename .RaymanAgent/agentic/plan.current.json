@@ -1,12 +1,12 @@
 {
   "schema": "rayman.agentic.plan.v1",
-  "plan_id": "69ebdcf6141e4e4fb9b419386504fbb8",
-  "generated_at": "2026-03-24T08:26:43.9120879+08:00",
+  "plan_id": "cb3d64d9ca35483489115aae75ec10e7",
+  "generated_at": "2026-03-25T15:32:20.5921968+08:00",
   "workspace_root": "E:\\rayman\\software\\RaymanAgent",
-  "task_kind": "review",
-  "task": "OpenAI docs prompt review",
-  "command": "",
-  "prompt_key": "review.initial.prompt.md",
+  "task_kind": "maintenance",
+  "task": "清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke",
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\\\.Rayman\\\\rayman.ps1 full-gate; pwsh -NoProfile -ExecutionPolicy Bypass -File .\\\\.Rayman\\\\scripts\\\\release\\\\copy_smoke.ps1 -WorkspaceRoot \"$PWD\" -Strict -Scope host -TimeoutSeconds 180",
+  "prompt_key": "",
   "preferred_backend": "",
   "pipeline": "planner_v1",
   "requirements_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
@@ -20,32 +20,18 @@
     "约定：Solution/Project requirements 均在 .RaymanAgent/ 下，不应在根目录出现 .*.requirements.md。"
   ],
   "acceptance_criteria": [
-    "Task goal remains: OpenAI docs prompt review",
-    "Reflection outcome must be `done` before the run is treated as successful.",
-    "Doc gate must pass with current plan/tool-policy/reflection artifacts.",
-    "Review-loop success still requires `test-fix` to pass."
+    "Task goal remains: 清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke",
+    "Selected tool policy must be written before execution.",
+    "Doc gate must pass for the active pipeline stage."
   ],
   "tool_budget": {
-    "max_selected_tools": 4,
-    "max_fallbacks": 3,
+    "max_selected_tools": 3,
+    "max_fallbacks": 2,
     "max_subagents": 2
   },
-  "allowed_subagents": [
-    "rayman_explorer",
-    "rayman_reviewer",
-    "rayman_docs_researcher",
-    "rayman_browser_debugger",
-    "rayman_winapp_debugger",
-    "rayman_worker"
-  ],
-  "selected_subagents": [
-    "rayman_reviewer",
-    "rayman_docs_researcher"
-  ],
+  "allowed_subagents": [],
+  "selected_subagents": [],
   "selected_tool_keys": [
-    "openai_docs_mcp",
-    "rayman_docs_researcher",
-    "rayman_reviewer",
     "local_shell"
   ],
   "stop_conditions": [
@@ -53,17 +39,11 @@
     "Keep the run in planner_v1 only when the doc gate remains satisfied.",
     "Use local fallback when optional OpenAI runtime features are unavailable."
   ],
-  "required_docs": [
-    "plan.current.md",
-    "plan.current.json",
-    "tool-policy.md",
-    "tool-policy.json",
-    "evals.md"
-  ],
+  "required_docs": [],
   "openai_optional": {
     "mode": "auto",
     "codex_available": true,
-    "openai_docs_active": true,
+    "openai_docs_active": false,
     "features": [
       {
         "name": "background_mode",
@@ -72,7 +52,7 @@
         "support_mode": "disabled_until_supported",
         "support_reason": "delegated_codex_executor_not_implemented",
         "reason": "disabled_until_supported",
-        "fallback": "local_review_loop"
+        "fallback": "local"
       },
       {
         "name": "compaction",
@@ -81,7 +61,7 @@
         "support_mode": "disabled_until_supported",
         "support_reason": "delegated_codex_executor_not_implemented",
         "reason": "disabled_until_supported",
-        "fallback": "local_context_files"
+        "fallback": "local"
       },
       {
         "name": "prompt_optimizer",
@@ -90,7 +70,7 @@
         "support_mode": "disabled_until_supported",
         "support_reason": "delegated_codex_executor_not_implemented",
         "reason": "disabled_until_supported",
-        "fallback": "manual_evals_index"
+        "fallback": "local"
       }
     ]
   }

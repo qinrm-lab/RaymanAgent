@@ -26,6 +26,7 @@
 | OpenAI / Codex | 在默认 `planner_v1` 之上，通过 delegated Codex 为长任务与 prompt 治理增加可选 background mode / compaction / prompt optimizer / `codex exec` 适配层 | OpenAI 已公开 Codex SDK / background mode / prompt optimizer，并强调本地 CLI / editor / cloud 连通 | default path stays local-first; optional features must auto-detect, flow through delegated Codex, and degrade to local fallback |
 | Long-running work | 为长耗时分析/修复增加 background mode submit / poll / cancel / timeout 语义 | OpenAI Responses API 官方支持 background mode | new opt-in command or helper, explicit timeout diagnostics |
 | Prompt governance | 对高价值 prompts 引入 prompt objects、prompt optimizer、eval dataset 闭环 | OpenAI 官方把 prompt objects / optimizer 作为提示资产治理路径 | report + eval dataset + no runtime breakage |
+| LAN worker fleet | 在当前单 active worker 基础上补 worker pairing / auth、多 worker 调度和更稳的 remote debug bootstrap | 当前 v1 仅假设受控独立局域网，普通办公网/跨网段风险更高 | keep single-active default; add auth before claiming wider network support |
 | Browser debugging | 把 trace 变成一等 artifact；Playwright setup/auth 收敛到 projects + dependencies | Playwright 官方强调 trace viewer、projects、dependencies、UI mode | failing browser jobs always publish trace |
 | Desktop automation | 新增 Appium Windows Driver / Appium 3 backend，保留 WinAppDriver fallback | Appium Windows Driver 官方已明确 Appium 3 路线；其 README 也提醒 WinAppDriver 长期未维护 | backend probe + fallback + failure diagnosis |
 | Provenance | 为关键制品增加 artifact attestations，并补 verify 链路 | GitHub Actions 官方已提供 artifact attestations | generate + verify both required before claiming support |

@@ -18,6 +18,11 @@ if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
 }
 . $commonPath
 
+$workerCommonPath = Join-Path $PSScriptRoot '..\worker\worker_common.ps1'
+if (Test-Path -LiteralPath $workerCommonPath -PathType Leaf) {
+  . $workerCommonPath
+}
+
 $agenticHelperPath = Join-Path $PSScriptRoot 'agentic_pipeline.ps1'
 if (Test-Path -LiteralPath $agenticHelperPath -PathType Leaf) {
   . $agenticHelperPath
@@ -513,6 +518,23 @@ $agenticFallbackCount = 0
 $agenticAcceptanceClosed = $false
 $agenticDocGatePass = $false
 $replanCount = 0
+$reviewExecutionHost = 'local'
+$reviewWorkerId = ''
+$reviewWorkerName = ''
+$reviewWorkspaceMode = ''
+$reviewSyncManifest = $null
+if (Get-Command Get-RaymanWorkerActiveExecutionContext -ErrorAction SilentlyContinue) {
+  try {
+    $workerExecutionContext = Get-RaymanWorkerActiveExecutionContext -WorkspaceRoot $WorkspaceRoot
+    if ($null -ne $workerExecutionContext) {
+      $reviewExecutionHost = 'worker'
+      $reviewWorkerId = if ($workerExecutionContext.worker.PSObject.Properties['worker_id']) { [string]$workerExecutionContext.worker.worker_id } else { '' }
+      $reviewWorkerName = if ($workerExecutionContext.worker.PSObject.Properties['worker_name']) { [string]$workerExecutionContext.worker.worker_name } else { '' }
+      $reviewWorkspaceMode = if ($workerExecutionContext.active.PSObject.Properties['workspace_mode']) { [string]$workerExecutionContext.active.workspace_mode } else { '' }
+      $reviewSyncManifest = if ($workerExecutionContext.active.PSObject.Properties['sync_manifest']) { $workerExecutionContext.active.sync_manifest } else { $null }
+    }
+  } catch {}
+}
 $snapshotBeforeRound = $null
 if ($diffSummaryEnabled) {
   $snapshotBeforeRound = Get-WorkspaceSnapshot -Root $WorkspaceRoot -IgnorePrefixes $diffIgnorePrefixes -TextExtensions $diffTextExtensions
@@ -859,6 +881,11 @@ $summary = @{
   acceptance_closed = $agenticAcceptanceClosed
   reflection_outcome = if ($null -ne $agenticReflection) { [string]$agenticReflection.outcome } else { '' }
   agentic_reflection = $agenticReflection
+  execution_host = $reviewExecutionHost
+  worker_id = $reviewWorkerId
+  worker_name = $reviewWorkerName
+  workspace_mode = $reviewWorkspaceMode
+  sync_manifest = $reviewSyncManifest
   final_exit_code = $finalExitCode
   final_error_kind = $finalErrorKind
   rounds = @($rounds.ToArray())

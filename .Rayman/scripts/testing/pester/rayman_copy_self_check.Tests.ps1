@@ -9,6 +9,65 @@ function script:Get-TestPowerShellPath {
   throw 'pwsh/powershell not found'
 }
 
+function script:Import-CopySmokeFunctions {
+  param([string[]]$Names)
+
+  $copySmokePath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path '.Rayman\scripts\release\copy_smoke.ps1'
+  $tokens = $null
+  $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($copySmokePath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) {
+    throw $errors[0].Message
+  }
+
+  $functionMap = @{}
+  foreach ($fn in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    $functionMap[[string]$fn.Name] = $fn
+  }
+
+  foreach ($name in @($Names)) {
+    $functionAst = $functionMap[[string]$name]
+    if ($null -eq $functionAst) {
+      throw ('function not found: ' + $name)
+    }
+    $definitionText = $functionAst.Extent.Text -replace ("(?i)^function\s+{0}" -f [regex]::Escape($name)), ("function script:{0}" -f $name)
+    & ([scriptblock]::Create($definitionText))
+  }
+}
+
+function script:Initialize-CopySmokeMockTargets {
+  foreach ($scopePrefix in @('global', 'script')) {
+    Set-Item -Path ("Function:\{0}:Get-RaymanVsCodeProcessSnapshot" -f $scopePrefix) -Value {
+      param([string]$WorkspaceRootPath)
+      return @()
+    }
+
+    Set-Item -Path ("Function:\{0}:Stop-RaymanWorkspaceOwnedProcess" -f $scopePrefix) -Value {
+      param([string]$WorkspaceRootPath, [object]$Record, [string]$Reason)
+      return $null
+    }
+  }
+}
+
+function script:Set-CopySmokeFunctionDouble {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+  )
+
+  foreach ($scopePrefix in @('global', 'script')) {
+    Set-Item -Path ("Function:\{0}:{1}" -f $scopePrefix, $Name) -Value $ScriptBlock
+  }
+}
+
+function script:Remove-CopySmokeFunctionDouble {
+  param([Parameter(Mandatory = $true)][string]$Name)
+
+  foreach ($scopePrefix in @('global', 'script')) {
+    Remove-Item -Path ("Function:\{0}:{1}" -f $scopePrefix, $Name) -ErrorAction SilentlyContinue
+  }
+}
+
 Describe 'rayman copy-self-check exit propagation' {
   It 'returns the child copy-smoke exit code' {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
@@ -27,6 +86,164 @@ exit 13
 
       $LASTEXITCODE | Should -Be 13
     } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Describe 'copy_smoke archived vscode cleanup proof gating' {
+  It 'skips archived new_pids without ownership proof' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_copy_smoke_vscode_ambiguous_' + [Guid]::NewGuid().ToString('N'))
+    $warnMessages = New-Object 'System.Collections.Generic.List[string]'
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $auditPath = Join-Path $root 'vscode_windows.last.json'
+      @{
+        schema = 'rayman.vscode_windows.v1'
+        workspace_root = (Join-Path $root 'copy-smoke')
+        new_pids = @(202, 203, 303)
+      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $auditPath -Encoding UTF8
+
+      Import-CopySmokeFunctions -Names @(
+        'Resolve-CopySmokeVsCodeClientProcessId',
+        'Resolve-CopySmokeArchivedVsCodeAuditCandidatePids',
+        'Get-CopySmokeArchivedVsCodeAuditAnalysis',
+        'Stop-CopySmokeArchivedVsCodeWindows'
+      )
+      Initialize-CopySmokeMockTargets
+
+      Set-CopySmokeFunctionDouble -Name 'Warn' -ScriptBlock {
+        param([string]$Message)
+        $script:copySmokeWarnMessages.Add([string]$Message) | Out-Null
+      }
+      $script:copySmokeWarnMessages = $warnMessages
+
+      $current = @(
+        [pscustomobject]@{ pid = 202; parent_pid = 424242; process_name = 'Code'; start_utc = '2026-03-19T00:01:00Z'; main_window_title = ''; command_line = 'Code.exe --type=utility' }
+        [pscustomobject]@{ pid = 203; parent_pid = 202; process_name = 'Code'; start_utc = '2026-03-19T00:01:02Z'; main_window_title = ''; command_line = 'Code.exe server.js --clientProcessId=202' }
+        [pscustomobject]@{ pid = 303; parent_pid = 999; process_name = 'Code'; start_utc = '2026-03-19T00:01:03Z'; main_window_title = ''; command_line = 'Code.exe --type=utility' }
+      )
+      $stopCalls = New-Object 'System.Collections.Generic.List[object]'
+      $script:copySmokeCurrentSnapshot = $current
+      $script:copySmokeStopCalls = $stopCalls
+
+      Set-CopySmokeFunctionDouble -Name 'Get-RaymanVsCodeProcessSnapshot' -ScriptBlock {
+        param([string]$WorkspaceRootPath)
+        return @($script:copySmokeCurrentSnapshot)
+      }
+      Set-CopySmokeFunctionDouble -Name 'Stop-RaymanWorkspaceOwnedProcess' -ScriptBlock {
+        param([string]$WorkspaceRootPath, [object]$Record, [string]$Reason)
+        $script:copySmokeStopCalls.Add([pscustomobject]@{
+          workspace_root = $WorkspaceRootPath
+          root_pid = [int]$Record.root_pid
+          reason = $Reason
+        }) | Out-Null
+        return $null
+      }
+
+      $setupRuns = @([pscustomobject]@{ VsCodeAuditArchivePath = $auditPath })
+      $analysis = Get-CopySmokeArchivedVsCodeAuditAnalysis -WorkspaceRoot $root -SetupRuns $setupRuns
+      $cleanup = @(Stop-CopySmokeArchivedVsCodeWindows -WorkspaceRoot $root -SetupRuns $setupRuns)
+
+      @($analysis.root_pids | Where-Object { $null -ne $_ }).Count | Should -Be 0
+      (@($analysis.ambiguous_pids) -join ',') | Should -Be '202,203,303'
+      @($cleanup).Count | Should -Be 0
+      ($warnMessages -join "`n") | Should -Match 'skipped ambiguous vscode cleanup'
+      [int]$stopCalls.Count | Should -Be 0
+    } finally {
+      foreach ($fn in @(
+        'Resolve-CopySmokeVsCodeClientProcessId',
+        'Resolve-CopySmokeArchivedVsCodeAuditCandidatePids',
+        'Get-CopySmokeArchivedVsCodeAuditAnalysis',
+        'Stop-CopySmokeArchivedVsCodeWindows',
+        'Get-RaymanVsCodeProcessSnapshot',
+        'Stop-RaymanWorkspaceOwnedProcess',
+        'Warn'
+      )) {
+        Remove-CopySmokeFunctionDouble -Name $fn
+      }
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'prefers archived owned_pids and keeps only the verified root pid' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_copy_smoke_vscode_owned_' + [Guid]::NewGuid().ToString('N'))
+    $warnMessages = New-Object 'System.Collections.Generic.List[string]'
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $auditPath = Join-Path $root 'vscode_windows.last.json'
+      @{
+        schema = 'rayman.vscode_windows.v1'
+        workspace_root = (Join-Path $root 'copy-smoke')
+        new_pids = @(202, 203, 303)
+        owned_pids = @(202, 203)
+      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $auditPath -Encoding UTF8
+
+      Import-CopySmokeFunctions -Names @(
+        'Resolve-CopySmokeVsCodeClientProcessId',
+        'Resolve-CopySmokeArchivedVsCodeAuditCandidatePids',
+        'Get-CopySmokeArchivedVsCodeAuditAnalysis',
+        'Stop-CopySmokeArchivedVsCodeWindows'
+      )
+      Initialize-CopySmokeMockTargets
+
+      Set-CopySmokeFunctionDouble -Name 'Warn' -ScriptBlock {
+        param([string]$Message)
+        $script:copySmokeWarnMessages.Add([string]$Message) | Out-Null
+      }
+      $script:copySmokeWarnMessages = $warnMessages
+
+      $current = @(
+        [pscustomobject]@{ pid = 202; parent_pid = 424242; process_name = 'Code'; start_utc = '2026-03-19T00:01:00Z'; main_window_title = ''; command_line = 'Code.exe --type=utility' }
+        [pscustomobject]@{ pid = 203; parent_pid = 202; process_name = 'Code'; start_utc = '2026-03-19T00:01:02Z'; main_window_title = ''; command_line = 'Code.exe server.js --clientProcessId=202' }
+        [pscustomobject]@{ pid = 303; parent_pid = 999; process_name = 'Code'; start_utc = '2026-03-19T00:01:03Z'; main_window_title = ''; command_line = 'Code.exe --type=utility' }
+      )
+      $stopCalls = New-Object 'System.Collections.Generic.List[object]'
+      $script:copySmokeCurrentSnapshot = $current
+      $script:copySmokeStopCalls = $stopCalls
+
+      Set-CopySmokeFunctionDouble -Name 'Get-RaymanVsCodeProcessSnapshot' -ScriptBlock {
+        param([string]$WorkspaceRootPath)
+        return @($script:copySmokeCurrentSnapshot)
+      }
+      Set-CopySmokeFunctionDouble -Name 'Stop-RaymanWorkspaceOwnedProcess' -ScriptBlock {
+        param([string]$WorkspaceRootPath, [object]$Record, [string]$Reason)
+        $script:copySmokeStopCalls.Add([pscustomobject]@{
+          workspace_root = $WorkspaceRootPath
+          root_pid = [int]$Record.root_pid
+          reason = $Reason
+        }) | Out-Null
+        return [pscustomobject]@{
+          root_pid = [int]$Record.root_pid
+          cleanup_reason = $Reason
+          cleanup_result = 'cleaned'
+          cleanup_pids = @([int]$Record.root_pid)
+        }
+      }
+
+      $setupRuns = @([pscustomobject]@{ VsCodeAuditArchivePath = $auditPath })
+      $analysis = Get-CopySmokeArchivedVsCodeAuditAnalysis -WorkspaceRoot $root -SetupRuns $setupRuns
+      $cleanup = @(Stop-CopySmokeArchivedVsCodeWindows -WorkspaceRoot $root -SetupRuns $setupRuns)
+
+      (@($analysis.root_pids) -join ',') | Should -Be '202'
+      @($analysis.ambiguous_pids | Where-Object { $null -ne $_ }).Count | Should -Be 0
+      (@($cleanup) -join ',') | Should -Be '202'
+      [int]$warnMessages.Count | Should -Be 0
+      [int]$stopCalls.Count | Should -Be 1
+      [int]$stopCalls[0].root_pid | Should -Be 202
+      [string]$stopCalls[0].reason | Should -Be 'copy-smoke-archived-audit'
+    } finally {
+      foreach ($fn in @(
+        'Resolve-CopySmokeVsCodeClientProcessId',
+        'Resolve-CopySmokeArchivedVsCodeAuditCandidatePids',
+        'Get-CopySmokeArchivedVsCodeAuditAnalysis',
+        'Stop-CopySmokeArchivedVsCodeWindows',
+        'Get-RaymanVsCodeProcessSnapshot',
+        'Stop-RaymanWorkspaceOwnedProcess',
+        'Warn'
+      )) {
+        Remove-CopySmokeFunctionDouble -Name $fn
+      }
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

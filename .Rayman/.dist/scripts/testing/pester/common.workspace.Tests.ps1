@@ -130,8 +130,36 @@ Describe 'common workspace helpers' {
       $rules.WorkspaceKind | Should -Be 'source'
       (@($rules.RaymanManaged | Where-Object { $_.Key -eq 'rayman_dir' })).Count | Should -Be 0
       (@($rules.RaymanManaged | Where-Object { $_.Key -eq 'skills_auto' })).Count | Should -Be 1
+      (@($rules.RaymanManaged | Where-Object { $_.Key -eq 'vscode_launch' })).Count | Should -Be 1
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'treats .vscode/launch.json as generated tracked-noise in external and source workspaces' {
+    $externalRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_external_launch_' + [Guid]::NewGuid().ToString('N'))
+    $sourceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_common_source_launch_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $externalRoot '.Rayman\scripts\testing') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $externalRoot '.vscode') | Out-Null
+      Set-Content -LiteralPath (Join-Path $externalRoot '.Rayman\scripts\testing\run_fast_contract.sh') -Value '#!/usr/bin/env bash' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $externalRoot '.vscode\launch.json') -Value '{}' -Encoding UTF8
+
+      New-Item -ItemType Directory -Force -Path (Join-Path $sourceRoot '.Rayman\scripts\testing') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $sourceRoot '.github\workflows') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $sourceRoot '.vscode') | Out-Null
+      Set-Content -LiteralPath (Join-Path $sourceRoot '.Rayman\scripts\testing\run_fast_contract.sh') -Value '#!/usr/bin/env bash' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $sourceRoot '.github\workflows\rayman-test-lanes.yml') -Value 'name: rayman-test-lanes' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $sourceRoot '.vscode\launch.json') -Value '{}' -Encoding UTF8
+
+      $externalRules = Get-RaymanScmTrackedNoiseRules -WorkspaceRoot $externalRoot
+      $sourceRules = Get-RaymanScmTrackedNoiseRules -WorkspaceRoot $sourceRoot
+
+      (@($externalRules.RaymanManaged | Where-Object { Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath '.vscode/launch.json' -Rule $_ })).Count | Should -BeGreaterThan 0
+      (@($sourceRules.RaymanManaged | Where-Object { Test-RaymanScmTrackedNoiseRuleMatch -NormalizedPath '.vscode/launch.json' -Rule $_ })).Count | Should -BeGreaterThan 0
+    } finally {
+      Remove-Item -LiteralPath $externalRoot -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $sourceRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
 
@@ -328,8 +356,11 @@ Ensure-WorkspaceEnvDefaults -EnvFilePath `$envFile
     try {
       $snapshotRoot = Join-Path $root '.Rayman\runtime\snapshots'
       $memoryRoot = Join-Path $root '.Rayman\state\memory'
+      $ragRoot = Join-Path $root ('.' + 'rag')
+      $ragDbRoot = Join-Path $ragRoot 'legacy\chroma_db'
       New-Item -ItemType Directory -Force -Path $snapshotRoot | Out-Null
       New-Item -ItemType Directory -Force -Path $memoryRoot | Out-Null
+      New-Item -ItemType Directory -Force -Path $ragDbRoot | Out-Null
 
       $legacyManifest = Join-Path $snapshotRoot 'legacy.manifest.json'
       $legacyArchive = Join-Path $snapshotRoot 'legacy.tar.gz'
@@ -375,6 +406,7 @@ Invoke-SetupLegacyMemoryCleanup -WorkspaceRoot `$root | Out-Null
       Test-Path -LiteralPath $legacyManifest | Should -BeFalse
       Test-Path -LiteralPath $legacyArchive | Should -BeFalse
       Test-Path -LiteralPath $keepManifest | Should -BeTrue
+      Test-Path -LiteralPath $ragRoot | Should -BeFalse
       Test-Path -LiteralPath $memoryDb | Should -BeTrue
       Test-Path -LiteralPath $memoryRoot -PathType Container | Should -BeTrue
     } finally {

@@ -1,4 +1,40 @@
 {
   "schema": "rayman.agentic.reflection.v1",
-  "status": "placeholder"
+  "generated_at": "2026-03-25T15:32:20.6837904+08:00",
+  "workspace_root": "E:\\rayman\\software\\RaymanAgent",
+  "stage": "review_loop",
+  "task_kind": "maintenance",
+  "task": "清理脏工作区并完成全仓库完整回归：修复 worker smoke 夹具、收敛 diff、通过 full-gate 与 strict host copy-smoke",
+  "plan_id": "cb3d64d9ca35483489115aae75ec10e7",
+  "round": 1,
+  "max_rounds": 2,
+  "outcome": "replan",
+  "reason": "tests_failed_but_budget_remaining",
+  "acceptance_closed": false,
+  "policy_ok": true,
+  "doc_gate_pass": true,
+  "doc_gate": {
+    "schema": "rayman.agentic.doc_gate.v1",
+    "stage": "review_loop",
+    "enabled": true,
+    "disabled_reason": "",
+    "pass": true,
+    "requirements_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
+    "required_docs": [],
+    "missing_docs": [],
+    "stale_docs": [],
+    "missing_links": [],
+    "linked_docs": []
+  },
+  "selected_tools": [
+    "local_shell"
+  ],
+  "fallback_count": 0,
+  "replan_count": 0,
+  "test_exit": 1,
+  "error_kind": "in_progress",
+  "diff_summary": {
+    "touched_files_count": 0,
+    "net_line_delta": 0
+  }
 }

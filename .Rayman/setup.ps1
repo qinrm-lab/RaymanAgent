@@ -756,6 +756,10 @@ function Invoke-SetupLegacyMemoryCleanup {
         New-Item -ItemType Directory -Force -Path ([string]$memoryPaths.MemoryRoot) | Out-Null
     }
 
+    $legacyRagRoot = [string]$legacyPaths.LegacyRoot
+    foreach ($path in @($removed.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and -not [string]::IsNullOrWhiteSpace($legacyRagRoot) -and ([string]$_).Equals($legacyRagRoot, [System.StringComparison]::OrdinalIgnoreCase) })) {
+        Write-Host ("🧹 [setup] removed legacy rag root: {0}" -f [string]$path) -ForegroundColor DarkCyan
+    }
     if ($removed.Count -gt 0) {
         Write-Host ("🧹 [setup] 已清理 legacy 记忆残留: {0}" -f $removed.Count) -ForegroundColor DarkCyan
     }
@@ -1006,6 +1010,7 @@ function Get-RaymanScmIgnoreRules {
             '.github/workflows/rayman-project-full-gate.yml'
             '.vscode/tasks.json'
             '.vscode/settings.json'
+            '.vscode/launch.json'
             '.Rayman_full_for_copy/'
             'Rayman_full_bundle/'
             '.tmp_sandbox_verify_*/'
@@ -1036,6 +1041,7 @@ function Get-RaymanScmIgnoreRules {
         '.clinerules'
         '.vscode/tasks.json'
         '.vscode/settings.json'
+        '.vscode/launch.json'
         '.rayman.env.ps1'
         '.env'
         '.codex/config.toml'
@@ -1339,6 +1345,9 @@ try {
     if ($null -ne $workspaceStateGuardResult) {
         if ([bool]$workspaceStateGuardResult.scrubbed) {
             Write-Host ("🧹 [workspace-state] 检测到跨工作区拷贝，已清理 {0} 项（source={1}）。" -f [int]$workspaceStateGuardResult.removed_count, [string]$workspaceStateGuardResult.foreign_workspace_root) -ForegroundColor DarkCyan
+            foreach ($removedPath in @($workspaceStateGuardResult.removed_paths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_).Equals((Join-Path $WorkspaceRoot ('.' + 'rag')), [System.StringComparison]::OrdinalIgnoreCase) })) {
+                Write-Host ("🧹 [setup] removed legacy rag root: {0}" -f [string]$removedPath) -ForegroundColor DarkCyan
+            }
         } else {
             Write-Host ("ℹ️ [workspace-state] 已刷新当前工作区 marker: {0}" -f [string]$workspaceStateGuardResult.marker_path) -ForegroundColor DarkCyan
         }
@@ -1925,6 +1934,7 @@ $instructionsContent = @"
 详细编码约定与文件类型规则请优先参考：`.github/instructions/general.instructions.md`、`.github/instructions/backend.instructions.md`、`.github/instructions/frontend.instructions.md`。
 
 复杂任务开始前，请优先读取 `.Rayman/CONTEXT.md` 与 `.Rayman/context/skills.auto.md`；若它们缺失或过期，请先运行“更新上下文”。
+同时请将 `.github/model-policy.md` 视为模型与平台能力边界的单一事实来源，并在评估已落地能力与规划项时参考 `.Rayman/release/FEATURE_INVENTORY.md` 与 `.Rayman/release/ENHANCEMENT_ROADMAP_2026.md`。
 
 Rayman 会自动生成并维护工作区级 `.codex/config.toml`；Rayman-managed slice 包括 capability MCP、`project_doc` fallback、`profiles` 与 `subagents`。不要把这些 Codex 专用 capability 混入 `.Rayman/mcp/mcp_servers.json`。
 
@@ -2405,6 +2415,109 @@ $raymanTaskDefinitions = @(
         LinuxRequiredRelPaths = @(".Rayman/scripts/agents/ensure_agent_capabilities.ps1", ".Rayman/config/agent_capabilities.json")
     },
     [ordered]@{
+        Label = "Rayman: Worker Discover"
+        Detail = "在局域网监听 Rayman Worker 广播并刷新本地注册表。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "worker", "discover")
+        RequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1"
+        )
+        LinuxRequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1"
+        )
+    },
+    [ordered]@{
+        Label = "Rayman: Worker Status"
+        Detail = "查询当前 active worker 的控制面、工作区和调试能力状态。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "worker", "status")
+        RequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1"
+        )
+        LinuxRequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1"
+        )
+    },
+    [ordered]@{
+        Label = "Rayman: Worker Sync"
+        Detail = "同步 active worker 源码；默认 attached，可用 RAYMAN_WORKER_SYNC_MODE=staged 切到 staging。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "`$mode = if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_WORKER_SYNC_MODE)) { 'attached' } else { [string]`$env:RAYMAN_WORKER_SYNC_MODE }; & '`${workspaceFolder}/.Rayman/rayman.ps1' worker sync --mode `$mode"
+        )
+        RequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_sync.ps1"
+        )
+        LinuxRequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_sync.ps1"
+        )
+    },
+    [ordered]@{
+        Label = "Rayman: Worker Upgrade"
+        Detail = "将当前开发机的 .Rayman 包推送到 active worker 并触发远程自升级。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`${workspaceFolder}/.Rayman/rayman.ps1", "worker", "upgrade")
+        RequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_upgrade.ps1"
+        )
+        LinuxRequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_upgrade.ps1"
+        )
+    },
+    [ordered]@{
+        Label = "Rayman: Worker Debug Prepare"
+        Detail = "准备 active worker 的 .NET 调试 manifest，并刷新 launch.json 的远程映射。"
+        Command = "powershell"
+        Linux = @{ command = "pwsh" }
+        ArgumentList = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "`$mode = if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_WORKER_DEBUG_MODE)) { 'launch' } else { [string]`$env:RAYMAN_WORKER_DEBUG_MODE }; if ([string]::IsNullOrWhiteSpace([string]`$env:RAYMAN_WORKER_DEBUG_PROGRAM)) { & '`${workspaceFolder}/.Rayman/rayman.ps1' worker debug --mode `$mode } else { & '`${workspaceFolder}/.Rayman/rayman.ps1' worker debug --mode `$mode --program `$env:RAYMAN_WORKER_DEBUG_PROGRAM }"
+        )
+        RequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_pipe_transport.ps1"
+        )
+        LinuxRequiredRelPaths = @(
+            ".Rayman/rayman.ps1",
+            ".Rayman/scripts/worker/manage_workers.ps1",
+            ".Rayman/scripts/worker/worker_common.ps1",
+            ".Rayman/scripts/worker/worker_pipe_transport.ps1"
+        )
+    },
+    [ordered]@{
         Label = "Rayman: First Pass Report"
         Detail = "生成首轮问题盘点报告，适合开始复杂任务前预热。"
         Command = "powershell"
@@ -2523,6 +2636,99 @@ if (Test-Path -LiteralPath $tasksFile -PathType Leaf) {
     Write-Host "✅ 已生成 .vscode/tasks.json" -ForegroundColor Green
 }
 
+# 4.25 生成或更新 .vscode/launch.json
+$launchFile = Join-Path $vscodeDir "launch.json"
+$raymanWorkerLaunchConfigs = @(
+    [ordered]@{
+        name = "Rayman Worker: Launch .NET (Active Worker)"
+        type = "coreclr"
+        request = "launch"
+        preLaunchTask = "Rayman: Worker Debug Prepare"
+        program = '${workspaceFolder}'
+        cwd = '${workspaceFolder}'
+        console = "internalConsole"
+        justMyCode = $true
+        requireExactSource = $false
+        pipeTransport = @{
+            pipeProgram = "powershell.exe"
+            pipeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                '${workspaceFolder}/.Rayman/scripts/worker/worker_pipe_transport.ps1',
+                "-WorkspaceRoot",
+                '${workspaceFolder}'
+            )
+            pipeCwd = '${workspaceFolder}'
+            debuggerPath = "vsdbg"
+            quoteArgs = $true
+        }
+        sourceFileMap = @{}
+    },
+    [ordered]@{
+        name = "Rayman Worker: Attach .NET (Active Worker)"
+        type = "coreclr"
+        request = "attach"
+        preLaunchTask = "Rayman: Worker Debug Prepare"
+        processId = '${input:raymanWorkerAttachProcessId}'
+        cwd = '${workspaceFolder}'
+        justMyCode = $true
+        requireExactSource = $false
+        pipeTransport = @{
+            pipeProgram = "powershell.exe"
+            pipeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                '${workspaceFolder}/.Rayman/scripts/worker/worker_pipe_transport.ps1',
+                "-WorkspaceRoot",
+                '${workspaceFolder}'
+            )
+            pipeCwd = '${workspaceFolder}'
+            debuggerPath = "vsdbg"
+            quoteArgs = $true
+        }
+        sourceFileMap = @{}
+    }
+)
+$raymanWorkerLaunchInputs = @(
+    [ordered]@{
+        id = "raymanWorkerAttachProcessId"
+        type = "promptString"
+        description = "Enter the remote process id running on the active Rayman Worker."
+        default = "0"
+    }
+)
+
+if (Test-Path -LiteralPath $launchFile -PathType Leaf) {
+    $launchDoc = Read-RaymanJsonConfigCompat -Path $launchFile -AsHashtable -WarningPrefix 'launch'
+    if ([bool]$launchDoc.ParseFailed) {
+        Write-Host "⚠️ 更新 .vscode/launch.json 失败，可能是 JSON 格式不正确。请手动修复。" -ForegroundColor Yellow
+    } else {
+        $launchObj = if ($null -ne $launchDoc.Obj) { $launchDoc.Obj } else { @{ version = '0.2.0'; configurations = @(); inputs = @() } }
+        if (-not $launchObj.ContainsKey('configurations')) { $launchObj['configurations'] = @() }
+        if (-not $launchObj.ContainsKey('inputs')) { $launchObj['inputs'] = @() }
+
+        $filteredConfigs = @($launchObj['configurations'] | Where-Object { [string]$_.name -notlike 'Rayman Worker:*' })
+        $filteredInputs = @($launchObj['inputs'] | Where-Object { [string]$_.id -ne 'raymanWorkerAttachProcessId' })
+        $launchObj['version'] = '0.2.0'
+        $launchObj['configurations'] = @($filteredConfigs + $raymanWorkerLaunchConfigs)
+        $launchObj['inputs'] = @($filteredInputs + $raymanWorkerLaunchInputs)
+
+        $launchObj | ConvertTo-Json -Depth 12 | Set-Content -Path $launchFile -Encoding UTF8
+        Write-Host "✅ 已更新 .vscode/launch.json (合并了现有调试配置)" -ForegroundColor Green
+    }
+} else {
+    @{
+        version = '0.2.0'
+        configurations = $raymanWorkerLaunchConfigs
+        inputs = $raymanWorkerLaunchInputs
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $launchFile -Encoding UTF8
+    Write-Host "✅ 已生成 .vscode/launch.json" -ForegroundColor Green
+}
+
 # 4.5 优化 VS Code 性能与工作区忽略配置 (settings.json & .gitignore)
 try {
     # 4.5.1 更新 .gitignore
@@ -2545,6 +2751,7 @@ App_Data/
 .Rayman/runtime/
 tmp_restore.log
 restore_server_diag.log
+.vscode/launch.json
 "@
     $gitignorePath = Join-Path $WorkspaceRoot ".gitignore"
     if (-not (Test-Path -LiteralPath $gitignorePath -PathType Leaf)) {
@@ -2555,6 +2762,9 @@ restore_server_diag.log
         Add-Content -Path $gitignorePath -Value $ignoreRules -Encoding UTF8
         Write-Host "✅ 已在 .gitignore 中注入性能优化忽略规则" -ForegroundColor Green
         Write-Host "ℹ️ [SCM] 已禁用自动重建 Git 索引（不再执行 git rm --cached / git add）。" -ForegroundColor DarkCyan
+    } elseif ($currentIgnore -notmatch '\.vscode/launch\.json') {
+        Add-Content -Path $gitignorePath -Value "`r`n.vscode/launch.json`r`n" -Encoding UTF8
+        Write-Host "✅ 已在 .gitignore 中补充 .vscode/launch.json 忽略规则" -ForegroundColor Green
     }
 
     # 4.5.2 更新 .vscode/settings.json

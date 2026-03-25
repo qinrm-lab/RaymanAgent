@@ -1,4 +1,4 @@
-﻿
+
 # =========================
 # 深度性能优化排查 (Auto-Added by Rayman)
 # =========================
@@ -32,6 +32,7 @@ test-results/
 .env
 .vscode/tasks.json
 .vscode/settings.json
+.vscode/launch.json
 .cursorrules
 .clinerules
 .codex/config.toml
@@ -60,3 +61,4 @@ restore_server_diag.log
 /testResults.xml
 __pycache__/
 *.pyc
+/RaymanAgent.sln

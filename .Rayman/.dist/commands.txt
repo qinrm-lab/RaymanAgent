@@ -44,6 +44,7 @@ Platform tags:
 - `[ pwsh-only ]` `rayman.ps1 linux-test`: Run Linux tests in WSL with dependency bootstrap.
 - `[ all ]` `rayman dispatch`: Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`: Manage Rayman-scoped Codex accounts, switching, and CLI execution.
+- `[ windows-only ]` `rayman.ps1 worker`: Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`: Sync or inspect Rayman-managed Codex capabilities.
 
 [Diagnostics]

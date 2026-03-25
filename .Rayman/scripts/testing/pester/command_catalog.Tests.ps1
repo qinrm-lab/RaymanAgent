@@ -30,6 +30,7 @@ Describe 'command catalog' {
     ($names -contains 'version') | Should -Be $true
     ($names -contains 'newversion') | Should -Be $true
     ($names -contains 'codex') | Should -Be $true
+    ($names -contains 'worker') | Should -Be $true
     ($names -contains 'self-check') | Should -Be $true
     ($names -contains 'package') | Should -Be $true
     ($names -contains 'health') | Should -Be $true
