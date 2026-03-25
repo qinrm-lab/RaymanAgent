@@ -199,6 +199,7 @@ for p in "${CHANGED[@]}"; do
   esac
   [[ "$p" =~ ${EXCLUDE_DIR_RE} ]] && continue
   top="${p%%/*}"
+  [[ "${top}" == "${SOL_DIR}" ]] && continue
   [[ -d "${top}" ]] && INVOLVED["${top}"]=1
 done
 [[ "${#INVOLVED[@]}" -eq 0 && "${governance_touched}" -eq 0 ]] && { info "未涉及 Project 变更"; exit 0; }

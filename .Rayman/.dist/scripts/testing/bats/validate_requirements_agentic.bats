@@ -145,3 +145,28 @@ teardown() {
   [ "${status}" -eq 1 ]
   grep -q "涉及 source workspace 治理变更但未同时触达 Solution requirements 与 agentic docs" <<< "${output}"
 }
+
+@test "validate_requirements ignores solution agentic docs as project directories" {
+  local root
+  root="$(make_workspace)"
+  add_agentic_docs "${root}"
+
+  (
+    cd "${root}"
+    git add . >/dev/null 2>&1
+    git commit -m "agentic baseline" >/dev/null 2>&1
+    git checkout -b feature >/dev/null 2>&1
+    printf '%s\n' '# updated evals' > .RaymanAgent/agentic/evals.md
+    git add .RaymanAgent/agentic/evals.md >/dev/null 2>&1
+    git commit -m "agentic doc change" >/dev/null 2>&1
+  )
+
+  run env \
+    ROOT="${root}" \
+    RAYMAN_VALIDATE_REQUIREMENTS_SKIP_RELEASE=1 \
+    RAYMAN_BASE_REF=main \
+    bash -lc 'cd "$ROOT" && bash ./.Rayman/scripts/ci/validate_requirements.sh'
+
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"..RaymanAgent.requirements.md"* ]]
+}

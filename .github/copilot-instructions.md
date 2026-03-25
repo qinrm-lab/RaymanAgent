@@ -22,6 +22,7 @@ GitHub.com 的 Copilot Memory、model picker / Auto model selection 属于平台
 
 当用户输入 "初始化" 或 "运行 setup" 时，请运行 .Rayman/setup.ps1 脚本来初始化环境。
 setup 默认会准备本地 Git 仓库；交互式场景下会尝试 GitHub 登录并执行 gh auth setup-git，但不会自动创建 remote 仓库。
+在 Windows 上执行审批敏感的 PowerShell 自动化时，优先使用 `powershell.exe -Command` / `-File`；只有明确需要 PowerShell 7 兼容性或非 Windows Host 时才使用 `pwsh`。
 
 当用户输入 "WSL 安装依赖" 或 "安装 WSL 依赖" 时，请运行 .Rayman/scripts/utils/ensure_wsl_deps.ps1 脚本，它会在 Ubuntu(WSL2) 中自动安装 pwsh、通知与语音依赖（需要 sudo 密码）。
 
