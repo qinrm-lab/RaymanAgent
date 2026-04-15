@@ -90,3 +90,96 @@ exit 17
     }
   }
 }
+
+Describe 'setup playwright install output classification' {
+  It 'treats npm error output as fatal even when the process exits zero' {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+    $setupRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $functionBlock = Get-SetupTopLevelBlock -RawText $setupRaw -StartPattern 'function Test-PlaywrightAutoInstallOutputHasFatalError'
+    . ([scriptblock]::Create($functionBlock))
+
+    (Test-PlaywrightAutoInstallOutputHasFatalError -OutputLines @(
+        'npm error config prefix cannot be changed from project config: E:\demo\.npmrc.'
+      )) | Should -BeTrue
+    (Test-PlaywrightAutoInstallOutputHasFatalError -OutputLines @(
+        '[pwa] WARN: sudo non-interactive is unavailable; skip ''--with-deps'' and rely on existing system deps/cache.'
+      )) | Should -BeFalse
+  }
+}
+
+Describe 'setup playwright auto install scope routing' {
+  It 'does not resolve host install when scope is wsl on Windows' {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+    $setupRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $functionBlock = Get-SetupTopLevelBlock -RawText $setupRaw -StartPattern 'function Invoke-PlaywrightAutoInstall'
+    . ([scriptblock]::Create($functionBlock))
+
+    $script:playwrightReadyLibImported = $true
+    function script:Test-PlaywrightAutoInstallOutputHasFatalError {
+      param([string[]]$OutputLines = @())
+      return $false
+    }
+    function script:Test-HostIsWindowsCompat { return $true }
+    function script:Resolve-RaymanPlaywrightHostInstallInvocation { return $null }
+
+    Mock Test-HostIsWindowsCompat { return $true }
+    Mock Get-Command { return $null }
+    Mock Resolve-RaymanPlaywrightHostInstallInvocation {
+      throw 'host helper should not run for scope=wsl'
+    }
+
+    Invoke-PlaywrightAutoInstall -WorkspaceRoot $repoRoot -Scope 'wsl' -Browser 'chromium' -TimeoutSeconds 30
+
+    Should -Invoke Resolve-RaymanPlaywrightHostInstallInvocation -Times 0 -Exactly
+  }
+
+  It 'resolves host install only when scope is host on Windows' {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+    $setupRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $functionBlock = Get-SetupTopLevelBlock -RawText $setupRaw -StartPattern 'function Invoke-PlaywrightAutoInstall'
+    . ([scriptblock]::Create($functionBlock))
+
+    $script:playwrightReadyLibImported = $true
+    function script:Test-PlaywrightAutoInstallOutputHasFatalError {
+      param([string[]]$OutputLines = @())
+      return $false
+    }
+    function script:Test-HostIsWindowsCompat { return $true }
+    function script:Resolve-RaymanPlaywrightHostInstallInvocation { return $null }
+
+    Mock Test-HostIsWindowsCompat { return $true }
+    Mock Resolve-RaymanPlaywrightHostInstallInvocation {
+      return [pscustomobject]@{
+        success = $false
+        install_source = 'rayman_managed'
+        tool_root = 'C:\Temp\Rayman\tools\playwright-host'
+        package_spec = 'playwright@latest'
+        detail = 'stub failure'
+        install_output = @()
+      }
+    }
+
+    Invoke-PlaywrightAutoInstall -WorkspaceRoot $repoRoot -Scope 'host' -Browser 'chromium' -TimeoutSeconds 30
+
+    Should -Invoke Resolve-RaymanPlaywrightHostInstallInvocation -Times 1 -Exactly
+  }
+}
+
+Describe 'setup scm ignore failure escalation' {
+  It 'throws when scm ignore injection reports write_failed' {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+    $setupRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $functionBlock = Get-SetupTopLevelBlock -RawText $setupRaw -StartPattern 'function Assert-SetupScmIgnoreResult'
+    . ([scriptblock]::Create($functionBlock))
+
+    {
+      Assert-SetupScmIgnoreResult -Result ([pscustomobject]@{
+          reason = 'write_failed'
+          target_path = '.gitignore'
+          error_message = 'The process cannot access the file.'
+        })
+    } | Should -Throw 'managed-write-failed:*'
+
+    { Assert-SetupScmIgnoreResult -Result ([pscustomobject]@{ reason = 'disabled_by_env' }) } | Should -Not -Throw
+  }
+}

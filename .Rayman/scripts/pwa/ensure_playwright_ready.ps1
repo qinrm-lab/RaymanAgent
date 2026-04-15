@@ -680,6 +680,9 @@ try {
       exit_code = $null
       detail = ''
       command = ''
+      install_source = ''
+      tool_root = ''
+      package_spec = ''
       failure_kind = ''
       action_required = ''
     }
@@ -871,30 +874,42 @@ try {
     $summary.host.executed = $true
     $summary.host.failure_kind = ''
     $summary.host.action_required = ''
+    $summary.host.install_source = ''
+    $summary.host.tool_root = ''
+    $summary.host.package_spec = ''
 
-    $npxCmd = $null
-    if ($HostIsWindows) {
-      $npxCmd = Get-Command 'npx.cmd' -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
-    if ($null -eq $npxCmd) {
-      $npxCmd = Get-Command 'npx' -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
-
-    if ($null -eq $npxCmd -or [string]::IsNullOrWhiteSpace([string]$npxCmd.Source)) {
-      $summary.host.detail = 'npx command is not available'
-      Set-HostFailureState -FailureKind 'command_unavailable'
+    $invocation = Resolve-RaymanPlaywrightHostInstallInvocation -WorkspaceRoot $WorkspaceRootResolved -Browser $BrowserEffective
+    if (-not [bool]$invocation.success) {
+      $summary.host.install_source = if ($invocation.PSObject.Properties['install_source']) { [string]$invocation.install_source } else { '' }
+      $summary.host.tool_root = if ($invocation.PSObject.Properties['tool_root']) { [string]$invocation.tool_root } else { '' }
+      $summary.host.package_spec = if ($invocation.PSObject.Properties['package_spec']) { [string]$invocation.package_spec } else { '' }
+      $summary.host.detail = if ($invocation.PSObject.Properties['detail']) { [string]$invocation.detail } else { 'host playwright invoker resolve failed' }
+      $failureKind = if ($invocation.PSObject.Properties['failure_kind'] -and -not [string]::IsNullOrWhiteSpace([string]$invocation.failure_kind)) {
+        [string]$invocation.failure_kind
+      } else {
+        'tool_prepare_failed'
+      }
+      Set-HostFailureState -FailureKind $failureKind
+      if ($invocation.PSObject.Properties['install_output'] -and @($invocation.install_output).Count -gt 0) {
+        $tail = (@($invocation.install_output | ForEach-Object { [string]$_ } | Select-Object -Last 3) -join ' | ').Trim()
+        if (-not [string]::IsNullOrWhiteSpace([string]$tail)) {
+          $summary.host.detail = ("{0}; tail={1}" -f $summary.host.detail, $tail)
+        }
+      }
       Write-DetailLog $summary.host.detail
       return $false
     }
 
-    $summary.host.command = ("{0} -y playwright install {1}" -f [string]$npxCmd.Source, $BrowserEffective)
+    $summary.host.install_source = if ($invocation.PSObject.Properties['install_source']) { [string]$invocation.install_source } else { '' }
+    $summary.host.tool_root = if ($invocation.PSObject.Properties['tool_root']) { [string]$invocation.tool_root } else { '' }
+    $summary.host.package_spec = if ($invocation.PSObject.Properties['package_spec']) { [string]$invocation.package_spec } else { '' }
+    $summary.host.command = [string]$invocation.command_display
     Set-PlaywrightStage 'host-ensure'
-    Info ("running host playwright ensure via {0}" -f [string]$npxCmd.Source)
+    Info ("running host playwright ensure via {0}" -f $(if ([string]::IsNullOrWhiteSpace([string]$summary.host.install_source)) { 'resolved host invocation' } else { [string]$summary.host.install_source }))
     Write-DetailLog ("run: {0}" -f $summary.host.command)
 
-    Push-Location $WorkspaceRootResolved
     try {
-      & $npxCmd.Source -y playwright install $BrowserEffective
+      & ([string]$invocation.command) @($invocation.argument_list)
       $nativeSucceeded = $?
       $defaultCode = if ($nativeSucceeded) { 0 } else { 1 }
       $exitCode = Get-LastNativeExitCodeOrDefault -DefaultCode $defaultCode
@@ -905,7 +920,11 @@ try {
         $summary.host.success = $true
         $summary.host.failure_kind = ''
         $summary.host.action_required = ''
-        $summary.host.detail = 'playwright host ready'
+        $summary.host.detail = if ([string]::IsNullOrWhiteSpace([string]$summary.host.install_source)) {
+          'playwright host ready'
+        } else {
+          ("playwright host ready ({0})" -f [string]$summary.host.install_source)
+        }
         return $true
       }
 
@@ -913,8 +932,11 @@ try {
       Set-HostFailureState -FailureKind 'execution_failed'
       Write-DetailLog $summary.host.detail
       return $false
-    } finally {
-      Pop-Location
+    } catch {
+      $summary.host.detail = [string]$_.Exception.Message
+      Set-HostFailureState -FailureKind 'execution_failed'
+      Write-DetailLog $summary.host.detail $_
+      return $false
     }
   }
 
@@ -1313,7 +1335,7 @@ try {
       host_ps_version = [string]$PSVersionTable.PSVersion
       host_is_windows = $HostIsWindows
       wsl = [ordered]@{ executed = $false; success = $false; skipped = $false; exit_code = $null; marker = ''; detail = ''; command = ''; failure_kind = ''; action_required = '' }
-      host = [ordered]@{ executed = $false; success = $false; skipped = $false; exit_code = $null; detail = ''; command = ''; failure_kind = ''; action_required = '' }
+      host = [ordered]@{ executed = $false; success = $false; skipped = $false; exit_code = $null; detail = ''; command = ''; install_source = ''; tool_root = ''; package_spec = ''; failure_kind = ''; action_required = '' }
       sandbox = [ordered]@{ executed = $false; success = $false; skipped = $false; exit_code = $null; status_file = ''; log_file = ''; marker = ''; detail = ''; guidance = ''; failure_kind = ''; action_required = ''; command = '' }
       proxy = [ordered]@{
         refresh_attempted = $false

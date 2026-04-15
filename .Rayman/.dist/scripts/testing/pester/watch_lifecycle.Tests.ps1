@@ -158,7 +158,7 @@ Describe 'watch stop lifecycle orchestration' {
       Invoke-RaymanStopBackgroundWatchers -WorkspaceRootPath $root -ExplicitOwnerPid '101' -OwnerExit
 
       Assert-MockCalled Stop-RaymanWorkspaceOwnedProcess -Times 5 -Exactly -Scope It
-      Assert-MockCalled Stop-ProcessByPidFile -Times 4 -Exactly -Scope It
+      Assert-MockCalled Stop-ProcessByPidFile -Times 5 -Exactly -Scope It
       Assert-MockCalled Stop-ResidualRaymanStartupProcesses -Times 1 -Exactly -Scope It -ParameterFilter {
         $StopSharedServices -and $CurrentOwnerPid -eq 101
       }
@@ -186,8 +186,41 @@ Describe 'watch stop lifecycle orchestration' {
       Invoke-RaymanStopBackgroundWatchers -WorkspaceRootPath $root -ExplicitOwnerPid '101'
 
       Assert-MockCalled Stop-RaymanWorkspaceOwnedProcess -Times 5 -Exactly -Scope It
-      Assert-MockCalled Stop-ProcessByPidFile -Times 4 -Exactly -Scope It
+      Assert-MockCalled Stop-ProcessByPidFile -Times 5 -Exactly -Scope It
       Assert-MockCalled Stop-ResidualRaymanStartupProcesses -Times 0 -Exactly -Scope It
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'keeps shared shutdown isolated from owner-scoped records when shared-only is requested' {
+    $root = New-WatchLifecycleRoot
+    try {
+      Write-WatchSession -Root $root -ParentPid 101 -State 'parent-exited'
+
+      Mock Test-RaymanTrackedProcessAlive { return $false }
+      Mock Get-RaymanWorkspaceOwnedProcessRecords {
+        return @(
+          [pscustomobject]@{ owner_key = $script:ownerContext.owner_key; owner_display = $script:ownerContext.owner_display; kind = 'watcher'; root_pid = 4100; launcher = 'watch-auto-exitwatch' }
+          [pscustomobject]@{ owner_key = $script:ownerContext.owner_key; owner_display = $script:ownerContext.owner_display; kind = 'dotnet'; root_pid = 4200; launcher = 'windows-bridge' }
+          [pscustomobject]@{ owner_key = $script:ownerContext.owner_key; owner_display = $script:ownerContext.owner_display; kind = 'vscode'; root_pid = 4250; launcher = 'setup-vscode-window' }
+          [pscustomobject]@{ owner_key = $script:sharedContext.owner_key; owner_display = $script:sharedContext.owner_display; kind = 'watcher'; root_pid = 4300; launcher = 'watch-auto-shared' }
+          [pscustomobject]@{ owner_key = $script:sharedContext.owner_key; owner_display = $script:sharedContext.owner_display; kind = 'mcp'; root_pid = 4400; launcher = 'watch-auto-mcp' }
+        )
+      }
+
+      Invoke-RaymanStopBackgroundWatchers -WorkspaceRootPath $root -ExplicitOwnerPid '101' -OwnerExit -SharedOnly
+
+      Assert-MockCalled Stop-RaymanWorkspaceOwnedProcess -Times 2 -Exactly -Scope It -ParameterFilter {
+        [int]$Record.root_pid -in @(4300, 4400)
+      }
+      Assert-MockCalled Stop-RaymanWorkspaceOwnedProcess -Times 0 -Scope It -ParameterFilter {
+        [int]$Record.root_pid -in @(4100, 4200, 4250)
+      }
+      Assert-MockCalled Stop-ProcessByPidFile -Times 5 -Exactly -Scope It
+      Assert-MockCalled Stop-ResidualRaymanStartupProcesses -Times 1 -Exactly -Scope It -ParameterFilter {
+        $StopSharedServices -and $SkipExitWatchResiduals -and $CurrentOwnerPid -eq 101
+      }
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -206,16 +239,85 @@ Describe 'watch task generation contracts' {
     $installRaw | Should -Match "'\$\{env:VSCODE_PID\}'"
   }
 
-  It 'uses the shared win-watch host for embedded attention and auto-save instead of detached helpers' {
+  It 'uses the shared win-watch host for embedded attention, auto-save, and network resume instead of detached helpers' {
     $startRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\start_background_watchers.ps1') -Raw -Encoding UTF8
     $processPromptRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\requirements\process_prompts.ps1') -Raw -Encoding UTF8
 
     $startRaw | Should -Match 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED'
+    $startRaw | Should -Match 'Get-RaymanWorkspaceEnvBool -WorkspaceRoot \$WorkspaceRoot -Name ''RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED'''
     $startRaw | Should -Match 'EnableEmbeddedAttentionWatch'
     $startRaw | Should -Match 'EnableEmbeddedAutoSave'
+    $startRaw | Should -Match 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED'
+    $startRaw | Should -Match 'EnableEmbeddedNetworkResume'
+    $startRaw | Should -Match 'FromCodexDesktopAuto'
+    $startRaw | Should -Match 'trigger=codex-desktop-auto'
+    $startRaw | Should -Match 'DisablePromptSync'
     $startRaw | Should -Not -Match "Name 'attention-watch'"
     $startRaw | Should -Not -Match "Name 'auto-save-watch'"
+    $startRaw | Should -Not -Match "Name 'network-resume-watch'"
     $processPromptRaw | Should -Not -Match 'ensure_attention_watch\.ps1'
+  }
+
+  It 'cleans stale owned watcher records before re-registering detached watchers' {
+    $startRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\start_background_watchers.ps1') -Raw -Encoding UTF8
+
+    $startRaw | Should -Match 'function Remove-StaleRaymanBackgroundProcessRecords'
+    $startRaw | Should -Match 'Get-RaymanWorkspaceOwnedProcessRecords'
+    $startRaw | Should -Match 'Remove-RaymanWorkspaceOwnedProcess'
+    $startRaw | Should -Match 'removing stale owned process record'
+  }
+
+  It 'keeps provider-target network resume defaults and wiring mirrored across source and dist' {
+    $envRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.rayman.env.ps1') -Raw -Encoding UTF8
+    $setupRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $winWatchRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\win-watch.ps1') -Raw -Encoding UTF8
+    $winWatchDistRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\.dist\win-watch.ps1') -Raw -Encoding UTF8
+    $embeddedRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\embedded_watchers.lib.ps1') -Raw -Encoding UTF8
+    $embeddedDistRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\.dist\scripts\watch\embedded_watchers.lib.ps1') -Raw -Encoding UTF8
+    $readmeRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\README.md') -Raw -Encoding UTF8
+    $readmeDistRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\.dist\README.md') -Raw -Encoding UTF8
+
+    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_WATCH_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS = '1800'"
+    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS = '300'"
+    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' = '1'"
+    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' = '300'"
+    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_CODEX_PROBE_URL' = 'https://api.openai.com/'"
+    $winWatchRaw | Should -Match 'EnableEmbeddedNetworkResume'
+    $winWatchRaw | Should -Match 'network-resume'
+    $winWatchDistRaw | Should -Match 'EnableEmbeddedNetworkResume'
+    $embeddedRaw | Should -Match 'network_resume\.status\.json'
+    $embeddedRaw | Should -Match 'transient_throttle_error'
+    $embeddedRaw | Should -Match 'ThrottleWaitSeconds'
+    $embeddedRaw | Should -Match "'exec', 'resume', '--last'"
+    $embeddedDistRaw | Should -Match 'network_resume\.status\.json'
+    $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0'
+    $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>'
+    $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_CODEX_PROBE_URL=<https-url>'
+    $readmeRaw | Should -Match 'high demand / rate limit / overload'
+    $readmeRaw | Should -Match '只会对 Codex 调用 `codex exec resume --last`'
+    $readmeDistRaw | Should -Match 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0'
+    $readmeDistRaw | Should -Match 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>'
+  }
+
+  It 'keeps attention defaults enabled for shared watcher scanning and completion sounds' {
+    $envRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.rayman.env.ps1') -Raw -Encoding UTF8
+    $setupRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
+    $readmeRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\README.md') -Raw -Encoding UTF8
+
+    $envRaw | Should -Match "RAYMAN_ALERT_DONE_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_ALERT_SOUND_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_ALERT_SOUND_DONE_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_ALERT_WATCH_ON_PROMPT_ENABLED = '1'"
+    $envRaw | Should -Match "RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED = '1'"
+    $setupRaw | Should -Match "'RAYMAN_ALERT_DONE_ENABLED' = '1'"
+    $setupRaw | Should -Match "'RAYMAN_ALERT_SOUND_ENABLED' = '1'"
+    $setupRaw | Should -Match "'RAYMAN_ALERT_SOUND_DONE_ENABLED' = '1'"
+    $setupRaw | Should -Match "'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' = '1'"
+    $setupRaw | Should -Match "'RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED' = '1'"
+    $readmeRaw | Should -Match '默认完成提醒与人工等待提醒都会出声'
+    $readmeRaw | Should -Match 'RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED=0'
   }
 
   It 'keeps init and VS Code bootstrap on the shared watcher path' {
@@ -231,6 +333,24 @@ Describe 'watch task generation contracts' {
     $startRaw | Should -Match 'EnableEmbeddedAttentionWatch'
   }
 
+  It 'keeps Codex desktop auto-stop on shared-only cleanup' {
+    $bootstrapRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\codex_desktop_bootstrap.ps1') -Raw -Encoding UTF8
+
+    $bootstrapRaw | Should -Match "'-SharedOnly'"
+  }
+
+  It 'starts worker auto-sync as a dedicated detached watcher and stops it with shared services' {
+    $startRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\start_background_watchers.ps1') -Raw -Encoding UTF8
+    $stopRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\stop_background_watchers.ps1') -Raw -Encoding UTF8
+
+    $startRaw | Should -Match 'worker_auto_sync\.ps1'
+    $startRaw | Should -Match "Name 'worker-auto-sync'"
+    $startRaw | Should -Match "EnableEnvName 'RAYMAN_WORKER_AUTO_SYNC_ENABLED'"
+    $startRaw | Should -Match "Launcher 'watch-auto-worker-sync'"
+    $stopRaw | Should -Match 'worker_auto_sync\.pid'
+    $stopRaw | Should -Match 'worker_auto_sync\.ps1'
+  }
+
   It 'keeps shared watcher helper assets mirrored and repairable' {
     $assertPsRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\release\assert_dist_sync.ps1') -Raw -Encoding UTF8
     $assertShRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\release\assert_dist_sync.sh') -Raw -Encoding UTF8
@@ -239,7 +359,10 @@ Describe 'watch task generation contracts' {
 
     foreach ($rel in @(
       'scripts/watch/embedded_watchers.lib.ps1',
+      'scripts/watch/stop_background_watchers.ps1',
       'scripts/watch/watch_lifecycle.lib.ps1',
+      'scripts/watch/worker_auto_sync.ps1',
+      'scripts/watch/codex_desktop_bootstrap.ps1',
       'scripts/watch/vscode_folder_open_bootstrap.ps1'
     )) {
       $srcPath = Join-Path $script:RepoRoot ('.Rayman\' + $rel.Replace('/', '\'))
@@ -256,12 +379,27 @@ Describe 'watch task generation contracts' {
     }
   }
 
+  It 'installs a user-level Codex Desktop bootstrap alongside workspace-register' {
+    $registerRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\workspace\register_workspace.ps1') -Raw -Encoding UTF8
+    $bootstrapRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\codex_desktop_bootstrap.ps1') -Raw -Encoding UTF8
+
+    $registerRaw | Should -Match 'rayman-codex-desktop-bootstrap\.ps1'
+    $registerRaw | Should -Match 'rayman-codex-desktop-bootstrap\.cmd'
+    $registerRaw | Should -Match 'rayman-codex-desktop-bootstrap\.vbs'
+    $registerRaw | Should -Match 'startup_path'
+    $bootstrapRaw | Should -Match 'Get-RaymanCodexDesktopBootstrapWorkspaceEntries'
+    $bootstrapRaw | Should -Match 'FromCodexDesktopAuto'
+    $bootstrapRaw | Should -Match 'RAYMAN_CODEX_DESKTOP_WATCH_AUTO_START_ENABLED'
+  }
+
   It 'routes pending-task reminders through the shared attention pipeline' {
     $pendingRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\state\check_pending_task.ps1') -Raw -Encoding UTF8
 
     $pendingRaw | Should -Match 'Invoke-RaymanAttentionAlert'
     $pendingRaw | Should -Not -Match 'ToastNotificationManager'
     $pendingRaw | Should -Not -Match 'notify-send'
+    $pendingRaw | Should -Not -Match 'SoundPlayer'
+    $pendingRaw | Should -Not -Match 'Invoke-RaymanAttentionSoundFile'
   }
 
   It 'prefers powershell.exe for approval-sensitive Windows launchers' {

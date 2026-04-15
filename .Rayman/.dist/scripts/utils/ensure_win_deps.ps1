@@ -201,6 +201,7 @@ if ($missingOptional.Count -gt 0) {
   Write-Host ("⚠️ 可选依赖缺失：{0}" -f ($missingOptional -join ', ')) -ForegroundColor Yellow
 }
 Write-Host '✅ Windows 依赖检查完成，已记录状态。' -ForegroundColor Green
+Write-Host 'ℹ️ 若提示音文件存在但你仍怀疑没声音，可运行：rayman.ps1 sound-check。' -ForegroundColor Cyan
 Write-Host 'ℹ️ 若你主要在 WSL(/mnt/*) 开发，可运行：Rayman: Ensure WSL Deps。' -ForegroundColor Cyan
 
 exit 0

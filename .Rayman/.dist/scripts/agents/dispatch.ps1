@@ -33,6 +33,11 @@ if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
   . $memoryHelperPath
 }
 
+$sessionCommonPath = Join-Path $PSScriptRoot '..\state\session_common.ps1'
+if (Test-Path -LiteralPath $sessionCommonPath -PathType Leaf) {
+  . $sessionCommonPath
+}
+
 function Get-EnvBoolCompat([string]$Name, [bool]$Default) {
   $raw = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
@@ -1105,10 +1110,30 @@ if ([string]::IsNullOrWhiteSpace($effectivePreferredBackend)) {
 $capabilityMatches = Get-AgentCapabilityMatches -CapabilityState $capabilityState -TaskKindText $TaskKind -PromptKeyText $effectivePromptKey -TaskText $Task -CommandText $Command
 $matchedCapabilities = @($capabilityMatches.all_matches)
 $activeCapabilityMatches = @($capabilityMatches.active_matches)
+$interactionMode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
+} else {
+  'detailed'
+}
+$interactionModeLabel = if (Get-Command Get-RaymanInteractionModeLabel -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionModeLabel -Mode $interactionMode
+} else {
+  '详细'
+}
+$interactionModePreamble = if (Get-Command Get-RaymanInteractionModePromptPreamble -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionModePromptPreamble -WorkspaceRoot $WorkspaceRoot
+} else {
+  ''
+}
 $capabilityPreamble = Build-AgentCapabilityPreamble -CapabilityMatches $activeCapabilityMatches
 $memoryPreamble = ''
 if (Get-Command Get-RaymanMemoryPromptPreamble -ErrorAction SilentlyContinue) {
-  $memoryPreamble = Get-RaymanMemoryPromptPreamble -WorkspaceRoot $WorkspaceRoot -TaskKind $TaskKind -Task $Task -TaskKey $memoryTaskKey
+  try {
+    $memoryPreamble = Get-RaymanMemoryPromptPreamble -WorkspaceRoot $WorkspaceRoot -TaskKind $TaskKind -Task $Task -TaskKey $memoryTaskKey
+  } catch {
+    $memoryPreamble = ''
+    Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("memory preamble unavailable: {0}" -f $_.Exception.Message)
+  }
 }
 $subagentPreamble = Build-RaymanSubagentPreamble -Registry $multiAgentRegistry
 $agenticPlan = $null
@@ -1139,7 +1164,7 @@ if ($agenticEnabled -and (Get-Command New-RaymanAgenticToolPolicy -ErrorAction S
     '[/RaymanAgenticPlan]'
   ) -join "`n"
   $preambleParts = New-Object System.Collections.Generic.List[string]
-  foreach ($item in @($memoryPreamble, $capabilityPreamble, $agenticPreamble, (Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'delegation_preamble' -Default ''))) {
+  foreach ($item in @($interactionModePreamble, $memoryPreamble, $capabilityPreamble, $agenticPreamble, (Get-RaymanAgenticPropValue -Object $agenticExecution -Name 'delegation_preamble' -Default ''))) {
     if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
       $preambleParts.Add(([string]$item).Trim()) | Out-Null
     }
@@ -1150,7 +1175,15 @@ if ($agenticEnabled -and (Get-Command New-RaymanAgenticToolPolicy -ErrorAction S
 
 if (-not $agenticEnabled -and -not [string]::IsNullOrWhiteSpace([string]$memoryPreamble)) {
   $preambleParts = New-Object System.Collections.Generic.List[string]
-  foreach ($item in @($memoryPreamble, $capabilityPreamble)) {
+  foreach ($item in @($interactionModePreamble, $memoryPreamble, $capabilityPreamble)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
+      $preambleParts.Add(([string]$item).Trim()) | Out-Null
+    }
+  }
+  $capabilityPreamble = ($preambleParts -join "`n")
+} elseif (-not $agenticEnabled -and -not [string]::IsNullOrWhiteSpace([string]$interactionModePreamble)) {
+  $preambleParts = New-Object System.Collections.Generic.List[string]
+  foreach ($item in @($interactionModePreamble, $capabilityPreamble)) {
     if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
       $preambleParts.Add(([string]$item).Trim()) | Out-Null
     }
@@ -1292,6 +1325,8 @@ if ($policy.blocked) {
     model_candidate_chain = @($modelCandidateChain)
     model_selection_reason = $modelSelectionReason
     model_availability = $modelAvailability
+    interaction_mode = $interactionMode
+    interaction_mode_label = $interactionModeLabel
     selected_model_alias = $selectedModelAlias
     selected_model_selector = $selectedModelSelector
     resolved_model = $resolvedModel
@@ -1445,6 +1480,8 @@ $executionWorkerId = ''
 $executionWorkerName = ''
 $executionWorkspaceMode = ''
 $executionSyncManifest = $null
+$codexDelegationCompleted = $false
+$codexDelegationAccountAlias = ''
 
 if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   $delegated = $true
@@ -1456,6 +1493,10 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   if (-not $DryRun) {
     try {
       $delegateResult = Invoke-RaymanCodexCommand -WorkspaceRoot $WorkspaceRoot -ArgumentList @('exec', '-C', $WorkspaceRoot, $promptText) -RequireManagedLogin -Capture
+      $codexDelegationCompleted = $true
+      if ($delegateResult.PSObject.Properties['context'] -and $null -ne $delegateResult.context -and $delegateResult.context.PSObject.Properties['account_alias']) {
+        $codexDelegationAccountAlias = [string]$delegateResult.context.account_alias
+      }
       if (-not [string]::IsNullOrWhiteSpace([string]$delegateResult.command)) {
         $executedCommand = [string]$delegateResult.command
       }
@@ -1466,6 +1507,7 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
       $success = [bool]$delegateResult.success
       $errorMessage = [string]$delegateResult.error
     } catch {
+      $codexDelegationCompleted = $true
       $exitCode = 1
       $success = $false
       $errorMessage = $_.Exception.Message
@@ -1491,6 +1533,10 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
   if (-not $DryRun) {
     try {
       $delegateResult = Invoke-RaymanCodexCommand -WorkspaceRoot $WorkspaceRoot -ArgumentList @('exec', '-C', $WorkspaceRoot, $promptText) -RequireManagedLogin -Capture
+      $codexDelegationCompleted = $true
+      if ($delegateResult.PSObject.Properties['context'] -and $null -ne $delegateResult.context -and $delegateResult.context.PSObject.Properties['account_alias']) {
+        $codexDelegationAccountAlias = [string]$delegateResult.context.account_alias
+      }
       if (-not [string]::IsNullOrWhiteSpace([string]$delegateResult.command)) {
         $executedCommand = [string]$delegateResult.command
       }
@@ -1501,6 +1547,7 @@ if ($systemSlimActive -and $systemSlimFeature -eq 'dispatch') {
       $success = [bool]$delegateResult.success
       $errorMessage = [string]$delegateResult.error
     } catch {
+      $codexDelegationCompleted = $true
       $exitCode = 1
       $success = $false
       $errorMessage = $_.Exception.Message
@@ -1569,6 +1616,21 @@ if ($null -ne $agenticExecution) {
 
 $dispatchFinishedAt = Get-Date
 $dispatchDurationMs = [int][Math]::Max(0, [Math]::Round(($dispatchFinishedAt - $dispatchStartedAt).TotalMilliseconds))
+$tempCheckpoint = $null
+if (-not $DryRun -and (Get-Command Invoke-RaymanSessionCommandCheckpoint -ErrorAction SilentlyContinue)) {
+  try {
+    if ($selectedBackend -eq 'local' -and -not [string]::IsNullOrWhiteSpace([string]$executedCommand)) {
+      $tempCheckpoint = Invoke-RaymanSessionCommandCheckpoint -WorkspaceRoot $WorkspaceRoot -DurationMs $dispatchDurationMs -Backend 'local' -CommandText $executedCommand
+    } elseif ($selectedBackend -eq 'codex' -and $codexDelegationCompleted) {
+      $tempCheckpoint = Invoke-RaymanSessionCommandCheckpoint -WorkspaceRoot $WorkspaceRoot -DurationMs $dispatchDurationMs -Backend 'codex' -AccountAlias $codexDelegationAccountAlias -CommandText $executedCommand
+    }
+    if ($null -ne $tempCheckpoint -and [bool]$tempCheckpoint.checkpointed) {
+      Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("temp checkpoint saved: session={0} reason={1}" -f [string]$tempCheckpoint.session_slug, [string]$tempCheckpoint.reason)
+    }
+  } catch {
+    Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("temp checkpoint failed: {0}" -f $_.Exception.Message)
+  }
+}
 $summary = [ordered]@{
   schema = 'rayman.agent.dispatch.v1'
   generated_at = $dispatchFinishedAt.ToString('o')
@@ -1591,6 +1653,8 @@ $summary = [ordered]@{
   selected_model_alias = $selectedModelAlias
   selected_model_selector = $selectedModelSelector
   resolved_model = $resolvedModel
+  interaction_mode = $interactionMode
+  interaction_mode_label = $interactionModeLabel
   pipeline = if ($agenticEnabled) { [string](Get-RaymanAgenticPropValue -Object $agenticConfig -Name 'active_pipeline' -Default 'planner_v1') } else { 'legacy' }
   plan_id = [string](Get-RaymanAgenticPropValue -Object $agenticPlan -Name 'plan_id' -Default '')
   selected_tools = @($agenticSelectedTools)
@@ -1637,6 +1701,7 @@ $summary = [ordered]@{
   error_message = $errorMessage
   duration_ms = $dispatchDurationMs
   detail_log = $detailLog
+  temp_checkpoint = $tempCheckpoint
 }
 
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
@@ -1652,14 +1717,23 @@ if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
   } else {
     'dispatch_failed'
   }
-  Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'dispatch' -Success $success -ErrorKind $dispatchErrorKind -DurationMs $dispatchDurationMs -SelectedTools @($agenticSelectedTools) -ArtifactRefs @($summaryPath, $detailLog) -SummaryText ([string]$selectionReason) -ExtraPayload @{
-    preferred_backend = $effectivePreferredBackend
-    selected_backend = $selectedBackend
-    prompt_key = $effectivePromptKey
-    dry_run = [bool]$DryRun
-  } | Out-Null
+  try {
+    Write-RaymanEpisodeMemory -WorkspaceRoot $WorkspaceRoot -RunId $runId -TaskKey $memoryTaskKey -TaskKind $TaskKind -Stage 'dispatch' -Success $success -ErrorKind $dispatchErrorKind -DurationMs $dispatchDurationMs -SelectedTools @($agenticSelectedTools) -ArtifactRefs @($summaryPath, $detailLog) -SummaryText ([string]$selectionReason) -ExtraPayload @{
+      preferred_backend = $effectivePreferredBackend
+      selected_backend = $selectedBackend
+      prompt_key = $effectivePromptKey
+      interaction_mode = $interactionMode
+      dry_run = [bool]$DryRun
+    } | Out-Null
+  } catch {
+    Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("episode memory unavailable: {0}" -f $_.Exception.Message)
+  }
   if (-not $DryRun -and (Get-Command Start-RaymanMemorySummarizer -ErrorAction SilentlyContinue)) {
-    Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $TaskKind -RunId $runId | Out-Null
+    try {
+      Start-RaymanMemorySummarizer -WorkspaceRoot $WorkspaceRoot -TaskKey $memoryTaskKey -TaskKind $TaskKind -RunId $runId | Out-Null
+    } catch {
+      Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("memory summarizer unavailable: {0}" -f $_.Exception.Message)
+    }
   }
 }
 

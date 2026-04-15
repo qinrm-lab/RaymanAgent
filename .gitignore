@@ -17,6 +17,7 @@ App_Data/
 .Rayman/logs/
 .Rayman/temp/
 .Rayman/tmp/
+.Rayman/login/
 .Rayman/context/skills.auto.md
 .Rayman/mcp/*.bak
 .Rayman/release/delivery-pack-*.md

@@ -20,6 +20,11 @@ if (-not (Test-Path -LiteralPath $commonScriptPath -PathType Leaf)) {
 
 . $commonScriptPath
 
+$runtimeCleanupScript = Join-Path $PSScriptRoot 'scripts\utils\runtime_cleanup.ps1'
+if (Test-Path -LiteralPath $runtimeCleanupScript -PathType Leaf) {
+  . $runtimeCleanupScript -NoMain
+}
+
 # --- self-repair --------------------------------------------------------
 & "$PSScriptRoot\scripts\repair\ensure_complete_rayman.ps1" -Root (Resolve-Path "$PSScriptRoot\..").Path | Out-Host
 
@@ -261,6 +266,17 @@ if ($null -ne $workspaceStateGuardResult) {
   }
 } elseif (-not [string]::IsNullOrWhiteSpace($workspaceStateGuardError)) {
   Write-Warn ("[workspace-state] pre-init guard failed: {0}" -f $workspaceStateGuardError)
+}
+
+if (Get-Command Invoke-RaymanRuntimeCleanup -ErrorAction SilentlyContinue) {
+  try {
+    $runtimeCleanupReport = Invoke-RaymanRuntimeCleanup -WorkspaceRoot $WorkspaceRoot -Mode 'setup-prune' -KeepDays 14 -WriteSummary
+    if ([int]$runtimeCleanupReport.removed_count -gt 0 -or [int]$runtimeCleanupReport.preserved_count -gt 0) {
+      Write-Host ("[init] runtime 收敛完成：removed={0}, preserved={1}" -f [int]$runtimeCleanupReport.removed_count, [int]$runtimeCleanupReport.preserved_count) -ForegroundColor DarkCyan
+    }
+  } catch {
+    Write-Warn ("[init] runtime 收敛失败：{0}" -f $_.Exception.Message)
+  }
 }
 
 
@@ -909,6 +925,11 @@ try {
 
     if (Test-Path $StatusFile) { Remove-Item -Force $StatusFile }
 
+    # 设置 Sandbox 离线优先模式环境变量
+    # 这些变量会被传递到 Sandbox 内部，用于优化bootstrap过程
+    $env:RAYMAN_SANDBOX_SKIP_NETWORK_PREFLIGHT = 'true'
+    $env:RAYMAN_SANDBOX_OFFLINE_CACHE_ENABLED = 'true'
+    
     Write-Info "启动 Windows Sandbox：$wsbPath"
 
     $proc = Start-Process -FilePath $exe -ArgumentList @($wsbPath) -PassThru

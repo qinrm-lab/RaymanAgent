@@ -307,6 +307,41 @@ function Restore-EnvOverrides {
   }
 }
 
+function Get-ReleaseGateAutoRefreshEnabled {
+  param(
+    [object]$Definition,
+    [string]$Mode
+  )
+
+  if ($Mode -eq 'project') {
+    return [bool](Get-PropValue -Object $Definition -Name 'AutoRefreshInProject' -Default $false)
+  }
+
+  return [bool](Get-PropValue -Object $Definition -Name 'AutoRefreshInStandard' -Default $false)
+}
+
+function Get-ReleaseGateAutoRefreshStateText {
+  param(
+    [object]$Attempt,
+    [string]$EvaluationStatus,
+    [bool]$ReportExists
+  )
+
+  if ($null -eq $Attempt -or -not [bool](Get-PropValue -Object $Attempt -Name 'attempted' -Default $false)) {
+    return ''
+  }
+
+  if (-not $ReportExists -or [string]$EvaluationStatus -eq 'STALE') {
+    return 'still_stale_after_refresh'
+  }
+
+  if ([string]$EvaluationStatus -eq 'PASS') {
+    return 'refreshed_and_passed'
+  }
+
+  return 'refreshed_and_failed'
+}
+
 function Test-ProxyEndpointReachable([string]$ProxyUrl, [int]$TimeoutMs = 1200) {
   if ([string]::IsNullOrWhiteSpace($ProxyUrl)) { return $false }
   try {
@@ -415,8 +450,8 @@ $results = New-Object System.Collections.Generic.List[object]
 $residualCacheHintEnabled = $false
 $residualCacheHintMessage = ''
 $residualCacheHintPossible = $false
-$expectedTag = 'V161'
-$expectedVersion = 'V161'
+$expectedTag = 'V165'
+$expectedVersion = 'V165'
 
 $allowNoGitByEnv = Get-EnvBoolCompat -Name 'RAYMAN_ALLOW_NO_GIT' -Default $false
 $allowNoGitEffective = ($AllowNoGit -or $allowNoGitByEnv)
@@ -435,25 +470,7 @@ if (-not $isGitWorkspace) {
 } else {
   Add-Result -Results $results -Name 'Git工作区检测' -Status PASS -Detail '检测到 Git 工作区'
 }
-$scanIgnoreRules = @(
-  '/\.tmp_sandbox_',
-  '/\.rayman\.stage\.',
-  '/\.rayman_full_',
-  '/rayman_full_bundle/',
-  '/\.venv/',
-  '/\.git/',
-  '/\.rayman/context\.md$',
-  '/\.rayman/logs/',
-  '/\.rayman/state/',
-  '/\.rayman/runtime/',
-  '/\.rayman/cache/',
-  '/\.rayman/\.dist/logs/',
-  '/\.rayman/\.dist/state/',
-  '/\.rayman/\.dist/runtime/',
-  '/\.rayman/\.dist/cache/',
-  '/\.rayman/scripts/release/release_gate\.ps1$',
-  '/\.rayman/\.dist/scripts/release/release_gate\.ps1$'
-)
+$scanIgnoreRules = Get-ReleaseGateScanIgnoreRules
 $commonScript = Join-Path $raymanDir 'common.ps1'
 $commonImported = $false
 $commonImportError = ''
@@ -571,9 +588,9 @@ if ($Mode -eq 'standard') {
     $versionIssues.Add('missing AGENTS.md/agents.md (resolved path not found)') | Out-Null
   } else {
     $agentsRaw = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8
-    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
+    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V165') {
       $agentsRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $agentsPath
-      $versionIssues.Add(("{0} missing V161 marker" -f $agentsRel)) | Out-Null
+      $versionIssues.Add(("{0} missing V165 marker" -f $agentsRel)) | Out-Null
     }
   }
 }
@@ -582,8 +599,8 @@ if (-not (Test-Path -LiteralPath $agentsTemplatePath -PathType Leaf)) {
   $versionIssues.Add('missing .Rayman/agents.template.md') | Out-Null
 } else {
   $templateRaw = Get-Content -LiteralPath $agentsTemplatePath -Raw -Encoding UTF8
-  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
-    $versionIssues.Add('.Rayman/agents.template.md missing V161 marker') | Out-Null
+  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V165') {
+    $versionIssues.Add('.Rayman/agents.template.md missing V165 marker') | Out-Null
   }
 }
 
@@ -604,15 +621,7 @@ if (-not (Test-Path -LiteralPath $distVersionPath -PathType Leaf)) {
 $scanBase = if ($Mode -eq 'project') { $raymanDir } else { $WorkspaceRoot }
 $scanFiles = Get-ChildItem -Path $scanBase -Recurse -Include *.md,*.ps1,*.psm1,*.json,VERSION -File -ErrorAction SilentlyContinue |
   Where-Object {
-    $fullNorm = Get-PathComparisonValue $_.FullName
-    $ignored = $false
-    foreach ($rule in $scanIgnoreRules) {
-      if ($fullNorm -match $rule) {
-        $ignored = $true
-        break
-      }
-    }
-    -not $ignored
+      -not (Test-ReleaseGatePathIgnored -FullPath $_.FullName -Rules $scanIgnoreRules)
   }
 
 $legacyMatches = New-Object System.Collections.Generic.List[string]
@@ -1364,6 +1373,12 @@ $laneDefinitions = @(
     Schema = 'rayman.testing.fast_contract.v1'
     SuccessProperty = 'success'
     OverallProperty = ''
+    RequireGeneratedAt = $true
+    FreshnessPaths = @(
+      '.Rayman/scripts/testing/run_fast_contract.sh'
+      '.Rayman/scripts/testing'
+      '.Rayman/rayman.ps1'
+    )
     MissingInProject = 'WARN'
     MissingInStandard = 'FAIL'
     FailInProject = 'FAIL'
@@ -1371,6 +1386,8 @@ $laneDefinitions = @(
     WarnInProject = 'WARN'
     WarnInStandard = 'WARN'
     Action = '执行 bash ./.Rayman/scripts/testing/run_fast_contract.sh'
+    AutoRefreshInProject = $true
+    AutoRefreshInStandard = $true
   }
   [pscustomobject]@{
     Name = 'PowerShell逻辑单测'
@@ -1419,15 +1436,31 @@ $laneDefinitions = @(
     WarnInProject = 'WARN'
     WarnInStandard = 'WARN'
     Action = '执行 pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD"'
+    AutoRefreshInProject = $true
+    AutoRefreshInStandard = $true
   }
 )
 
 foreach ($lane in $laneDefinitions) {
   $laneReportPath = Join-Path $testLaneDir ([string]$lane.FileName)
   $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  $autoRunAttempt = $null
+  $shouldAutoRunLane = Get-ReleaseGateAutoRefreshEnabled -Definition $lane -Mode $Mode
+  if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+    if ($shouldAutoRunLane) {
+      $autoRunAttempt = Invoke-ReleaseGateLaneAutoRun -WorkspaceRoot $WorkspaceRoot -Action ([string]$lane.Action)
+    }
+  }
+
   if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
     $missingStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
-    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail ("缺少测试报告: {0}" -f $laneReportRel) -Action ([string]$lane.Action)
+    $detail = ("缺少测试报告: {0}" -f $laneReportRel)
+    $action = [string]$lane.Action
+    if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+      $detail = ("{0}; auto_run=attempted; started={1}; exit={2}; reason={3}" -f $detail, [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)
+      $action = ("自动补跑已尝试；若仍失败，请手工执行 {0}" -f [string]$lane.Action)
+    }
+    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail $detail -Action $action
     continue
   }
 
@@ -1447,6 +1480,19 @@ foreach ($lane in $laneDefinitions) {
     $laneEvalArgs['RequireGeneratedAt'] = [bool]$lane.RequireGeneratedAt
   }
   $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
+  if ($shouldAutoRunLane -and [string]$laneEval.status -eq 'STALE') {
+    $autoRunAttempt = Invoke-ReleaseGateLaneAutoRun -WorkspaceRoot $WorkspaceRoot -Action ([string]$lane.Action)
+    if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted -and (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+      $laneReport = Get-JsonOrNull -Path $laneReportPath
+      $laneEvalArgs['Report'] = $laneReport
+      $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
+    } elseif ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+      $laneEval = [pscustomobject]@{
+        status = 'FAIL'
+        detail = ("auto_run_missing_report_after_attempt:{0}" -f [string]$laneReportRel)
+      }
+    }
+  }
   if ([string]$lane.Name -eq 'Bash逻辑单测' -and [string]$laneEval.status -eq 'FAIL' -and $null -ne $laneReport) {
     $laneReason = [string](Get-PropValue -Object $laneReport -Name 'reason' -Default '')
     $laneExitCode = [string](Get-PropValue -Object $laneReport -Name 'exit_code' -Default '')
@@ -1486,6 +1532,10 @@ foreach ($lane in $laneDefinitions) {
     }
   }
   $detailParts.Add(("report={0}" -f $laneReportRel)) | Out-Null
+  if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+    $detailParts.Add(("auto_run=attempted, started={0}, exit={1}, reason={2}" -f [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)) | Out-Null
+    $detailParts.Add(("auto_refresh={0}" -f (Get-ReleaseGateAutoRefreshStateText -Attempt $autoRunAttempt -EvaluationStatus ([string]$laneEval.status) -ReportExists (Test-Path -LiteralPath $laneReportPath -PathType Leaf)))) | Out-Null
+  }
   $laneDetail = ($detailParts -join '; ')
 
   switch ([string]$laneEval.status) {
@@ -1517,6 +1567,15 @@ $projectGateDefinitions = @(
     Name = '项目快速门禁'
     FileName = 'fast.report.json'
     Schema = 'rayman.project_gate.v1'
+    RequireGeneratedAt = $true
+    FreshnessPaths = @(
+      '.rayman.project.json'
+      '.Rayman/scripts/project'
+      '.Rayman/scripts/utils'
+      '.Rayman/scripts/ci/validate_requirements.sh'
+      '.Rayman/scripts/release/config_sanity.sh'
+      '.Rayman/runtime/project_gates/logs/fast.*.log'
+    )
     MissingInProject = 'WARN'
     MissingInStandard = 'WARN'
     FailInProject = 'FAIL'
@@ -1524,11 +1583,22 @@ $projectGateDefinitions = @(
     WarnInProject = 'WARN'
     WarnInStandard = 'WARN'
     Action = '执行 .\.Rayman\rayman.ps1 fast-gate'
+    AutoRefreshInProject = $true
+    AutoRefreshInStandard = $true
   }
   [pscustomobject]@{
     Name = '项目浏览器门禁'
     FileName = 'browser.report.json'
     Schema = 'rayman.project_gate.v1'
+    RequireGeneratedAt = $true
+    FreshnessPaths = @(
+      '.rayman.project.json'
+      '.Rayman/scripts/project'
+      '.Rayman/scripts/utils'
+      '.Rayman/scripts/pwa'
+      '.Rayman/scripts/windows'
+      '.Rayman/runtime/project_gates/logs/browser.*.log'
+    )
     MissingInProject = 'WARN'
     MissingInStandard = 'WARN'
     FailInProject = 'FAIL'
@@ -1536,15 +1606,31 @@ $projectGateDefinitions = @(
     WarnInProject = 'WARN'
     WarnInStandard = 'WARN'
     Action = '执行 .\.Rayman\rayman.ps1 browser-gate'
+    AutoRefreshInProject = $true
+    AutoRefreshInStandard = $true
   }
 )
 
 foreach ($lane in $projectGateDefinitions) {
   $laneReportPath = Join-Path $projectGateDir ([string]$lane.FileName)
   $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  $autoRunAttempt = $null
+  $shouldAutoRunLane = Get-ReleaseGateAutoRefreshEnabled -Definition $lane -Mode $Mode
+  if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+    if ($shouldAutoRunLane) {
+      $autoRunAttempt = Invoke-ReleaseGateLaneAutoRun -WorkspaceRoot $WorkspaceRoot -Action ([string]$lane.Action)
+    }
+  }
+
   if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
     $missingStatus = if ($Mode -eq 'project') { [string]$lane.MissingInProject } else { [string]$lane.MissingInStandard }
-    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail ("缺少项目 gate 报告: {0}" -f $laneReportRel) -Action ([string]$lane.Action)
+    $detail = ("缺少项目 gate 报告: {0}" -f $laneReportRel)
+    $action = [string]$lane.Action
+    if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+      $detail = ("{0}; auto_run=attempted; started={1}; exit={2}; reason={3}; auto_refresh=still_stale_after_refresh" -f $detail, [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)
+      $action = ("自动补跑已尝试；若仍失败，请手工执行 {0}" -f [string]$lane.Action)
+    }
+    Add-Result -Results $results -Name ([string]$lane.Name) -Status $missingStatus -Detail $detail -Action $action
     continue
   }
 
@@ -1564,6 +1650,19 @@ foreach ($lane in $projectGateDefinitions) {
     $laneEvalArgs['RequireGeneratedAt'] = [bool]$lane.RequireGeneratedAt
   }
   $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
+  if ($shouldAutoRunLane -and [string]$laneEval.status -eq 'STALE') {
+    $autoRunAttempt = Invoke-ReleaseGateLaneAutoRun -WorkspaceRoot $WorkspaceRoot -Action ([string]$lane.Action)
+    if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted -and (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
+      $laneReport = Get-JsonOrNull -Path $laneReportPath
+      $laneEvalArgs['Report'] = $laneReport
+      $laneEval = Get-TestLaneReportEvaluation @laneEvalArgs
+    } elseif ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+      $laneEval = [pscustomobject]@{
+        status = 'STALE'
+        detail = 'stale_report_missing_after_auto_refresh'
+      }
+    }
+  }
   $detailParts = New-Object System.Collections.Generic.List[string]
   $detailParts.Add([string]$laneEval.detail) | Out-Null
   if ($null -ne $laneReport) {
@@ -1586,6 +1685,10 @@ foreach ($lane in $projectGateDefinitions) {
     }
   }
   $detailParts.Add(("report={0}" -f $laneReportRel)) | Out-Null
+  if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
+    $detailParts.Add(("auto_run=attempted, started={0}, exit={1}, reason={2}" -f [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)) | Out-Null
+    $detailParts.Add(("auto_refresh={0}" -f (Get-ReleaseGateAutoRefreshStateText -Attempt $autoRunAttempt -EvaluationStatus ([string]$laneEval.status) -ReportExists (Test-Path -LiteralPath $laneReportPath -PathType Leaf)))) | Out-Null
+  }
   $laneDetail = ($detailParts -join '; ')
 
   switch ([string]$laneEval.status) {
@@ -1664,21 +1767,29 @@ if ($memoryOk -and $memoryWarn.Count -eq 0) {
 
 # 11) 回滚能力
 $saveState = Join-Path $raymanDir 'scripts\state\save_state.ps1'
+$listState = Join-Path $raymanDir 'scripts\state\list_state.ps1'
 $resumeState = Join-Path $raymanDir 'scripts\state\resume_state.ps1'
+$worktreeCreate = Join-Path $raymanDir 'scripts\state\worktree_create.ps1'
+$sessionCommon = Join-Path $raymanDir 'scripts\state\session_common.ps1'
 $cliPath = Join-Path $raymanDir 'rayman.ps1'
 $rollbackIssues = @()
 if (-not (Test-Path -LiteralPath $saveState -PathType Leaf)) { $rollbackIssues += '缺少 save_state.ps1' }
+if (-not (Test-Path -LiteralPath $listState -PathType Leaf)) { $rollbackIssues += '缺少 list_state.ps1' }
 if (-not (Test-Path -LiteralPath $resumeState -PathType Leaf)) { $rollbackIssues += '缺少 resume_state.ps1' }
+if (-not (Test-Path -LiteralPath $worktreeCreate -PathType Leaf)) { $rollbackIssues += '缺少 worktree_create.ps1' }
+if (-not (Test-Path -LiteralPath $sessionCommon -PathType Leaf)) { $rollbackIssues += '缺少 session_common.ps1' }
 if (Test-Path -LiteralPath $cliPath -PathType Leaf) {
   $cliRaw = Get-Content -LiteralPath $cliPath -Raw -Encoding UTF8
   if ($cliRaw -notmatch 'state-save') { $rollbackIssues += 'rayman.ps1 未暴露 state-save 命令' }
+  if ($cliRaw -notmatch 'state-list') { $rollbackIssues += 'rayman.ps1 未暴露 state-list 命令' }
   if ($cliRaw -notmatch 'state-resume') { $rollbackIssues += 'rayman.ps1 未暴露 state-resume 命令' }
+  if ($cliRaw -notmatch 'worktree-create') { $rollbackIssues += 'rayman.ps1 未暴露 worktree-create 命令' }
 } else {
   $rollbackIssues += '缺少 rayman.ps1'
 }
 
 if ($rollbackIssues.Count -eq 0) {
-  Add-Result -Results $results -Name '回滚能力' -Status PASS -Detail '状态保存/恢复入口可用'
+  Add-Result -Results $results -Name '回滚能力' -Status PASS -Detail '命名会话保存/列出/恢复与 worktree 入口可用'
 } else {
   Add-Result -Results $results -Name '回滚能力' -Status FAIL -Detail ($rollbackIssues -join ' | ') -Action '补齐回滚脚本与命令映射'
 }

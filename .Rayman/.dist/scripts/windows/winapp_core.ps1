@@ -596,7 +596,7 @@ function Get-WinAppTopLevelWindowElements {
     $matched.Add($element) | Out-Null
   }
 
-  return @($matched)
+  return @($matched.ToArray())
 }
 
 function Wait-WinAppWindow {

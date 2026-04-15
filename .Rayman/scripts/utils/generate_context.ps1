@@ -188,6 +188,21 @@ if (-not (Test-Path -LiteralPath $skillsPath -PathType Leaf)) {
 }
 
 $workspaceName = Split-Path -Leaf $WorkspaceRoot
+$interactionMode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+	Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
+} else {
+	'detailed'
+}
+$interactionLabel = if (Get-Command Get-RaymanInteractionModeLabel -ErrorAction SilentlyContinue) {
+	Get-RaymanInteractionModeLabel -Mode $interactionMode
+} else {
+	'详细'
+}
+$interactionDescription = if (Get-Command Get-RaymanInteractionModeDescription -ErrorAction SilentlyContinue) {
+	Get-RaymanInteractionModeDescription -Mode $interactionMode
+} else {
+	'只要目标不明确、存在明显多路径或不同方案结果差异明显，就先给 plan、解释选项与结果，并写出明确验收标准。'
+}
 $topLevel = @(Get-StableTopLevelEntries -WorkspaceRoot $WorkspaceRoot)
 $scriptGroups = @()
 $scriptsRoot = Join-Path $WorkspaceRoot '.Rayman\scripts'
@@ -293,6 +308,14 @@ $lines.Add("## Auto Skills")
 $lines.Add("")
 $lines.Add('- File: `.Rayman\context\skills.auto.md`')
 $lines.Add("- Summary: " + ($(if ([string]::IsNullOrWhiteSpace($skillsHeadline)) { '(none)' } else { $skillsHeadline })))
+$lines.Add("")
+$lines.Add("## Collaboration Preference")
+$lines.Add("")
+$lines.Add(('- Mode: `{0}` ({1})' -f $interactionMode, $interactionLabel))
+$lines.Add(('- Summary: {0}' -f $interactionDescription))
+$lines.Add('- Ambiguity floor: if the prompt is not clear enough and the ambiguity can affect goal, scope, implementation path, risk, test expectations, target workspace, or rollback, Rayman must provide concrete options plus explicit acceptance criteria before proceeding, even outside Codex Plan Mode.')
+$lines.Add('- Hard gates: cross-workspace target selection, policy block, release gate, and dangerous operations still require a stop.')
+$lines.Add('- Post-command hygiene: Rayman auto-cleans safe transient residue after each CLI command, auto-fixes tracked Rayman generated assets unless `RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1`, and only warns when non-Rayman dirty tree still remains.')
 $lines.Add("")
 $lines.Add("## Agent Capabilities")
 $lines.Add("")

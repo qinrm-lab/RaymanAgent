@@ -142,15 +142,11 @@ function Assert-RaymanWorkerAuthorized {
   )
 
   $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-  if (-not (Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedWorkspaceRoot)) {
+  if (-not (Test-RaymanWorkerControlAuthRequired -WorkspaceRoot $resolvedWorkspaceRoot)) {
     return
   }
 
   $expectedToken = [string](Get-RaymanWorkerAuthToken -WorkspaceRoot $resolvedWorkspaceRoot)
-  if ([string]::IsNullOrWhiteSpace([string]$expectedToken)) {
-    throw ([System.UnauthorizedAccessException]::new('worker LAN mode requires RAYMAN_WORKER_AUTH_TOKEN'))
-  }
-
   $actualToken = Get-RaymanWorkerHeaderValue -Headers $Headers -Name 'X-Rayman-Worker-Token'
   if ([string]::IsNullOrWhiteSpace([string]$actualToken)) {
     throw ([System.UnauthorizedAccessException]::new('worker auth token is required'))
@@ -874,6 +870,150 @@ function Invoke-RaymanWorkerRequestData {
   }
 }
 
+function Test-RaymanWorkerCanHandleRequestInline {
+  param([object]$RequestData)
+
+  if ($null -eq $RequestData) {
+    return $true
+  }
+
+  $method = if ($RequestData.PSObject.Properties['method']) { [string]$RequestData.method } else { '' }
+  $path = if ($RequestData.PSObject.Properties['path']) { [string]$RequestData.path } else { '' }
+  return ("{0} {1}" -f $method.ToUpperInvariant(), $path.ToLowerInvariant()) -eq 'GET /status'
+}
+
+function Write-RaymanWorkerRequestEnvelope {
+  param(
+    [string]$Path,
+    [object]$RequestData
+  )
+
+  $bodyBytesBase64 = ''
+  if ($null -ne $RequestData -and $RequestData.PSObject.Properties['body_bytes'] -and $null -ne $RequestData.body_bytes) {
+    $bodyBytes = @([byte[]]$RequestData.body_bytes)
+    if ($bodyBytes.Length -gt 0) {
+      $bodyBytesBase64 = [Convert]::ToBase64String($bodyBytes)
+    }
+  }
+
+  $payload = [pscustomobject]@{
+    schema = 'rayman.worker.request_envelope.v1'
+    generated_at = (Get-Date).ToString('o')
+    request_data = [pscustomobject]@{
+      method = if ($null -ne $RequestData -and $RequestData.PSObject.Properties['method']) { [string]$RequestData.method } else { '' }
+      path = if ($null -ne $RequestData -and $RequestData.PSObject.Properties['path']) { [string]$RequestData.path } else { '' }
+      headers = if ($null -ne $RequestData -and $RequestData.PSObject.Properties['headers']) { $RequestData.headers } else { @{} }
+      query_string = if ($null -ne $RequestData -and $RequestData.PSObject.Properties['query_string']) { $RequestData.query_string } else { @{} }
+      body_json = if ($null -ne $RequestData -and $RequestData.PSObject.Properties['body_json']) { $RequestData.body_json } else { $null }
+      body_bytes_base64 = $bodyBytesBase64
+    }
+  }
+  Write-RaymanWorkerJsonFile -Path $Path -Value $payload
+}
+
+function Start-RaymanWorkerRequestHandlerProcess {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$HostStartTime,
+    [object]$RequestData,
+    [System.Net.Sockets.TcpClient]$Client
+  )
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $hostRuntimeRoot = Get-RaymanWorkerHostRuntimeRoot -WorkspaceRoot $resolvedWorkspaceRoot
+  $operationId = [Guid]::NewGuid().ToString('n')
+  $requestPath = Join-Path $hostRuntimeRoot ("request-{0}.json" -f $operationId)
+  $responsePath = Join-Path $hostRuntimeRoot ("request-{0}.response.json" -f $operationId)
+  $workerScript = Join-Path $PSScriptRoot 'worker_request_worker.ps1'
+  if (-not (Test-Path -LiteralPath $workerScript -PathType Leaf)) {
+    throw ("worker request helper script missing: {0}" -f $workerScript)
+  }
+
+  Write-RaymanWorkerRequestEnvelope -Path $requestPath -RequestData $RequestData
+  $psHost = if (Get-Command Resolve-RaymanPowerShellHost -ErrorAction SilentlyContinue) {
+    Resolve-RaymanPowerShellHost
+  } else {
+    'powershell.exe'
+  }
+  $process = Start-Process -FilePath $psHost -ArgumentList @(
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      $workerScript,
+      '-WorkspaceRoot',
+      $resolvedWorkspaceRoot,
+      '-HostStartTime',
+      $HostStartTime,
+      '-RequestPath',
+      $requestPath,
+      '-ResponsePath',
+      $responsePath
+    ) -WorkingDirectory $resolvedWorkspaceRoot -WindowStyle Hidden -PassThru
+
+  return [pscustomobject]@{
+    operation_id = $operationId
+    client = $Client
+    process = $process
+    request_path = $requestPath
+    response_path = $responsePath
+  }
+}
+
+function Complete-RaymanWorkerPendingRequest {
+  param([object]$Pending)
+
+  if ($null -eq $Pending) {
+    return $false
+  }
+
+  $response = Read-RaymanWorkerJsonFile -Path ([string]$Pending.response_path)
+  if ($null -eq $response) {
+    if ($null -eq $Pending.process -or -not $Pending.process.HasExited) {
+      return $false
+    }
+
+    $response = [pscustomobject]@{
+      schema = 'rayman.worker.request_response.v1'
+      status_code = 500
+      payload = [pscustomobject]@{
+        schema = 'rayman.worker.error.v1'
+        generated_at = (Get-Date).ToString('o')
+        error = 'worker request handler exited without producing a response'
+      }
+    }
+  }
+
+  $statusCode = if ($response.PSObject.Properties['status_code']) { [int]$response.status_code } else { 500 }
+  $payload = if ($response.PSObject.Properties['payload']) { $response.payload } else { [pscustomobject]@{
+        schema = 'rayman.worker.error.v1'
+        generated_at = (Get-Date).ToString('o')
+        error = 'worker request handler produced an invalid response envelope'
+      } }
+
+  try {
+    Write-RaymanWorkerTcpResponse -Client $Pending.client -StatusCode $statusCode -Payload $payload
+  } catch {}
+
+  try { $Pending.client.Close() } catch {}
+  if ($null -ne $Pending.process) {
+    try {
+      if (-not $Pending.process.HasExited) {
+        Stop-Process -Id $Pending.process.Id -Force -ErrorAction SilentlyContinue
+      }
+    } catch {}
+  }
+  foreach ($path in @([string]$Pending.request_path, [string]$Pending.response_path)) {
+    try {
+      if (-not [string]::IsNullOrWhiteSpace([string]$path) -and (Test-Path -LiteralPath $path)) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+      }
+    } catch {}
+  }
+
+  return $true
+}
+
 function Start-RaymanWorkerHost {
   param(
     [string]$WorkspaceRoot,
@@ -886,9 +1026,6 @@ function Start-RaymanWorkerHost {
 
   $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   $hostStartedAt = (Get-Date).ToString('o')
-  if ((Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedRoot) -and [string]::IsNullOrWhiteSpace([string](Get-RaymanWorkerAuthToken -WorkspaceRoot $resolvedRoot))) {
-    throw 'RAYMAN_WORKER_AUTH_TOKEN is required when RAYMAN_WORKER_LAN_ENABLED=1'
-  }
   $syncManifest = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $resolvedRoot
   if ($null -eq $syncManifest) {
     $syncManifest = Set-RaymanWorkerAttachedSyncManifest -WorkspaceRoot $resolvedRoot
@@ -897,6 +1034,7 @@ function Start-RaymanWorkerHost {
   $controlPort = Get-RaymanWorkerControlPort
   $listener = [System.Net.Sockets.TcpListener]::new((Get-RaymanWorkerBindIPAddress -WorkspaceRoot $resolvedRoot), $controlPort)
   $listener.Start()
+  $pendingRequests = New-Object System.Collections.Generic.List[object]
 
   try {
     $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $resolvedRoot -SyncManifest $syncManifest -ProcessId $PID -HostStartTime $hostStartedAt
@@ -916,17 +1054,31 @@ function Start-RaymanWorkerHost {
         $nextStatusWrite = $now.AddSeconds(10)
       }
 
+      foreach ($pending in @($pendingRequests.ToArray())) {
+        if (Complete-RaymanWorkerPendingRequest -Pending $pending) {
+          [void]$pendingRequests.Remove($pending)
+        }
+      }
+
       if (-not $listener.Pending()) {
         Start-Sleep -Milliseconds 250
         continue
       }
 
       $client = $listener.AcceptTcpClient()
+      $client.ReceiveTimeout = 15000
+      $client.SendTimeout = 15000
       try {
         $requestData = Read-RaymanWorkerTcpRequest -Client $client
-        $payload = Invoke-RaymanWorkerRequestData -WorkspaceRoot $resolvedRoot -RequestData $requestData -HostStartTime $hostStartedAt
-        $statusCode = if ($payload.PSObject.Properties['error'] -and [string]$payload.error -eq 'not_found') { 404 } else { 200 }
-        Write-RaymanWorkerTcpResponse -Client $client -StatusCode $statusCode -Payload $payload
+        if (Test-RaymanWorkerCanHandleRequestInline -RequestData $requestData) {
+          $payload = Invoke-RaymanWorkerRequestData -WorkspaceRoot $resolvedRoot -RequestData $requestData -HostStartTime $hostStartedAt
+          $statusCode = if ($payload.PSObject.Properties['error'] -and [string]$payload.error -eq 'not_found') { 404 } else { 200 }
+          Write-RaymanWorkerTcpResponse -Client $client -StatusCode $statusCode -Payload $payload
+        } else {
+          $pending = Start-RaymanWorkerRequestHandlerProcess -WorkspaceRoot $resolvedRoot -HostStartTime $hostStartedAt -RequestData $requestData -Client $client
+          $pendingRequests.Add($pending) | Out-Null
+          $client = $null
+        }
       } catch {
         try {
           $statusCode = if ($_.Exception -is [System.UnauthorizedAccessException]) { 401 } else { 500 }
@@ -937,10 +1089,15 @@ function Start-RaymanWorkerHost {
           })
         } catch {}
       } finally {
-        try { $client.Close() } catch {}
+        if ($null -ne $client) {
+          try { $client.Close() } catch {}
+        }
       }
     }
   } finally {
+    foreach ($pending in @($pendingRequests.ToArray())) {
+      [void](Complete-RaymanWorkerPendingRequest -Pending $pending)
+    }
     try { $listener.Stop() } catch {}
   }
 }

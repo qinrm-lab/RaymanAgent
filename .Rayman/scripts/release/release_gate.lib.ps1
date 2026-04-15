@@ -185,13 +185,17 @@ function Get-LatestFreshnessInput {
     if (-not (Test-AbsolutePathText -PathValue $candidate) -and -not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
       $candidate = Join-Path $WorkspaceRoot $candidate
     }
-    if (-not (Test-Path -LiteralPath $candidate)) { continue }
 
     $items = @()
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+    $hasWildcard = ($candidate.IndexOfAny(@([char]'*', [char]'?', [char]'[')) -ge 0)
+    if ($hasWildcard) {
+      $items = @(Get-ChildItem -Path $candidate -File -Force -ErrorAction SilentlyContinue)
+    } elseif (Test-Path -LiteralPath $candidate -PathType Leaf) {
       $items = @(Get-Item -LiteralPath $candidate -Force)
     } elseif (Test-Path -LiteralPath $candidate -PathType Container) {
       $items = @(Get-ChildItem -LiteralPath $candidate -Recurse -File -Force -ErrorAction SilentlyContinue)
+    } else {
+      continue
     }
 
     foreach ($item in $items) {
@@ -341,5 +345,164 @@ function Get-TestLaneReportEvaluation {
   return [pscustomobject]@{
     status = $(if ($successValue) { 'PASS' } else { 'FAIL' })
     detail = ("{0}={1}" -f $SuccessProperty, $successValue.ToString().ToLowerInvariant())
+  }
+}
+
+function Get-ReleaseGateScanIgnoreRules {
+  return @(
+    '/\.tmp_sandbox_',
+    '/\.temp\/rayman-dynamic-sandbox(?:[^/]*)?(?:/|$)',
+    '/\.rayman\.stage\.',
+    '/\.rayman_full_',
+    '/rayman_full_bundle/',
+    '/\.venv/',
+    '/\.git/',
+    '/\.rayman/context\.md$',
+    '/\.rayman/scripts/testing/',
+    '/\.rayman/logs/',
+    '/\.rayman/state/',
+    '/\.rayman/runtime/',
+    '/\.rayman/cache/',
+    '/\.rayman/\.dist/scripts/testing/',
+    '/\.rayman/\.dist/logs/',
+    '/\.rayman/\.dist/state/',
+    '/\.rayman/\.dist/runtime/',
+    '/\.rayman/\.dist/cache/',
+    '/\.rayman/scripts/release/release_gate\.ps1$',
+    '/\.rayman/\.dist/scripts/release/release_gate\.ps1$'
+  )
+}
+
+function Test-ReleaseGatePathIgnored {
+  param(
+    [string]$FullPath,
+    [string[]]$Rules = @()
+  )
+
+  $fullNorm = Get-PathComparisonValue -PathValue $FullPath
+  if ([string]::IsNullOrWhiteSpace($fullNorm)) {
+    return $false
+  }
+
+  foreach ($rule in @($Rules)) {
+    if ([string]::IsNullOrWhiteSpace([string]$rule)) {
+      continue
+    }
+    if ($fullNorm -match [string]$rule) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Resolve-ReleaseGateShellHost {
+  foreach ($candidate in @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')) {
+    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      return [string]$cmd.Source
+    }
+  }
+
+  return $null
+}
+
+function Invoke-ReleaseGateLaneAutoRun {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$Action,
+    [scriptblock]$Runner = $null
+  )
+
+  $commandText = [string]$Action
+  if ([string]::IsNullOrWhiteSpace($commandText)) {
+    return [pscustomobject]@{
+      attempted = $false
+      started = $false
+      success = $false
+      exit_code = 1
+      reason = 'action_missing'
+      command = ''
+      output = ''
+    }
+  }
+
+  if ($commandText.StartsWith('执行 ')) {
+    $commandText = $commandText.Substring(3).Trim()
+  } else {
+    $commandText = $commandText.Trim()
+  }
+
+  if ([string]::IsNullOrWhiteSpace($commandText)) {
+    return [pscustomobject]@{
+      attempted = $false
+      started = $false
+      success = $false
+      exit_code = 1
+      reason = 'command_missing'
+      command = ''
+      output = ''
+    }
+  }
+
+  if ($null -ne $Runner) {
+    $result = & $Runner $commandText
+    if ($null -ne $result) {
+      return $result
+    }
+  }
+
+  $shellHost = Resolve-ReleaseGateShellHost
+  if ([string]::IsNullOrWhiteSpace($shellHost)) {
+    return [pscustomobject]@{
+      attempted = $true
+      started = $false
+      success = $false
+      exit_code = 127
+      reason = 'shell_host_missing'
+      command = $commandText
+      output = 'release-gate auto-run skipped: no PowerShell host found'
+    }
+  }
+
+  if (Get-Command Invoke-RaymanNativeCommandCapture -ErrorAction SilentlyContinue) {
+    $capture = Invoke-RaymanNativeCommandCapture -FilePath $shellHost -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $commandText) -WorkingDirectory $WorkspaceRoot
+    return [pscustomobject]@{
+      attempted = $true
+      started = [bool]$capture.started
+      success = [bool]$capture.success
+      exit_code = [int]$capture.exit_code
+      reason = if ([bool]$capture.started) { 'completed' } else { 'start_failed' }
+      command = $commandText
+      output = [string]$capture.output
+    }
+  }
+
+  try {
+    $original = Get-Location
+    Set-Location -LiteralPath $WorkspaceRoot
+    & $shellHost -NoProfile -ExecutionPolicy Bypass -Command $commandText
+    $exitCode = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+    return [pscustomobject]@{
+      attempted = $true
+      started = $true
+      success = ($exitCode -eq 0)
+      exit_code = $exitCode
+      reason = 'completed'
+      command = $commandText
+      output = ''
+    }
+  } catch {
+    return [pscustomobject]@{
+      attempted = $true
+      started = $true
+      success = $false
+      exit_code = 1
+      reason = 'runtime_exception'
+      command = $commandText
+      output = [string]$_.Exception.Message
+    }
+  } finally {
+    try { Set-Location -LiteralPath $original.Path } catch {}
   }
 }

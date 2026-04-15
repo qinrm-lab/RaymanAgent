@@ -46,7 +46,7 @@ function Test-RaymanCatalogWindowsHost {
 function Get-RaymanCatalogVersionToken {
   param([string]$WorkspaceRoot)
 
-  $fallback = 'v161'
+  $fallback = 'v165'
   if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
     return $fallback
   }
@@ -200,7 +200,7 @@ function Format-RaymanHelpText {
     $lines.Add('  - For `[pwsh-only]` or `[windows-only]` commands, use `rayman.ps1 <command>`.')
   } else {
     $lines.Add('  - Commands tagged `[all]` are also available from bash `rayman`.')
-    $lines.Add('  - `menu` and `interactive` are PowerShell-only interactive entry points.')
+    $lines.Add('  - `menu` is the PowerShell interactive entry point.')
   }
 
   return ($lines -join "`n")

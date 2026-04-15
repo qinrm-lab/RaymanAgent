@@ -16,6 +16,16 @@ function Get-GuardPathComparisonValue {
   if ($candidate.StartsWith('Microsoft.PowerShell.Core\FileSystem::', [System.StringComparison]::OrdinalIgnoreCase)) {
     $candidate = $candidate.Substring('Microsoft.PowerShell.Core\FileSystem::'.Length)
   }
+  $candidate = $candidate.Trim().Trim('"').Trim("'")
+  if ($candidate -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
+    $drive = [string]$Matches[1]
+    $rest = if ($Matches.Count -gt 2) { [string]$Matches[2] } else { '' }
+    if ([string]::IsNullOrWhiteSpace($rest)) {
+      $candidate = ('{0}:\' -f $drive.ToUpperInvariant())
+    } else {
+      $candidate = ('{0}:\{1}' -f $drive.ToUpperInvariant(), ($rest -replace '/', '\'))
+    }
+  }
   try {
     $full = [System.IO.Path]::GetFullPath($candidate)
   } catch {

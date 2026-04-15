@@ -65,6 +65,15 @@
     "codex_home": {
       "type": "string"
     },
+    "alias_codex_home": {
+      "type": "string"
+    },
+    "desktop_codex_home": {
+      "type": "string"
+    },
+    "auth_scope": {
+      "type": "string"
+    },
     "managed": {
       "type": "boolean"
     },
@@ -91,6 +100,150 @@
     },
     "repair_command": {
       "type": "string"
+    },
+    "auth_mode_last": {
+      "type": "string"
+    },
+    "auth_mode_detected": {
+      "type": "string"
+    },
+    "auth_source": {
+      "type": "string"
+    },
+    "last_login_mode": {
+      "type": "string"
+    },
+    "last_login_strategy": {
+      "type": "string"
+    },
+    "last_login_prompt_classification": {
+      "type": "string"
+    },
+    "last_login_started_at": {
+      "type": "string"
+    },
+    "last_login_finished_at": {
+      "type": "string"
+    },
+    "last_login_success": {
+      "type": "boolean"
+    },
+    "last_yunyi_base_url": {
+      "type": "string"
+    },
+    "last_yunyi_success_at": {
+      "type": "string"
+    },
+    "last_yunyi_config_ready": {
+      "type": "boolean"
+    },
+    "last_yunyi_reuse_reason": {
+      "type": "string"
+    },
+    "last_yunyi_base_url_source": {
+      "type": "string"
+    },
+    "login_smoke_mode": {
+      "type": "string"
+    },
+    "login_smoke_next_allowed_at": {
+      "type": "string"
+    },
+    "login_smoke_throttled": {
+      "type": "boolean"
+    },
+    "desktop_auth_present": {
+      "type": "boolean"
+    },
+    "desktop_global_cloud_access": {
+      "type": "string"
+    },
+    "desktop_target_mode": {
+      "type": "string"
+    },
+    "desktop_saved_token_reused": {
+      "type": "boolean"
+    },
+    "desktop_saved_token_source": {
+      "type": "string"
+    },
+    "desktop_status_command": {
+      "type": "string"
+    },
+    "desktop_status_quota_visible": {
+      "type": "boolean"
+    },
+    "desktop_status_reason": {
+      "type": "string"
+    },
+    "desktop_config_conflict": {
+      "type": "string"
+    },
+    "desktop_unsynced_reason": {
+      "type": "string"
+    },
+    "latest_native_session": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "thread_name": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "session_index_path": {
+          "type": "string"
+        }
+      }
+    },
+    "saved_state_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "workspace_root": {
+          "type": "string"
+        },
+        "account_alias": {
+          "type": "string"
+        },
+        "total_count": {
+          "type": "integer"
+        },
+        "manual_count": {
+          "type": "integer"
+        },
+        "auto_temp_count": {
+          "type": "integer"
+        },
+        "latest": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "recent_saved_states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "recent_saved_states": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
     }
   }
 }

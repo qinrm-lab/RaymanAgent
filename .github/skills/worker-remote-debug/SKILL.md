@@ -9,16 +9,16 @@ Use this skill when the task must run in a Windows work machine that exposes the
 
 ## Default Flow
 
-1. Discover workers: `.\.Rayman\rayman.ps1 worker discover`
-2. Inspect cached workers: `.\.Rayman\rayman.ps1 worker list`
-3. Bind one worker: `.\.Rayman\rayman.ps1 worker use --id <workerId>`
+1. Discover workers: `rayman.ps1 worker discover`
+2. Inspect cached workers: `rayman.ps1 worker list`
+3. Bind one worker: `rayman.ps1 worker use --id <workerId>`
 4. Choose sync mode:
-   - attached: `.\.Rayman\rayman.ps1 worker sync --mode attached`
-   - staged: `.\.Rayman\rayman.ps1 worker sync --mode staged`
-5. Check remote status: `.\.Rayman\rayman.ps1 worker status`
+   - attached: `rayman.ps1 worker sync --mode attached`
+   - staged: `rayman.ps1 worker sync --mode staged`
+5. Check remote status: `rayman.ps1 worker status`
 6. Prepare debug manifest:
-   - launch: `.\.Rayman\rayman.ps1 worker debug --mode launch`
-   - attach: `.\.Rayman\rayman.ps1 worker debug --mode attach`
+   - launch: `rayman.ps1 worker debug --mode launch`
+   - attach: `rayman.ps1 worker debug --mode attach`
 7. Start VS Code launch config:
    - `Rayman Worker: Launch .NET (Active Worker)`
    - `Rayman Worker: Attach .NET (Active Worker)`
@@ -33,6 +33,6 @@ Use this skill when the task must run in a Windows work machine that exposes the
 
 ## Useful Commands
 
-- Remote exec: `.\.Rayman\rayman.ps1 worker exec -- dotnet build`
-- Remote upgrade: `.\.Rayman\rayman.ps1 worker upgrade`
-- Clear active worker: `.\.Rayman\rayman.ps1 worker clear`
+- Remote exec: `rayman.ps1 worker exec -- dotnet build`
+- Remote upgrade: `rayman.ps1 worker upgrade`
+- Clear active worker: `rayman.ps1 worker clear`

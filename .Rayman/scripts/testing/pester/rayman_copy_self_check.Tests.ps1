@@ -249,6 +249,100 @@ Describe 'copy_smoke archived vscode cleanup proof gating' {
   }
 }
 
+Describe 'copy_smoke managed write helpers' {
+  It 'limits recovery detection to records from the current pass window' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_copy_smoke_managed_audit_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $auditPath = Join-Path $root 'managed_write.last.json'
+
+      Import-CopySmokeFunctions -Names @('Test-CopySmokeManagedWriteAuditHasRecovery')
+
+      @{
+        schema = 'rayman.managed_write.audit.v1'
+        updated_at = '2026-03-26T10:05:00.2200000+08:00'
+        last_write = [ordered]@{
+          path = (Join-Path $root '.github\copilot-instructions.md')
+          mode = 'direct'
+          updated_at = '2026-03-26T10:05:00.2200000+08:00'
+        }
+        recent_writes = @(
+          [ordered]@{
+            path = (Join-Path $root '.github\copilot-instructions.md')
+            mode = 'retry_success'
+            updated_at = '2026-03-26T10:05:00.1200000+08:00'
+          },
+          [ordered]@{
+            path = (Join-Path $root '.github\copilot-instructions.md')
+            mode = 'direct'
+            updated_at = '2026-03-26T10:05:00.2200000+08:00'
+          }
+        )
+      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $auditPath -Encoding UTF8
+
+      (Test-CopySmokeManagedWriteAuditHasRecovery `
+          -AuditPath $auditPath `
+          -Targets @('.github/copilot-instructions.md') `
+          -RunStartedAt '2026-03-26T10:05:00.2000000+08:00' `
+          -RunFinishedAt '2026-03-26T10:05:00.2400000+08:00') | Should -BeFalse
+
+      @{
+        schema = 'rayman.managed_write.audit.v1'
+        updated_at = '2026-03-26T10:05:00.2300000+08:00'
+        last_write = [ordered]@{
+          path = (Join-Path $root '.github\copilot-instructions.md')
+          mode = 'retry_success'
+          updated_at = '2026-03-26T10:05:00.2300000+08:00'
+        }
+        recent_writes = @(
+          [ordered]@{
+            path = (Join-Path $root '.github\copilot-instructions.md')
+            mode = 'retry_success'
+            updated_at = '2026-03-26T10:05:00.2300000+08:00'
+          }
+        )
+      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $auditPath -Encoding UTF8
+
+      (Test-CopySmokeManagedWriteAuditHasRecovery `
+          -AuditPath $auditPath `
+          -Targets @('.github/copilot-instructions.md') `
+          -RunStartedAt '2026-03-26T10:05:00.2000000+08:00' `
+          -RunFinishedAt '2026-03-26T10:05:00.2400000+08:00') | Should -BeTrue
+    } finally {
+      Remove-CopySmokeFunctionDouble -Name 'Test-CopySmokeManagedWriteAuditHasRecovery'
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'dirties mapped targets before the rerun contract' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_copy_smoke_dirty_targets_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      foreach ($relative in @('.github\copilot-instructions.md', '.cursorrules', '.clinerules', '.github\workflows\rayman-project-fast-gate.yml')) {
+        $path = Join-Path $root $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        Set-Content -LiteralPath $path -Encoding UTF8 -Value ('original:' + $relative)
+      }
+
+      Import-CopySmokeFunctions -Names @('Set-CopySmokeManagedWriteTargetsDirty')
+      Set-CopySmokeManagedWriteTargetsDirty -WorkspaceRoot $root -Targets @(
+        '.github/copilot-instructions.md'
+        '.cursorrules'
+        '.clinerules'
+        '.github/workflows/rayman-project-fast-gate.yml'
+      )
+
+      foreach ($relative in @('.github\copilot-instructions.md', '.cursorrules', '.clinerules', '.github\workflows\rayman-project-fast-gate.yml')) {
+        $raw = Get-Content -LiteralPath (Join-Path $root $relative) -Raw -Encoding UTF8
+        $raw | Should -Match '(?im)^# copy-smoke stale'
+        $raw | Should -Match ([regex]::Escape('original:' + $relative))
+      }
+    } finally {
+      Remove-CopySmokeFunctionDouble -Name 'Set-CopySmokeManagedWriteTargetsDirty'
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 Describe 'copy_smoke strict nested setup audit' {
   It 'archives all strict setup passes and suppresses nested done alerts' {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
@@ -358,6 +452,27 @@ $auditReport = [ordered]@{
   new_pids = @($newPid1, $newPid2)
 }
 $auditReport | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $runtimeDir 'vscode_windows.last.json') -Encoding UTF8
+$managedWriteAudit = [ordered]@{
+  schema = 'rayman.managed_write.audit.v1'
+  updated_at = (Get-Date).ToString('o')
+  last_write = [ordered]@{
+    path = (Join-Path $WorkspaceRoot '.github\copilot-instructions.md')
+    mode = $(if ($runIndex -ge 5) { 'in_place_fallback' } else { 'direct' })
+    reason = 'ok'
+    retry_count = $(if ($runIndex -ge 5) { 3 } else { 0 })
+    updated_at = (Get-Date).ToString('o')
+  }
+  recent_writes = @(
+    [ordered]@{
+      path = (Join-Path $WorkspaceRoot '.github\copilot-instructions.md')
+      mode = $(if ($runIndex -ge 5) { 'in_place_fallback' } else { 'direct' })
+      reason = 'ok'
+      retry_count = $(if ($runIndex -ge 5) { 3 } else { 0 })
+      updated_at = (Get-Date).ToString('o')
+    }
+  )
+}
+$managedWriteAudit | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $runtimeDir 'managed_write.last.json') -Encoding UTF8
 Set-Content -LiteralPath $logPath -Encoding UTF8 -Value ("pass={0}" -f $runIndex)
 exit 0
 '@
@@ -395,11 +510,11 @@ exit 0
       (Test-Path -LiteralPath $keptTempRoot -PathType Container) | Should -Be $true
 
       $setupRuns = Get-Content -LiteralPath (Join-Path $keptTempRoot '.Rayman\runtime\copy_smoke_setup_runs.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-      @($setupRuns).Count | Should -Be 4
-      (@($setupRuns | ForEach-Object { [string]$_.PassName }) -join ',') | Should -Be '01-fresh-pass,02-tracked-assets-block-pass,03-explicit-allow-pass,04-stable-rerun-pass'
+      @($setupRuns).Count | Should -Be 5
+      (@($setupRuns | ForEach-Object { [string]$_.PassName }) -join ',') | Should -Be '01-fresh-pass,02-tracked-assets-block-pass,03-explicit-allow-pass,04-stable-rerun-pass,05-mapped-write-rerun-pass'
 
       $invocations = @(Get-Content -LiteralPath (Join-Path $keptTempRoot '.Rayman\runtime\stub.setup.invocations.jsonl') -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json })
-      @($invocations).Count | Should -Be 4
+      @($invocations).Count | Should -Be 5
       foreach ($invocation in $invocations) {
         [string]$invocation.alert_done | Should -Be '0'
         [string]$invocation.alert_tts_done | Should -Be '0'
@@ -408,6 +523,7 @@ exit 0
       foreach ($setupRun in @($setupRuns)) {
         (Test-Path -LiteralPath ([string]$setupRun.SetupLogArchivePath) -PathType Leaf) | Should -Be $true
         (Test-Path -LiteralPath ([string]$setupRun.VsCodeAuditArchivePath) -PathType Leaf) | Should -Be $true
+        (Test-Path -LiteralPath ([string]$setupRun.ManagedWriteAuditArchivePath) -PathType Leaf) | Should -Be $true
       }
     } finally {
       if (-not [string]::IsNullOrWhiteSpace($keptTempRoot)) {

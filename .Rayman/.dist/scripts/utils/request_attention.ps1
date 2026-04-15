@@ -4,7 +4,8 @@ param(
   [string]$Title = 'Rayman 提醒',
   [string]$WorkspaceRoot = '',
   [switch]$EnableSpeech,
-  [switch]$DisableSpeech
+  [switch]$DisableSpeech,
+  [switch]$DisableSound
 )
 
 Set-StrictMode -Version Latest
@@ -175,72 +176,143 @@ function Resolve-AttentionSpeechEnabled {
   return $true
 }
 
-$workspaceRoot = Resolve-AttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
-$fullMessage = if ([string]::IsNullOrWhiteSpace($Message)) { 'Rayman 需要您关注当前任务。' } else { $Message.Trim() }
-$notificationEnabled = Test-AttentionNotificationEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot
-$speechOverride = @{}
-if ($PSBoundParameters.ContainsKey('EnableSpeech')) {
-  $speechOverride['EnableSpeech'] = $EnableSpeech
-}
-if ($PSBoundParameters.ContainsKey('DisableSpeech')) {
-  $speechOverride['DisableSpeech'] = $DisableSpeech
-}
-$speechEnabled = Resolve-AttentionSpeechEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot @speechOverride
-$surface = Resolve-AttentionSurface -WorkspaceRoot $workspaceRoot
+function Resolve-AttentionSoundEnabled {
+  param(
+    [string]$Kind,
+    [string]$WorkspaceRoot,
+    [switch]$DisableSound
+  )
 
-try {
-  if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
-    $diagKind = if ($notificationEnabled) { 'request_attention' } else { 'request_attention_suppressed' }
-    Write-RaymanDiag -Scope 'attention' -Message ("{0} ({1}, surface={2}): {3}" -f $diagKind, $Kind, $surface, $fullMessage) -WorkspaceRoot $workspaceRoot
+  if ($PSBoundParameters.ContainsKey('DisableSound') -and [bool]$DisableSound.IsPresent) {
+    return $false
   }
-} catch {}
 
-Write-AttentionStateRecord `
-  -WorkspaceRoot $workspaceRoot `
-  -Kind $Kind `
-  -Title $Title `
-  -Message $fullMessage `
-  -Surface $surface `
-  -AlertEnabled $notificationEnabled `
-  -SpeechEnabled $(if ($surface -eq 'toast') { $speechEnabled } else { $false }) `
-  -Suppressed (-not $notificationEnabled)
+  if (Get-Command Get-RaymanAttentionSoundEnabled -ErrorAction SilentlyContinue) {
+    try {
+      return (Get-RaymanAttentionSoundEnabled -WorkspaceRoot $WorkspaceRoot -Kind $Kind)
+    } catch {}
+  }
 
-if (-not $notificationEnabled) {
-  return
+  return $false
 }
 
-switch ($surface) {
-  'silent' {
-    return
+function Resolve-AttentionSoundPath {
+  param([string]$WorkspaceRoot)
+
+  if (Get-Command Get-RaymanAttentionSoundPath -ErrorAction SilentlyContinue) {
+    try {
+      return (Get-RaymanAttentionSoundPath -WorkspaceRoot $WorkspaceRoot)
+    } catch {}
   }
-  'log' {
-    if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
-      Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
-    } else {
-      Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+
+  if ($env:OS -ne 'Windows_NT') {
+    return ''
+  }
+  return (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex\notify.wav')
+}
+
+function Invoke-AttentionSound([string]$SoundPath) {
+  if ([string]::IsNullOrWhiteSpace([string]$SoundPath)) {
+    return $false
+  }
+
+  if (Get-Command Invoke-RaymanAttentionSoundFile -ErrorAction SilentlyContinue) {
+    try {
+      return (Invoke-RaymanAttentionSoundFile -Path $SoundPath)
+    } catch {}
+  }
+
+  return $false
+}
+
+function Invoke-RequestAttentionMain {
+  param(
+    [ValidateSet('manual', 'done', 'error')][string]$Kind = 'manual',
+    [string]$Message = 'Rayman 需要您关注当前任务。',
+    [string]$Title = 'Rayman 提醒',
+    [string]$WorkspaceRoot = '',
+    [switch]$EnableSpeech,
+    [switch]$DisableSpeech,
+    [switch]$DisableSound
+  )
+
+  $workspaceRoot = Resolve-AttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+  $fullMessage = if ([string]::IsNullOrWhiteSpace($Message)) { 'Rayman 需要您关注当前任务。' } else { $Message.Trim() }
+  $notificationEnabled = Test-AttentionNotificationEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot
+  $speechOverride = @{}
+  if ($PSBoundParameters.ContainsKey('EnableSpeech')) {
+    $speechOverride['EnableSpeech'] = $EnableSpeech
+  }
+  if ($PSBoundParameters.ContainsKey('DisableSpeech')) {
+    $speechOverride['DisableSpeech'] = $DisableSpeech
+  }
+  $soundOverride = @{}
+  if ($PSBoundParameters.ContainsKey('DisableSound')) {
+    $soundOverride['DisableSound'] = $DisableSound
+  }
+  $speechEnabled = Resolve-AttentionSpeechEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot @speechOverride
+  $soundEnabled = Resolve-AttentionSoundEnabled -Kind $Kind -WorkspaceRoot $workspaceRoot @soundOverride
+  $soundPath = if ($soundEnabled) { [string](Resolve-AttentionSoundPath -WorkspaceRoot $workspaceRoot) } else { '' }
+  $surface = Resolve-AttentionSurface -WorkspaceRoot $workspaceRoot
+
+  try {
+    if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
+      $diagKind = if ($notificationEnabled) { 'request_attention' } else { 'request_attention_suppressed' }
+      Write-RaymanDiag -Scope 'attention' -Message ("{0} ({1}, surface={2}): {3}" -f $diagKind, $Kind, $surface, $fullMessage) -WorkspaceRoot $workspaceRoot
     }
+  } catch {}
+
+  Write-AttentionStateRecord `
+    -WorkspaceRoot $workspaceRoot `
+    -Kind $Kind `
+    -Title $Title `
+    -Message $fullMessage `
+    -Surface $surface `
+    -AlertEnabled $notificationEnabled `
+    -SpeechEnabled $(if ($surface -eq 'toast') { $speechEnabled } else { $false }) `
+    -Suppressed (-not $notificationEnabled)
+
+  if (-not $notificationEnabled) {
     return
   }
+
+  switch ($surface) {
+    'log' {
+      if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+        Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
+      } else {
+        Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+      }
+      break
+    }
+    'toast' {
+      try {
+        $toastDelivered = ($env:OS -eq 'Windows_NT' -and (Show-WindowsToast -ToastTitle $Title -ToastMessage $fullMessage))
+        if ($toastDelivered) {
+        } elseif (Get-Command notify-send -ErrorAction SilentlyContinue) {
+          & (Get-Command notify-send -ErrorAction SilentlyContinue).Source $Title $fullMessage | Out-Null
+        } elseif (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+          Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
+        } else {
+          Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+        }
+      } catch {
+        if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
+          Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
+        } else {
+          Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
+        }
+      }
+      break
+    }
+  }
+
+  if ($soundEnabled) {
+    Invoke-AttentionSound -SoundPath $soundPath | Out-Null
+  }
+  if ($speechEnabled) {
+    Invoke-AttentionSpeech -SpeechText $fullMessage
+  }
 }
 
-try {
-  $toastDelivered = ($env:OS -eq 'Windows_NT' -and (Show-WindowsToast -ToastTitle $Title -ToastMessage $fullMessage))
-  if ($toastDelivered) {
-  } elseif (Get-Command notify-send -ErrorAction SilentlyContinue) {
-    & (Get-Command notify-send -ErrorAction SilentlyContinue).Source $Title $fullMessage | Out-Null
-  } elseif (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
-    Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
-  } else {
-    Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
-  }
-} catch {
-  if (Get-Command Write-RaymanAttentionConsoleMessage -ErrorAction SilentlyContinue) {
-    Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $Title -Message $fullMessage
-  } else {
-    Write-Host ("[{0}] {1}" -f $Title, $fullMessage) -ForegroundColor Yellow
-  }
-}
-
-if ($speechEnabled) {
-  Invoke-AttentionSpeech -SpeechText $fullMessage
-}
+Invoke-RequestAttentionMain -Kind $Kind -Message $Message -Title $Title -WorkspaceRoot $WorkspaceRoot -EnableSpeech:$EnableSpeech -DisableSpeech:$DisableSpeech -DisableSound:$DisableSound

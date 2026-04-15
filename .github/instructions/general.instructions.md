@@ -12,6 +12,10 @@ description: "Use when working on Rayman governance files, AGENTS.md, copilot-in
 - `.Rayman/release/FEATURE_INVENTORY.md` and `.Rayman/release/ENHANCEMENT_ROADMAP_2026.md` are tracked review assets; update them when command catalog, workflows, release lanes, or capability boundaries materially change.
 - Agent capabilities are declared in `.Rayman/config/agent_capabilities.json`; `.codex/config.toml` is a generated workspace artifact and now carries Rayman-managed capability, project-doc, profile, and subagent blocks.
 - Rayman-managed subagent roles are fixed to `rayman_explorer`, `rayman_reviewer`, `rayman_docs_researcher`, `rayman_browser_debugger`, `rayman_winapp_debugger`, and `rayman_worker`.
+- Read the current workspace interaction mode from `.Rayman/CONTEXT.md` or `RAYMAN_INTERACTION_MODE` before deciding whether to ask clarifying questions or present a plan.
+- `detailed` means plan first for most meaningful ambiguity; `general` means plan first when outcome/scope/path/risk/test expectations change materially; `simple` means only high-risk ambiguity must stop the run.
+- When you stop because the prompt is not clear enough, always provide concrete options plus explicit acceptance criteria before proceeding. This is a Rayman rule even outside Codex Plan Mode.
+- `full-auto` approves code changes, but it does not authorize guessing user intent when multiple meaningful implementation paths exist.
 - OpenAI/API/model/docs tasks should prefer OpenAI Docs MCP; browser/web/e2e tasks should prefer Playwright MCP; WinForms / MAUI(Windows) / desktop / UIA tasks should prefer Rayman WinApp MCP. Document the Rayman fallback path when MCP is unavailable.
 - `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, and `.github/prompts/*.prompt.md` are Rayman-managed capability assets; keep them aligned with `dispatch`, `review_loop`, and the capability report.
 - GitHub-only features such as Copilot Memory, Auto model selection, and GitHub.com custom agents may be documented or detected, but are not treated as repo-enforced runtime guarantees.

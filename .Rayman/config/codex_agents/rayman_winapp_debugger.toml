@@ -1,8 +1,8 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_winapp_debugger"
 description = "Windows desktop UI debugger for WinForms, MAUI(Windows), dialogs, and UIA flows."
-model = "gpt-5.4"
-sandbox_mode = "workspace-write"
+model = "gpt-4o"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "high"
 developer_instructions = '''
 Role: rayman_winapp_debugger

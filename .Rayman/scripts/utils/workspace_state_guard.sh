@@ -27,6 +27,15 @@ path_cmp() {
   value="${value#Microsoft.PowerShell.Core\FileSystem::}"
   value="${value//\\//}"
   value="${value%/}"
+  if [[ "${value}" =~ ^([A-Za-z]):/(.*)$ ]]; then
+    local drive="${BASH_REMATCH[1],,}"
+    local rest="${BASH_REMATCH[2]}"
+    if [[ -z "${rest}" ]]; then
+      value="/mnt/${drive}"
+    else
+      value="/mnt/${drive}/${rest}"
+    fi
+  fi
   printf '%s' "${value}" | tr '[:upper:]' '[:lower:]'
 }
 

@@ -11,6 +11,23 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'worker_common.ps1')
 
+function Copy-RaymanWorkerUpgradeContent {
+  param(
+    [string]$SourceRoot,
+    [string]$DestinationRoot,
+    [string[]]$ExcludeNames = @()
+  )
+
+  $resolvedSourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
+  Ensure-RaymanWorkerDirectory -Path $DestinationRoot
+  foreach ($child in @(Get-ChildItem -LiteralPath $resolvedSourceRoot -Force -ErrorAction SilentlyContinue)) {
+    if ($ExcludeNames -contains [string]$child.Name) {
+      continue
+    }
+    Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $DestinationRoot $child.Name) -Recurse -Force
+  }
+}
+
 function Get-RaymanWorkerUpgradeTempRoot {
   param([string]$WorkspaceRoot)
 
@@ -32,13 +49,7 @@ function New-RaymanWorkerUpgradePackage {
   $stageRoot = Join-Path $tempRoot ("package-{0}" -f $packageId)
   Ensure-RaymanWorkerDirectory -Path $stageRoot
 
-  Copy-Item -LiteralPath (Join-Path $raymanRoot '*') -Destination $stageRoot -Recurse -Force
-  foreach ($relative in @('runtime', 'state', 'logs', 'temp', 'tmp')) {
-    $candidate = Join-Path $stageRoot $relative
-    if (Test-Path -LiteralPath $candidate) {
-      Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
-    }
-  }
+  Copy-RaymanWorkerUpgradeContent -SourceRoot $raymanRoot -DestinationRoot $stageRoot -ExcludeNames @('runtime', 'state', 'logs', 'temp', 'tmp')
 
   if ([string]::IsNullOrWhiteSpace([string]$OutFile)) {
     $OutFile = Join-Path $tempRoot ("rayman-upgrade-{0}.zip" -f $packageId)
@@ -71,7 +82,7 @@ function Install-RaymanWorkerUpgradePackage {
 
   $raymanRoot = Join-Path $resolvedRoot '.Rayman'
   $previousVersion = Get-RaymanWorkerVersion -WorkspaceRoot $resolvedRoot
-  Copy-Item -LiteralPath (Join-Path $extractRoot '*') -Destination $raymanRoot -Recurse -Force
+  Copy-RaymanWorkerUpgradeContent -SourceRoot $extractRoot -DestinationRoot $raymanRoot
   $report = [pscustomobject]@{
     schema = 'rayman.worker.upgrade.last.v1'
     generated_at = (Get-Date).ToString('o')

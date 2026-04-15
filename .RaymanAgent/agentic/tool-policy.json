@@ -1,6 +1,6 @@
 {
   "schema": "rayman.agentic.tool_policy.v1",
-  "task_kind": "maintenance",
+  "task_kind": "-Prompt",
   "prompt_key": "",
   "preferred_backend": "",
   "budget": {
@@ -12,13 +12,13 @@
     {
       "key": "local_shell",
       "kind": "shell",
-      "score": 95,
+      "score": 25,
       "matched_triggers": [
         "default"
       ],
       "reason": "Local shell remains the universal fallback and evidence collector.",
       "expected_evidence": [
-        "command output"
+        "workspace diff and local logs"
       ],
       "fallback_chain": []
     }
@@ -27,23 +27,28 @@
     {
       "key": "local_shell",
       "kind": "shell",
-      "score": 95,
+      "score": 25,
       "matched_triggers": [
         "default"
       ],
       "reason": "Local shell remains the universal fallback and evidence collector.",
       "expected_evidence": [
-        "command output"
+        "workspace diff and local logs"
       ],
       "fallback_chain": []
     }
   ],
   "fallback_chain": [],
-  "allowed_subagents": [],
-  "selected_subagents": [],
-  "subagent_notes": [
-    "multi-agent registry unavailable"
+  "allowed_subagents": [
+    "rayman_explorer",
+    "rayman_reviewer",
+    "rayman_docs_researcher",
+    "rayman_browser_debugger",
+    "rayman_winapp_debugger",
+    "rayman_worker"
   ],
+  "selected_subagents": [],
+  "subagent_notes": [],
   "selected_tool_keys": [
     "local_shell"
   ]

@@ -58,6 +58,10 @@ $expectedVersion = 'V161'
 if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
   $versionIssues.Add('missing V161 marker') | Out-Null
 }
+if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
+  $versionIssues.Add('.Rayman/agents.template.md missing V161 marker') | Out-Null
+}
+$legacyPattern = 'RAYMAN:MANDATORY_REQUIREMENTS_V117|RAYMAN:MANDATORY_REQUIREMENTS_V118|RAYMAN:MANDATORY_REQUIREMENTS_V154|\bv154\b|\bv153\b|\bv151\b'
 '@
   Set-Content -LiteralPath (Join-Path $Root '.Rayman\.dist\scripts\release\release_gate.ps1') -Encoding UTF8 -Value @'
 $expectedTag = 'V161'
@@ -65,6 +69,10 @@ $expectedVersion = 'V161'
 if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
   $versionIssues.Add('missing V161 marker') | Out-Null
 }
+if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V161') {
+  $versionIssues.Add('.Rayman/agents.template.md missing V161 marker') | Out-Null
+}
+$legacyPattern = 'RAYMAN:MANDATORY_REQUIREMENTS_V117|RAYMAN:MANDATORY_REQUIREMENTS_V118|RAYMAN:MANDATORY_REQUIREMENTS_V154|\bv154\b|\bv153\b|\bv151\b'
 '@
   Set-Content -LiteralPath (Join-Path $Root '.Rayman\scripts\release\assert_dist_sync.ps1') -Encoding UTF8 -Value @'
 $mirrorRel = @(
@@ -145,6 +153,9 @@ Describe 'manage_version' {
       (Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw -Encoding UTF8) | Should -Match 'RAYMAN:MANDATORY_REQUIREMENTS_V162'
       (Get-Content -LiteralPath (Join-Path $root '.Rayman\scripts\release\release_gate.ps1') -Raw -Encoding UTF8) | Should -Match '\$expectedTag = ''V162'''
       (Get-Content -LiteralPath (Join-Path $root '.Rayman\scripts\release\release_gate.ps1') -Raw -Encoding UTF8) | Should -Match '\$expectedVersion = ''V162'''
+      (Get-Content -LiteralPath (Join-Path $root '.Rayman\scripts\release\release_gate.ps1') -Raw -Encoding UTF8) | Should -Match 'if \(\$agentsRaw -notmatch ''RAYMAN:MANDATORY_REQUIREMENTS_V162''\)'
+      (Get-Content -LiteralPath (Join-Path $root '.Rayman\scripts\release\release_gate.ps1') -Raw -Encoding UTF8) | Should -Match 'if \(\$templateRaw -notmatch ''RAYMAN:MANDATORY_REQUIREMENTS_V162''\)'
+      (Get-Content -LiteralPath (Join-Path $root '.Rayman\scripts\release\release_gate.ps1') -Raw -Encoding UTF8) | Should -Match '\$legacyPattern = ''RAYMAN:MANDATORY_REQUIREMENTS_V117\|RAYMAN:MANDATORY_REQUIREMENTS_V118\|RAYMAN:MANDATORY_REQUIREMENTS_V154\|\\bv154\\b\|\\bv153\\b\|\\bv151\\b'''
       (Get-Content -LiteralPath (Join-Path $root '.Rayman\README.md') -Raw -Encoding UTF8) | Should -Match '# Rayman v162'
       (Get-Content -LiteralPath (Join-Path $root '.Rayman\.dist\VERSION') -Raw -Encoding UTF8).Trim() | Should -Be 'v162'
       (Get-Content -LiteralPath (Join-Path $root '.Rayman\.dist\RELEASE_REQUIREMENTS.md') -Raw -Encoding UTF8) | Should -Match 'v162'

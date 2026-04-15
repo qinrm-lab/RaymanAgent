@@ -7,9 +7,39 @@ RAYMAN_DIR="${WORKSPACE_ROOT}/.Rayman"
 info(){ echo "[rayman-init] $*"; }
 warn(){ echo "[rayman-init][warn] $*" >&2; }
 
+normalize_managed_shell_scripts() {
+  local normalized=0
+  local script_path=""
+
+  while IFS= read -r -d '' script_path; do
+    chmod +x "${script_path}" 2>/dev/null || true
+    if LC_ALL=C grep -q $'\r' "${script_path}"; then
+      local tmp_file="${script_path}.rayman-lf.$$"
+      tr -d '\r' < "${script_path}" > "${tmp_file}"
+      mv "${tmp_file}" "${script_path}"
+      chmod +x "${script_path}" 2>/dev/null || true
+      normalized=$((normalized + 1))
+    fi
+  done < <(
+    find "${RAYMAN_DIR}" \
+      \( -path "${RAYMAN_DIR}/runtime" -o -path "${RAYMAN_DIR}/runtime/*" \) -prune -o \
+      -type f -name "*.sh" -print0 2>/dev/null
+  )
+
+  if [[ ${normalized} -eq 0 ]]; then
+    info "shell scripts already LF"
+  elif [[ ${normalized} -eq 1 ]]; then
+    info "normalized 1 shell script to LF"
+  else
+    info "normalized ${normalized} shell scripts to LF"
+  fi
+}
+
 cd "${WORKSPACE_ROOT}"
 
 [[ -d "${RAYMAN_DIR}" ]] || { echo "[rayman-init] missing .Rayman directory" >&2; exit 2; }
+
+normalize_managed_shell_scripts
 
 repair_script="${RAYMAN_DIR}/scripts/repair/ensure_complete_rayman.sh"
 if [[ -f "${repair_script}" ]]; then
@@ -22,8 +52,6 @@ if [[ -f "${workspace_state_guard}" ]]; then
 else
   warn "workspace state guard missing: ${workspace_state_guard}"
 fi
-
-find "${RAYMAN_DIR}" -type f -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
 
 if [[ ! -f "${RAYMAN_DIR}/codex_fix_prompt.txt" && -f "${RAYMAN_DIR}/templates/codex_fix_prompt.base.txt" ]]; then
   cp "${RAYMAN_DIR}/templates/codex_fix_prompt.base.txt" "${RAYMAN_DIR}/codex_fix_prompt.txt"

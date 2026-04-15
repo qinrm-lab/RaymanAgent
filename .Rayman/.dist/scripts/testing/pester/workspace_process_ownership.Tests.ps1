@@ -59,6 +59,37 @@ Describe 'workspace_process_ownership owner resolution' {
     }
   }
 
+  It 'prefers an explicit owner pid over a session-derived owner pid when both are available' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_owned_explicit_' + [Guid]::NewGuid().ToString('N'))
+    $envNames = @('RAYMAN_VSCODE_WINDOW_OWNER', 'VSCODE_IPC_HOOK_CLI', 'VSCODE_IPC_HOOK', 'VSCODE_PID')
+    $previous = @{}
+    foreach ($name in $envNames) {
+      $previous[$name] = [Environment]::GetEnvironmentVariable($name)
+    }
+
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\runtime\vscode_sessions') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\runtime\vscode_sessions\424242.json') -Encoding UTF8 -Value (@{
+        parentPid = 424242
+        state = 'watching'
+      } | ConvertTo-Json -Depth 4)
+
+      foreach ($name in $envNames) {
+        [Environment]::SetEnvironmentVariable($name, $null)
+      }
+
+      $ctx = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $root -ExplicitOwnerPid '515151'
+
+      $ctx.owner_source | Should -Be 'VSCODE_PID'
+      $ctx.owner_token | Should -Be '515151'
+    } finally {
+      foreach ($name in $envNames) {
+        [Environment]::SetEnvironmentVariable($name, $previous[$name])
+      }
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'builds a stable shared owner context for workspace-level watchers' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_owned_shared_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -411,6 +442,121 @@ Describe 'workspace_process_ownership vscode window audit' {
       ((@($report.workspace_match | Where-Object { [int]$_.pid -eq 203 })[0]).reason) | Should -Be 'tracked_workspace_audit'
       Assert-MockCalled Register-RaymanWorkspaceOwnedProcess -Times 1 -Exactly -Scope It -ParameterFilter {
         $Kind -eq 'vscode' -and $RootPid -eq 202 -and $Launcher -eq 'copy-smoke-vscode-window'
+      }
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+Describe 'workspace_process_ownership project gate helpers' {
+  It 'matches workspace-owned processes by command line or executable path' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_owned_match_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root 'bin') | Out-Null
+
+      $commandLineMatch = Resolve-RaymanWorkspaceOwnedProcessMatch -ProcessInfo ([pscustomobject]@{
+          pid = 101
+          command_line = ('powershell.exe -File "{0}\child.ps1"' -f $root)
+          executable_path = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        }) -WorkspaceRoots @($root)
+      $executablePathMatch = Resolve-RaymanWorkspaceOwnedProcessMatch -ProcessInfo ([pscustomobject]@{
+          pid = 102
+          command_line = 'RaymanWeb.Server.exe --http-port 5085 --auto-ports'
+          executable_path = (Join-Path $root 'bin\RaymanWeb.Server.exe')
+        }) -WorkspaceRoots @($root)
+
+      [bool]$commandLineMatch.matched | Should -Be $true
+      [string]$commandLineMatch.reason | Should -Be 'command_line'
+      [bool]$executablePathMatch.matched | Should -Be $true
+      [string]$executablePathMatch.reason | Should -Be 'executable_path'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'registers only new matched roots from a baseline snapshot' {
+    if (-not (Test-RaymanWindowsPlatform)) {
+      return
+    }
+
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_owned_baseline_cleanup_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $baseline = @(
+        [pscustomobject]@{
+          pid = 101
+          start_utc = '2026-04-08T00:00:00Z'
+          parent_pid = 0
+          process_name = 'powershell'
+          command_line = ('powershell.exe -File "{0}\child.ps1"' -f $root)
+          executable_path = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        }
+      )
+      $current = @(
+        $baseline[0]
+        [pscustomobject]@{
+          pid = 202
+          start_utc = '2026-04-08T00:01:00Z'
+          parent_pid = 0
+          process_name = 'powershell'
+          command_line = ('powershell.exe -File "{0}\spawn.ps1"' -f $root)
+          executable_path = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        }
+        [pscustomobject]@{
+          pid = 203
+          start_utc = '2026-04-08T00:01:01Z'
+          parent_pid = 202
+          process_name = 'RaymanWeb.Server'
+          command_line = 'RaymanWeb.Server.exe --http-port 5085 --auto-ports'
+          executable_path = (Join-Path $root 'bin\RaymanWeb.Server.exe')
+        }
+      )
+      $postCleanup = @($baseline)
+
+      Mock Get-RaymanWorkspaceProcessOwnerContext {
+        return [pscustomobject]@{
+          owner_key = 'owner-a'
+          owner_display = 'owner-a'
+        }
+      }
+      Mock Register-RaymanWorkspaceOwnedProcess {
+        param([string]$WorkspaceRootPath, [object]$OwnerContext, [string]$Kind, [string]$Launcher, [int]$RootPid, [string]$Command)
+        return [pscustomobject]@{
+          workspace_root = $WorkspaceRootPath
+          owner_key = [string]$OwnerContext.owner_key
+          owner_display = [string]$OwnerContext.owner_display
+          kind = $Kind
+          launcher = $Launcher
+          root_pid = $RootPid
+          command = $Command
+        }
+      }
+      Mock Stop-RaymanWorkspaceOwnedProcess {
+        param([string]$WorkspaceRootPath, [object]$Record, [string]$Reason)
+        return [pscustomobject]@{
+          root_pid = [int]$Record.root_pid
+          cleanup_reason = $Reason
+          cleanup_result = 'cleaned'
+          cleanup_pids = @([int]$Record.root_pid)
+          alive_pids = @()
+        }
+      }
+      Mock Get-RaymanWorkspaceProcessSnapshot {
+        return $postCleanup
+      }
+
+      $report = Invoke-RaymanWorkspaceOwnedProcessCleanupFromBaseline -WorkspaceRootPath $root -BaselineSnapshot $baseline -CurrentSnapshot $current -OwnedKind 'project-gate' -OwnedLauncher 'project-gate' -OwnedCommand 'test-command'
+
+      $report.cleanup_result | Should -Be 'cleaned'
+      (@($report.root_pids) -join ',') | Should -Be '202'
+      (@($report.matched_pids) -join ',') | Should -Be '202,203'
+      (@($report.alive_pids) -join ',') | Should -Be ''
+      Assert-MockCalled Register-RaymanWorkspaceOwnedProcess -Times 1 -Exactly -Scope It -ParameterFilter {
+        $Kind -eq 'project-gate' -and $RootPid -eq 202 -and $Launcher -eq 'project-gate'
+      }
+      Assert-MockCalled Stop-RaymanWorkspaceOwnedProcess -Times 1 -Exactly -Scope It -ParameterFilter {
+        [int]$Record.root_pid -eq 202 -and $Reason -eq 'project-gate'
       }
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

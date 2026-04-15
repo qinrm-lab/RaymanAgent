@@ -367,15 +367,19 @@ if [[ "${need_install}" == "1" ]]; then
   fi
 fi
 
-if detect_playwright_version >/tmp/rayman_pw_ver2.txt 2>/dev/null; then
-  playwright_version="$(cat /tmp/rayman_pw_ver2.txt)"
-fi
-rm -f /tmp/rayman_pw_ver2.txt >/dev/null 2>&1 || true
+set +e
+playwright_version="$(detect_playwright_version 2>/dev/null)"
+playwright_version_rc=$?
+chromium_source="$(detect_chromium_source 2>/dev/null)"
+chromium_source_rc=$?
+set -e
 
-if detect_chromium_source >/tmp/rayman_pw_chromium.txt 2>/dev/null; then
-  chromium_source="$(cat /tmp/rayman_pw_chromium.txt)"
+if [[ $playwright_version_rc -ne 0 ]]; then
+  playwright_version=""
 fi
-rm -f /tmp/rayman_pw_chromium.txt >/dev/null 2>&1 || true
+if [[ $chromium_source_rc -ne 0 ]]; then
+  chromium_source=""
+fi
 
 ready=0
 if [[ -n "${playwright_version}" && -n "${chromium_source}" ]]; then

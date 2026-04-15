@@ -70,6 +70,13 @@ function Append-Block([string]$pf, [string]$srcRel, [string]$hash, [string]$srcP
   Add-Content -Path $pf -Value ""
 }
 
+function Remove-LegacyRequirementsSource([string]$srcPath) {
+  if ([string]::IsNullOrWhiteSpace([string]$srcPath) -or -not (Test-Path -LiteralPath $srcPath -PathType Leaf)) {
+    return
+  }
+  Remove-Item -LiteralPath $srcPath -Force -ErrorAction SilentlyContinue
+}
+
 $entries = @()
 
 foreach ($p in $projs) {
@@ -81,7 +88,8 @@ foreach ($p in $projs) {
   $rootLegacy = (".\.{0}.requirements.md" -f $p)
   if (Test-Path $rootLegacy) { $cands.Add((Resolve-Path $rootLegacy).Path) }
 
-  Get-ChildItem -Path . -Recurse -Depth 6 -Force -File -Filter (".{0}.requirements.md" -f $p) | ForEach-Object {
+  # PowerShell 5.1 compatibility: -Depth is not available on Get-ChildItem here.
+  Get-ChildItem -Path . -Recurse -Force -File -Filter (".{0}.requirements.md" -f $p) | ForEach-Object {
     $full = $_.FullName
     if ($full -like ("*\" + $solDir + "\*")) { return }
     if ($full -like "*\.Rayman\*") { return }
@@ -101,6 +109,7 @@ foreach ($p in $projs) {
     $srcRel = ($rel -replace '\\','/')
     Append-Block $pf $srcRel $h $src
     $entries += [pscustomobject]@{ project=$p; source=$srcRel; target=($pf -replace '\\','/'); sha256=$h }
+    Remove-LegacyRequirementsSource -srcPath $src
   }
 }
 

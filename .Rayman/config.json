@@ -13,7 +13,8 @@
       "out",
       "target",
       "TestResults",
-      "artifacts"
+      "artifacts",
+      ".vs"
     ]
   }
 }

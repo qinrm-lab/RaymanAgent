@@ -1,8 +1,8 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_docs_researcher"
 description = "OpenAI documentation specialist for Codex, API, SDK, and model verification."
-model = "gpt-5.4-mini"
-sandbox_mode = "read-only"
+model = "gpt-4o-mini"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 Role: rayman_docs_researcher

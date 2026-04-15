@@ -658,10 +658,13 @@ class MemoryStore:
         constraint_sources = [
             self.paths.workspace_root / f".{solution_name}" / f".{solution_name}.requirements.md",
             self.paths.workspace_root / ".Rayman" / "RELEASE_REQUIREMENTS.md",
+            self.paths.workspace_root / ".Rayman" / "context" / "current-config-reference.md",
         ]
         for source in constraint_sources:
             if not source.is_file():
                 continue
+            source_name = source.name.lower()
+            tags = ["constraint", "requirements"] if source_name.endswith("requirements.md") else ["constraint", "reference", "config"]
             heading = ""
             try:
                 lines = source.read_text(encoding="utf-8").splitlines()
@@ -685,7 +688,7 @@ class MemoryStore:
                     kind="constraint",
                     scope="workspace",
                     task_kind="",
-                    tags=["constraint", "requirements"],
+                    tags=tags,
                     evidence_ids=[],
                     confidence=1.0,
                     content_text=content,

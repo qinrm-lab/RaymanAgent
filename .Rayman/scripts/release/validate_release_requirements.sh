@@ -41,10 +41,10 @@ record_bypass(){
 DOC="RELEASE_REQUIREMENTS.md"
 ALT=".Rayman/RELEASE_REQUIREMENTS.md"
 
-if [[ -f "$DOC" ]]; then
-  SRC="$DOC"
-elif [[ -f "$ALT" ]]; then
+if [[ -f "$ALT" ]]; then
   SRC="$ALT"
+elif [[ -f "$DOC" ]]; then
+  SRC="$DOC"
 else
   fail "未找到 RELEASE_REQUIREMENTS.md（根目录或 .Rayman/ 下）"
 fi

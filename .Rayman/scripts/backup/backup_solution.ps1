@@ -17,7 +17,8 @@ $script:DefaultExcludeDirNames = @(
   'out',
   'target',
   'TestResults',
-  'artifacts'
+  'artifacts',
+  '.vs'
 )
 
 function Get-BackupConfigProp([object]$Object, [string]$Name, $DefaultValue) {
@@ -132,7 +133,8 @@ function Get-SolutionName([string]$Root) {
     Sort-Object Name)
   foreach ($dir in $dotDirs) {
     if ($skipDotDirs -contains $dir.Name) { continue }
-    $hit = Get-ChildItem -LiteralPath $dir.FullName -File -Force -Recurse -Depth 3 -Filter '.*.requirements.md' -ErrorAction SilentlyContinue |
+    # PowerShell 5.1 compatibility: -Depth is not available on Get-ChildItem here.
+    $hit = Get-ChildItem -LiteralPath $dir.FullName -File -Force -Recurse -Filter '.*.requirements.md' -ErrorAction SilentlyContinue |
       Select-Object -First 1
     if ($hit) {
       return $dir.Name.TrimStart('.')

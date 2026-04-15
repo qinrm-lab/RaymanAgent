@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\..\common.ps1')
 . (Join-Path $PSScriptRoot 'project_gate.lib.ps1')
+$workspaceOwnershipPath = Join-Path $PSScriptRoot '..\utils\workspace_process_ownership.ps1'
+if (Test-Path -LiteralPath $workspaceOwnershipPath -PathType Leaf) {
+  . $workspaceOwnershipPath -NoMain
+}
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $workspaceKind = Get-RaymanWorkspaceKind -WorkspaceRoot $WorkspaceRoot
@@ -19,6 +23,13 @@ if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
 }
 if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+}
+
+$script:RaymanProjectGateTimeoutSeconds = 0
+$timeoutRaw = [string][Environment]::GetEnvironmentVariable('RAYMAN_PROJECT_GATE_TIMEOUT_SECONDS')
+$timeoutParsed = 0
+if (-not [string]::IsNullOrWhiteSpace($timeoutRaw) -and [int]::TryParse($timeoutRaw.Trim(), [ref]$timeoutParsed) -and $timeoutParsed -gt 0) {
+  $script:RaymanProjectGateTimeoutSeconds = [Math]::Min($timeoutParsed, 86400)
 }
 
 function Resolve-RaymanCommandPath {
@@ -95,6 +106,55 @@ function Convert-RaymanToBashSingleQuotedLiteral([string]$Value) {
   return ("'" + ([string]$Value).Replace("'", "'""'""'") + "'")
 }
 
+function ConvertTo-RaymanProjectGateCleanupDetail {
+  param([object]$Cleanup)
+
+  if ($null -eq $Cleanup) { return '' }
+
+  $parts = New-Object System.Collections.Generic.List[string]
+  $resultText = if ($Cleanup.PSObject.Properties['cleanup_result']) { [string]$Cleanup.cleanup_result } else { '' }
+  if (-not [string]::IsNullOrWhiteSpace($resultText)) {
+    $parts.Add(("process_cleanup={0}" -f $resultText)) | Out-Null
+  }
+
+  foreach ($entry in @(
+      @{ name = 'cleanup_roots'; values = @($Cleanup.cleanup_root_pids) }
+      @{ name = 'cleanup_pids'; values = @($Cleanup.cleanup_pids) }
+      @{ name = 'alive_pids'; values = @($Cleanup.alive_pids) }
+      @{ name = 'launcher_tree'; values = @($Cleanup.launcher_tree_pids) }
+      @{ name = 'matched_pids'; values = @($Cleanup.matched_pids) }
+    )) {
+    $values = @($entry.values | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+    if ($values.Count -gt 0) {
+      $parts.Add(("{0}={1}" -f [string]$entry.name, ($values -join ','))) | Out-Null
+    }
+  }
+
+  return ($parts -join '; ')
+}
+
+function Get-RaymanProjectGateCleanupLogLines {
+  param([object]$Cleanup)
+
+  if ($null -eq $Cleanup) { return @() }
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add('[rayman-project-gate] process cleanup summary') | Out-Null
+  $lines.Add((ConvertTo-RaymanProjectGateCleanupDetail -Cleanup $Cleanup)) | Out-Null
+  foreach ($cleanupResult in @($Cleanup.cleanup_results)) {
+    if ($null -eq $cleanupResult) { continue }
+    $lines.Add((
+        '  root_pid={0}; result={1}; cleanup_pids={2}; alive_pids={3}; reason={4}' -f
+        [string]$cleanupResult.root_pid,
+        [string]$cleanupResult.cleanup_result,
+        ((@($cleanupResult.cleanup_pids) | ForEach-Object { [string]$_ }) -join ','),
+        ((@($cleanupResult.alive_pids) | ForEach-Object { [string]$_ }) -join ','),
+        [string]$cleanupResult.cleanup_reason
+      )) | Out-Null
+  }
+  return @($lines.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+}
+
 function Invoke-RaymanGateProcess {
   param(
     [string]$FilePath,
@@ -111,6 +171,8 @@ function Invoke-RaymanGateProcess {
     detail = ''
     stdout = ''
     stderr = ''
+    timed_out = $false
+    cleanup = $null
   }
 
   $backup = @{}
@@ -121,20 +183,110 @@ function Invoke-RaymanGateProcess {
 
   $stdoutPath = Join-Path $logDir (([System.IO.Path]::GetFileNameWithoutExtension($LogPath)) + '.stdout.tmp')
   $stderrPath = Join-Path $logDir (([System.IO.Path]::GetFileNameWithoutExtension($LogPath)) + '.stderr.tmp')
+  $proc = $null
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $cleanupState = [pscustomobject]@{
+    invoked = $false
+  }
+  $cleanupAvailable = (
+    (Test-RaymanWindowsPlatform) -and
+    -not [string]::IsNullOrWhiteSpace($WorkingDirectory) -and
+    (Get-Command Get-RaymanWorkspaceProcessSnapshot -ErrorAction SilentlyContinue) -and
+    (Get-Command Invoke-RaymanWorkspaceOwnedProcessCleanupFromBaseline -ErrorAction SilentlyContinue)
+  )
+  $baselineSnapshot = @()
+  $baselineCapturedAtUtc = [datetime]::MinValue
+
+  function Merge-ProjectGateBaselineSnapshotItems {
+    param([object[]]$Items = @())
+
+    $merged = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @($Items)) {
+      if ($null -eq $item) { continue }
+      $key = ''
+      if (Get-Command Get-RaymanWorkspaceProcessSnapshotKey -ErrorAction SilentlyContinue) {
+        $key = Get-RaymanWorkspaceProcessSnapshotKey -ProcessInfo $item
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$key) -and $item.PSObject.Properties['pid']) {
+        $key = ('pid:{0}' -f [string]$item.pid)
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$key) -or $seen.Add($key)) {
+        $merged.Add($item) | Out-Null
+      }
+    }
+
+    return @($merged.ToArray())
+  }
+
+  function Invoke-ProjectGateCleanupOnce {
+    if ([bool]$cleanupState.invoked -or -not $cleanupAvailable -or [string]::IsNullOrWhiteSpace($WorkingDirectory) -or $null -eq $proc) {
+      return
+    }
+    $cleanupState.invoked = $true
+    try {
+      $result.cleanup = Invoke-RaymanWorkspaceOwnedProcessCleanupFromBaseline -WorkspaceRootPath $WorkingDirectory -BaselineSnapshot @($baselineSnapshot) -BaselineCapturedAtUtc $baselineCapturedAtUtc -LauncherProcessId ([int]$proc.Id) -OwnedKind 'project-gate' -OwnedLauncher 'project-gate' -OwnedCommand ((@([string]$FilePath) + @($ArgumentList | ForEach-Object { [string]$_ })) -join ' ') -CleanupReason 'project-gate'
+    } catch {
+      $result.cleanup = [pscustomobject]@{
+        cleanup_required = $true
+        cleanup_succeeded = $false
+        cleanup_result = 'cleanup_failed'
+        cleanup_root_pids = @()
+        cleanup_pids = @()
+        launcher_tree_pids = @()
+        matched_pids = @()
+        alive_pids = @()
+        cleanup_results = @()
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$result.detail)) {
+        $result.detail = $_.Exception.Message
+      } else {
+        $result.detail = ("{0}; cleanup_error={1}" -f [string]$result.detail, $_.Exception.Message)
+      }
+    }
+  }
 
   try {
+    if ($cleanupAvailable) {
+      try {
+        $baselineCapturedAtUtc = [datetime]::UtcNow
+        $baselineSnapshot = @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $WorkingDirectory)
+        Start-Sleep -Milliseconds 200
+        $baselineSnapshot = Merge-ProjectGateBaselineSnapshotItems -Items @(
+          @($baselineSnapshot) +
+          @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $WorkingDirectory)
+        )
+      } catch {
+        $baselineSnapshot = @()
+      }
+    }
+
     $startParams = @{
       FilePath = $FilePath
       ArgumentList = @($ArgumentList)
       WorkingDirectory = $WorkingDirectory
-      Wait = $true
       PassThru = $true
       RedirectStandardOutput = $stdoutPath
       RedirectStandardError = $stderrPath
     }
 
-    $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $proc = Start-Process @startParams
+    if ($script:RaymanProjectGateTimeoutSeconds -gt 0) {
+      $completed = $proc.WaitForExit($script:RaymanProjectGateTimeoutSeconds * 1000)
+      if (-not $completed) {
+        $result.timed_out = $true
+      } else {
+        $proc.WaitForExit()
+      }
+    } else {
+      $proc.WaitForExit()
+    }
+
+    Invoke-ProjectGateCleanupOnce
+    if ($result.timed_out -and $null -ne $proc -and -not $proc.HasExited) {
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit() } catch {}
+    }
     $watch.Stop()
 
     $stdout = ''
@@ -154,19 +306,62 @@ function Invoke-RaymanGateProcess {
       if ($sections.Count -gt 0) { $sections.Add('') | Out-Null }
       $sections.Add($stderr.TrimEnd()) | Out-Null
     }
+    $cleanupLogLines = @(Get-RaymanProjectGateCleanupLogLines -Cleanup $result.cleanup)
+    if ($cleanupLogLines.Count -gt 0) {
+      if ($sections.Count -gt 0) { $sections.Add('') | Out-Null }
+      foreach ($line in $cleanupLogLines) {
+        $sections.Add([string]$line) | Out-Null
+      }
+    }
     Set-Content -LiteralPath $LogPath -Value ($sections -join "`n") -Encoding UTF8
 
-    $result.ok = ($proc.ExitCode -eq 0)
-    $result.exit_code = [int]$proc.ExitCode
+    $commandExitCode = if ($result.timed_out) { 124 } else { [int]$proc.ExitCode }
+    $cleanupOk = ($null -eq $result.cleanup -or [bool]$result.cleanup.cleanup_succeeded)
+    $result.ok = ($commandExitCode -eq 0 -and -not $result.timed_out -and $cleanupOk)
+    $result.exit_code = if (-not $cleanupOk -and $commandExitCode -eq 0) { 1 } else { $commandExitCode }
     $result.stdout = $stdout
     $result.stderr = $stderr
-    $result.detail = ("exit={0}; duration_seconds={1}" -f $proc.ExitCode, [math]::Round($watch.Elapsed.TotalSeconds, 3))
+    $detailParts = New-Object System.Collections.Generic.List[string]
+    $detailParts.Add(("exit={0}" -f $commandExitCode)) | Out-Null
+    if ($result.timed_out) {
+      $detailParts.Add(("timed_out=true")) | Out-Null
+      $detailParts.Add(("timeout_seconds={0}" -f $script:RaymanProjectGateTimeoutSeconds)) | Out-Null
+    }
+    $detailParts.Add(("duration_seconds={0}" -f [math]::Round($watch.Elapsed.TotalSeconds, 3))) | Out-Null
+    $cleanupDetail = ConvertTo-RaymanProjectGateCleanupDetail -Cleanup $result.cleanup
+    if (-not [string]::IsNullOrWhiteSpace($cleanupDetail)) {
+      $detailParts.Add($cleanupDetail) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$result.detail)) {
+      $detailParts.Add([string]$result.detail) | Out-Null
+    }
+    $result.detail = ($detailParts.ToArray() -join '; ')
     return [pscustomobject]$result
   } catch {
+    Invoke-ProjectGateCleanupOnce
+    if ($null -ne $proc -and -not $proc.HasExited) {
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit() } catch {}
+    }
+    $watch.Stop()
     $message = $_.Exception.Message
-    Set-Content -LiteralPath $LogPath -Value $message -Encoding UTF8
-    $result.exit_code = 1
-    $result.detail = $message
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add($message) | Out-Null
+    $cleanupLogLines = @(Get-RaymanProjectGateCleanupLogLines -Cleanup $result.cleanup)
+    if ($cleanupLogLines.Count -gt 0) {
+      $lines.Add('') | Out-Null
+      foreach ($line in $cleanupLogLines) {
+        $lines.Add([string]$line) | Out-Null
+      }
+    }
+    Set-Content -LiteralPath $LogPath -Value ($lines -join "`n") -Encoding UTF8
+    $result.exit_code = if ($result.timed_out) { 124 } else { 1 }
+    $cleanupDetail = ConvertTo-RaymanProjectGateCleanupDetail -Cleanup $result.cleanup
+    if ([string]::IsNullOrWhiteSpace($cleanupDetail)) {
+      $result.detail = $message
+    } else {
+      $result.detail = ("{0}; {1}" -f $message, $cleanupDetail)
+    }
     return [pscustomobject]$result
   } finally {
     foreach ($name in $backup.Keys) {
@@ -177,6 +372,11 @@ function Invoke-RaymanGateProcess {
         Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
       }
     }
+    try {
+      if ($null -ne $proc) {
+        $proc.Dispose()
+      }
+    } catch {}
   }
 }
 

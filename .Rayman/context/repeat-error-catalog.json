@@ -1,0 +1,116 @@
+{
+  "schema": "rayman.repeat_error_catalog.v1",
+  "catalog_version": 1,
+  "focus": "runtime_environment",
+  "signatures": [
+    {
+      "signature_id": "account_mode_mismatch",
+      "title": "Desktop target mode and detected auth mode conflict",
+      "applies_to": [
+        "codex.status",
+        "codex.login",
+        "codex.switch",
+        "rayman.check",
+        "snapshot"
+      ],
+      "severity": "error",
+      "fail_fast": true,
+      "repair_command_template": "rayman codex login --alias {account_alias}",
+      "baseline_keys": [
+        "Codex 执行与绑定.认证状态",
+        "Codex 执行与绑定.登录方式"
+      ],
+      "match_features": [
+        "desktop_global",
+        "detected_auth_conflicts_with_target_mode"
+      ]
+    },
+    {
+      "signature_id": "desktop_target_mode_mismatch",
+      "title": "Desktop target mode drifted away from saved login mode",
+      "applies_to": [
+        "codex.status",
+        "codex.login",
+        "codex.switch",
+        "rayman.check",
+        "snapshot"
+      ],
+      "severity": "error",
+      "fail_fast": true,
+      "repair_command_template": "rayman codex login --alias {account_alias}",
+      "baseline_keys": [
+        "Codex 执行与绑定.登录方式"
+      ],
+      "match_features": [
+        "desktop_global",
+        "desktop_target_mode_conflicts_with_last_login_mode"
+      ]
+    },
+    {
+      "signature_id": "proxy_baseline_drift",
+      "title": "Resolved proxy drifted away from saved baseline",
+      "applies_to": [
+        "codex.status",
+        "codex.login",
+        "codex.switch",
+        "rayman.check",
+        "snapshot"
+      ],
+      "severity": "warn",
+      "fail_fast": false,
+      "repair_command_template": "rayman proxy-health --refresh",
+      "baseline_keys": [
+        "代理与网络.http_proxy",
+        "代理与网络.https_proxy",
+        "代理与网络.all_proxy",
+        "代理与网络.no_proxy"
+      ],
+      "match_features": [
+        "proxy_runtime_differs_from_saved_reference"
+      ]
+    },
+    {
+      "signature_id": "desktop_window_misbind_or_timeout",
+      "title": "Desktop status validation timed out or bound to the wrong window",
+      "applies_to": [
+        "codex.status",
+        "codex.login",
+        "codex.switch",
+        "rayman.check",
+        "snapshot"
+      ],
+      "severity": "error",
+      "fail_fast": true,
+      "repair_command_template": "rayman codex login --alias {account_alias}",
+      "baseline_keys": [
+        "Codex 执行与绑定.登录方式"
+      ],
+      "match_features": [
+        "desktop_global",
+        "desktop_status_timeout_or_window_miss",
+        "no_workspace_session_quota_recovery"
+      ]
+    },
+    {
+      "signature_id": "memory_backend_regression",
+      "title": "Agent Memory backend regressed from the saved baseline",
+      "applies_to": [
+        "codex.status",
+        "codex.login",
+        "codex.switch",
+        "rayman.check",
+        "snapshot"
+      ],
+      "severity": "warn",
+      "fail_fast": false,
+      "repair_command_template": ".\\.Rayman\\rayman.ps1 memory-bootstrap",
+      "baseline_keys": [
+        "Agent Memory 基线.当前检索后端",
+        "Agent Memory 基线.fallback 原因"
+      ],
+      "match_features": [
+        "agent_memory_backend_or_fallback_drift"
+      ]
+    }
+  ]
+}

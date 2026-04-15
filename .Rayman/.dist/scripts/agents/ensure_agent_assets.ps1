@@ -24,6 +24,31 @@ function Ensure-ParentDir([string]$Path) {
   }
 }
 
+function Get-AgentAssetDisplayPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+  if (Get-Command Get-DisplayRelativePath -ErrorAction SilentlyContinue) {
+    try {
+      return (Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $Path)
+    } catch {}
+  }
+  return $Path
+}
+
+function Get-AgentAssetManagedWriteFailureMessage([object]$Result, [string]$Path) {
+  $displayPath = Get-AgentAssetDisplayPath -Path $Path
+  $reason = if ($null -ne $Result -and -not [string]::IsNullOrWhiteSpace([string]$Result.reason)) {
+    [string]$Result.reason
+  } else {
+    'write_failed'
+  }
+  $detail = if ($null -ne $Result -and -not [string]::IsNullOrWhiteSpace([string]$Result.error_message)) {
+    [string]$Result.error_message
+  } else {
+    $reason
+  }
+  return ("{0} write failed (reason={1}): {2}" -f $displayPath, $reason, $detail)
+}
+
 function Ensure-FileIfMissing([string]$Path, [string]$Content, [switch]$AlwaysUpdate) {
   Ensure-ParentDir -Path $Path
   $needsBootstrap = $false
@@ -37,8 +62,23 @@ function Ensure-FileIfMissing([string]$Path, [string]$Content, [switch]$AlwaysUp
   }
 
   if ($AlwaysUpdate -or $needsBootstrap -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
-    return $true
+    if (Get-Command Set-RaymanManagedUtf8File -ErrorAction SilentlyContinue) {
+      $writeResult = Set-RaymanManagedUtf8File -Path $Path -Content $Content -AuditRoot $WorkspaceRoot -Label ('agent-asset:' + (Get-AgentAssetDisplayPath -Path $Path))
+      if (-not [bool]$writeResult.ok) {
+        throw ("managed-write-failed: {0}" -f (Get-AgentAssetManagedWriteFailureMessage -Result $writeResult -Path $Path))
+      }
+      if ([string]$writeResult.mode -eq 'in_place_fallback') {
+        Write-Host ("⚠️ [agent-assets] {0} 被当前会话占用，已使用定长原地写入回退。" -f (Get-AgentAssetDisplayPath -Path $Path)) -ForegroundColor Yellow
+      }
+      return [bool]$writeResult.changed
+    }
+
+    try {
+      Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
+      return $true
+    } catch {
+      throw ("managed-write-failed: {0}" -f $_.Exception.Message)
+    }
   }
   return $false
 }
@@ -386,6 +426,7 @@ $systemSlimPolicyJson = @'
 $generalInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\general.instructions.md'
 $backendInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\backend.instructions.md'
 $frontendInstructionsPath = Join-Path $WorkspaceRoot '.github\instructions\frontend.instructions.md'
+$modelPolicyPath = Join-Path $WorkspaceRoot '.github\model-policy.md'
 
 $generalInstructions = @'
 ---
@@ -398,8 +439,13 @@ description: "Use when working on Rayman governance files, AGENTS.md, copilot-in
 - Keep source and `.Rayman/.dist` mirrors aligned for shared runtime and agent assets whenever copied distributions depend on the same behavior.
 - Prefer small, verifiable contracts over broad prose; when adding a rule, also add a report, script check, or validation note when practical.
 - If you touch `.github/`, `.Rayman/config/`, `AGENTS.md`, or governance docs, call out which downstream files must stay in sync.
+- Treat `.github/model-policy.md` as the single source of truth for model/runtime boundaries, and reference `.Rayman/release/FEATURE_INVENTORY.md` plus `.Rayman/release/ENHANCEMENT_ROADMAP_2026.md` when evaluating capability coverage or roadmap changes.
 - Agent capabilities are declared in `.Rayman/config/agent_capabilities.json`; `.codex/config.toml` is a generated workspace artifact and now carries Rayman-managed capability, project-doc, profile, and subagent blocks.
 - Rayman-managed subagent roles are fixed to `rayman_explorer`, `rayman_reviewer`, `rayman_docs_researcher`, `rayman_browser_debugger`, `rayman_winapp_debugger`, and `rayman_worker`.
+- Read the current workspace interaction mode from `.Rayman/CONTEXT.md` or `RAYMAN_INTERACTION_MODE` before deciding whether to ask clarifying questions or present a plan.
+- `detailed` means plan first for most meaningful ambiguity; `general` means plan first when outcome/scope/path/risk/test expectations change materially; `simple` means only high-risk ambiguity must stop the run.
+- When you stop because the prompt is not clear enough, always provide concrete options plus explicit acceptance criteria before proceeding. This Rayman rule applies even outside Codex Plan Mode.
+- `full-auto` approves code changes, but it does not authorize guessing user intent when multiple meaningful implementation paths exist.
 - OpenAI/API/model/docs tasks should prefer OpenAI Docs MCP; browser/web/e2e tasks should prefer Playwright MCP; WinForms / MAUI(Windows) / desktop / UIA tasks should prefer Rayman WinApp MCP. Document the Rayman fallback path when MCP is unavailable.
 - `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, and `.github/prompts/*.prompt.md` are Rayman-managed capability assets; keep them aligned with `dispatch`, `review_loop`, and the capability report.
 - GitHub-only features such as Copilot Memory and GitHub.com auto-model picker may be documented or detected, but are not treated as repo-enforced runtime guarantees.
@@ -436,6 +482,25 @@ description: "Use when editing frontend, prompt UI, browser-facing assets, Playw
 - Minimize one-off style drift; prefer shared primitives and consistent component states.
 '@
 
+[void](Ensure-ManagedFile -Path $modelPolicyPath -Content @'
+# Rayman Model Policy
+
+## Auto model selection
+
+- `repository-managed`: assets and guidance enforced by this repo (`AGENTS.md`, `.github/instructions/**`, `.github/agents/**`, `.github/skills/**`, `.github/prompts/**`, `.Rayman/config/**`).
+- `hosted / policy-dependent`: platform features that may exist outside the repo contract and must be detected at runtime.
+
+## Preferred capability paths
+
+- OpenAI/API/docs tasks: prefer OpenAI Docs MCP.
+- Browser/UI/E2E tasks: prefer Playwright MCP.
+- Windows desktop/UIA tasks: prefer Rayman WinApp MCP.
+
+## Notes
+
+- Treat this file as the single source of truth for model/runtime boundaries.
+- Auto model selection can be documented or detected, but not assumed unless the current host confirms it.
+'@)
 [void](Ensure-ManagedFile -Path $generalInstructionsPath -Content $generalInstructions)
 [void](Ensure-ManagedFile -Path $backendInstructionsPath -Content $backendInstructions)
 [void](Ensure-ManagedFile -Path $frontendInstructionsPath -Content $frontendInstructions)
@@ -444,6 +509,7 @@ $promptBugfixPath = Join-Path $WorkspaceRoot '.github\prompts\bugfix.prompt.md'
 $promptRefactorPath = Join-Path $WorkspaceRoot '.github\prompts\refactor.prompt.md'
 $promptTestsPath = Join-Path $WorkspaceRoot '.github\prompts\tests.prompt.md'
 $promptReleasePath = Join-Path $WorkspaceRoot '.github\prompts\release-triage.prompt.md'
+$promptWorkerDebugPath = Join-Path $WorkspaceRoot '.github\prompts\worker-debug.prompt.md'
 $promptReviewInitialPath = Join-Path $WorkspaceRoot '.github\prompts\review.initial.prompt.md'
 $promptReviewCounterPath = Join-Path $WorkspaceRoot '.github\prompts\review.counter.prompt.md'
 $promptReviewFinalPath = Join-Path $WorkspaceRoot '.github\prompts\review.final.prompt.md'
@@ -529,6 +595,26 @@ description: "Generate a Rayman release-triage packet with blockers, evidence, a
 3. Go/No-Go recommendation with evidence
 '@
 
+$promptWorkerDebug = @'
+---
+description: "Generate a worker debug packet for remote/loopback worker diagnosis and repair."
+---
+
+# Worker Debug Packet
+
+- Task: {{TASK}}
+- Acceptance Criteria: {{ACCEPTANCE_CRITERIA}}
+- Notes: {{NOTES}}
+- Generated At: {{TIMESTAMP}}
+- Workspace: {{WORKSPACE_ROOT}}
+
+## worker debug focus
+
+1. Reproduce the failing worker path
+2. Capture worker status / beacon / debug manifest evidence
+3. Propose the smallest safe fix and validation sequence
+'@
+
 $promptReviewInitial = @'
 ---
 description: "Round 1 review packet for broad risk discovery and first-pass findings."
@@ -593,6 +679,7 @@ description: "Final review packet for merge readiness, residual risk, and releas
 [void](Ensure-ManagedFile -Path $promptRefactorPath -Content $promptRefactor)
 [void](Ensure-ManagedFile -Path $promptTestsPath -Content $promptTests)
 [void](Ensure-ManagedFile -Path $promptReleasePath -Content $promptRelease)
+[void](Ensure-ManagedFile -Path $promptWorkerDebugPath -Content $promptWorkerDebug)
 [void](Ensure-ManagedFile -Path $promptReviewInitialPath -Content $promptReviewInitial)
 [void](Ensure-ManagedFile -Path $promptReviewCounterPath -Content $promptReviewCounter)
 [void](Ensure-ManagedFile -Path $promptReviewFinalPath -Content $promptReviewFinal)
@@ -673,7 +760,7 @@ model: gpt-5.4
 You are Rayman's browser debugger.
 
 - Prefer Playwright MCP for reproduction, screenshots, console output, and network evidence.
-- If MCP is unavailable, call out the Rayman fallback path: `rayman ensure-playwright` then `rayman pwa-test`.
+- If MCP is unavailable, call out the Rayman fallback path: `rayman ensure-playwright` then `rayman.ps1 pwa-test`.
 - Keep fixes bounded and avoid speculative rewrites before reproducing the failure.
 '@
 
@@ -688,7 +775,7 @@ model: gpt-5.4
 You are Rayman's Windows desktop debugger.
 
 - Prefer Rayman WinApp MCP for WinForms, WPF, MAUI(Windows), dialog, and UIA flows.
-- If MCP is unavailable, call out the Rayman fallback path: `rayman ensure-winapp` then `rayman winapp-test`.
+- If MCP is unavailable, call out the Rayman fallback path: `rayman.ps1 ensure-winapp` then `rayman.ps1 winapp-test`.
 - Keep changes focused on the failing desktop interaction and capture concrete evidence before broader fixes.
 '@
 
@@ -702,6 +789,7 @@ You are Rayman's Windows desktop debugger.
 $skillDocsPath = Join-Path $WorkspaceRoot '.github\skills\openai-docs-research\SKILL.md'
 $skillBrowserPath = Join-Path $WorkspaceRoot '.github\skills\browser-e2e-debug\SKILL.md'
 $skillWinAppPath = Join-Path $WorkspaceRoot '.github\skills\winapp-debug\SKILL.md'
+$skillWorkerPath = Join-Path $WorkspaceRoot '.github\skills\worker-remote-debug\SKILL.md'
 $skillReleasePath = Join-Path $WorkspaceRoot '.github\skills\rayman-release-gate\SKILL.md'
 
 $skillDocs = @'
@@ -729,7 +817,7 @@ Use this skill for browser, UI, recording, or E2E failures.
 - Reproduce before fixing.
 - Capture concrete evidence: steps, selectors, console, network, screenshots.
 - Prefer Playwright MCP when available.
-- If MCP is unavailable, fall back to `rayman ensure-playwright` then `rayman pwa-test`.
+- If MCP is unavailable, fall back to `rayman ensure-playwright` then `rayman.ps1 pwa-test`.
 '@
 
 $skillWinApp = @'
@@ -742,8 +830,22 @@ Use this skill for WinForms, WPF, MAUI(Windows), dialogs, or UIA failures.
 
 - Prefer Rayman WinApp MCP when available.
 - Capture the concrete failing interaction before changing application code.
-- If MCP is unavailable, fall back to `rayman ensure-winapp` then `rayman winapp-test`.
+- If MCP is unavailable, fall back to `rayman.ps1 ensure-winapp` then `rayman.ps1 winapp-test`.
 - Keep desktop fixes narrowly scoped.
+'@
+
+$skillWorker = @'
+---
+name: worker-remote-debug
+description: Diagnose and repair Rayman worker loopback / remote debug flows
+---
+
+Use this skill for `rayman.ps1 worker` operations, loopback worker smoke failures, or remote .NET worker debug issues.
+
+- Start with `rayman.ps1 worker status --json` / `discover --json` and the worker runtime logs.
+- Confirm the active worker, control URL, debugger readiness, and sync mode before changing code.
+- Prefer the existing worker tasks and `Rayman Worker: Launch .NET (Active Worker)` / attach flows over ad-hoc launch commands.
+- Keep fixes scoped to worker discovery, sync, upgrade, debug manifest, or host lifecycle behavior.
 '@
 
 $skillRelease = @'
@@ -763,6 +865,7 @@ Use this skill when the task affects release readiness, governance, or repositor
 [void](Ensure-ManagedFile -Path $skillDocsPath -Content $skillDocs)
 [void](Ensure-ManagedFile -Path $skillBrowserPath -Content $skillBrowser)
 [void](Ensure-ManagedFile -Path $skillWinAppPath -Content $skillWinApp)
+[void](Ensure-ManagedFile -Path $skillWorkerPath -Content $skillWorker)
 [void](Ensure-ManagedFile -Path $skillReleasePath -Content $skillRelease)
 
 $workflowPath = Join-Path $WorkspaceRoot '.github\workflows\copilot-setup-steps.yml'
@@ -814,10 +917,10 @@ if ($workspaceKind -eq 'external') {
     try {
       & $workflowGenerator -WorkspaceRoot $WorkspaceRoot
     } catch {
-      Write-Host ("⚠️ [agent-assets] project workflow generation failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+      throw ("project workflow generation failed: {0}" -f $_.Exception.Message)
     }
   } else {
-    Write-Host ("⚠️ [agent-assets] missing project workflow generator: {0}" -f $workflowGenerator) -ForegroundColor Yellow
+    throw ("missing project workflow generator: {0}" -f $workflowGenerator)
   }
 }
 

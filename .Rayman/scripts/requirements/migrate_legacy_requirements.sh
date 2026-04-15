@@ -55,6 +55,12 @@ backup_one() {
   cp -f "$src" "$dst"
 }
 
+remove_legacy_source() {
+  local src="$1"
+  [[ -f "$src" ]] || return 0
+  rm -f "$src"
+}
+
 append_section_header_if_missing() {
   local target="$1"
   if ! grep -q '^## 遗留 requirements 迁移（自动）' "$target" 2>/dev/null; then
@@ -113,6 +119,7 @@ if [[ -f "$legacy_sol_req" && "$legacy_sol_req" != "$new_sol_req" ]]; then
   fi
 
   record_row "__SOLUTION__" "${legacy_sol_req#./}" "${new_sol_req#./}" "$h"
+  remove_legacy_source "$legacy_sol_req"
 fi
 
 mapfile -t PROJS < <(bash ./.Rayman/scripts/requirements/detect_projects.sh || true)
@@ -147,6 +154,7 @@ for p in "${PROJS[@]}"; do
     h="$(hash_file "$src")"
     append_legacy_block "$pf" "$src" "${src#./}" "$h"
     record_row "$p" "${src#./}" "${pf#./}" "$h"
+    remove_legacy_source "$src"
   done
 
 done

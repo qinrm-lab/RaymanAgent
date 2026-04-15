@@ -44,13 +44,30 @@ else
   exit 2
 fi
 
-if command -v pwsh >/dev/null 2>&1; then
-  PS_RUNNER=(pwsh -NoProfile -ExecutionPolicy Bypass -File)
+if command -v powershell.exe >/dev/null 2>&1; then
+  PS_RUNNER=(powershell.exe -NoProfile -ExecutionPolicy Bypass -File)
 elif command -v powershell >/dev/null 2>&1; then
   PS_RUNNER=(powershell -NoProfile -ExecutionPolicy Bypass -File)
+elif command -v pwsh.exe >/dev/null 2>&1; then
+  PS_RUNNER=(pwsh.exe -NoProfile -ExecutionPolicy Bypass -File)
+elif command -v pwsh >/dev/null 2>&1; then
+  PS_RUNNER=(pwsh -NoProfile -ExecutionPolicy Bypass -File)
 else
   echo "[rayman-fast-contract] pwsh/powershell not found" >&2
   exit 2
+fi
+
+ROOT_PS="${ROOT}"
+runner_name="$(basename "${PS_RUNNER[0]}")"
+runner_name="${runner_name,,}"
+if [[ "${runner_name}" == "powershell.exe" || "${runner_name}" == "powershell" || "${runner_name}" == "pwsh.exe" ]]; then
+  if command -v cygpath >/dev/null 2>&1; then
+    ROOT_PS="$(cygpath -w "${ROOT}")"
+  elif command -v wslpath >/dev/null 2>&1; then
+    ROOT_PS="$(wslpath -w "${ROOT}")"
+  elif pwd -W >/dev/null 2>&1; then
+    ROOT_PS="$(pwd -W)"
+  fi
 fi
 
 run_step() {
@@ -128,8 +145,8 @@ run_step validate_requirements "${validate_requirements_env[@]}" bash ./.Rayman/
 run_step checklist bash ./.Rayman/scripts/release/checklist.sh
 run_step regression_guard bash ./.Rayman/scripts/release/regression_guard.sh
 run_step config_sanity bash ./.Rayman/scripts/release/config_sanity.sh
-run_step agent_contract "${PS_RUNNER[@]}" ./.Rayman/scripts/agents/check_agent_contract.ps1 -WorkspaceRoot "${ROOT}" -SkipContextRefresh
-run_step assert_dist_sync "${PS_RUNNER[@]}" ./.Rayman/scripts/release/assert_dist_sync.ps1 -WorkspaceRoot "${ROOT}"
+run_step agent_contract "${PS_RUNNER[@]}" ./.Rayman/scripts/agents/check_agent_contract.ps1 -WorkspaceRoot "${ROOT_PS}" -SkipContextRefresh
+run_step assert_dist_sync "${PS_RUNNER[@]}" ./.Rayman/scripts/release/assert_dist_sync.ps1 -WorkspaceRoot "${ROOT_PS}"
 run_step json_contracts "${PYTHON_BIN}" ./.Rayman/scripts/testing/validate_json_contracts.py --workspace-root "${ROOT}" --mode all --report-path "${JSON_CONTRACT_REPORT}"
 
 "${PYTHON_BIN}" - <<'PY' "${STEPS_FILE}" "${REPORT_PATH}" "${ROOT}" "${fail_count}"
@@ -156,6 +173,7 @@ for line in steps_file.read_text(encoding="utf-8").splitlines():
 
 report = {
     "schema": "rayman.testing.fast_contract.v1",
+    "generated_at": __import__("datetime").datetime.now().astimezone().isoformat(),
     "workspace_root": workspace_root,
     "success": fail_count == 0,
     "counts": {

@@ -748,6 +748,16 @@ function Get-RaymanManagedSliceStates {
       cli_feature_enabled = $false
       should_write = $true
     }
+    notify = [pscustomobject]@{
+      name = 'notify'
+      supported = $true
+      support_source = 'always'
+      support_reason = 'rayman_managed'
+      feature_detected = $false
+      feature_stage = ''
+      cli_feature_enabled = $false
+      should_write = $true
+    }
     project_doc = [pscustomobject]@{
       name = 'project_doc'
       supported = [bool]$projectDocSupport.supported
@@ -982,6 +992,53 @@ function Render-RaymanManagedCapabilitiesBlock {
   return (($lines -join "`r`n").TrimEnd())
 }
 
+function Get-RaymanCodexNotifyDefinition {
+  param(
+    [string]$WorkspaceRoot
+  )
+
+  $notifyScriptPath = Join-Path $WorkspaceRoot '.Rayman\scripts\codex\codex_notify.ps1'
+  $resolvedNotifyScriptPath = if (Test-Path -LiteralPath $notifyScriptPath -PathType Leaf) {
+    (Resolve-Path -LiteralPath $notifyScriptPath).Path
+  } else {
+    [System.IO.Path]::GetFullPath($notifyScriptPath)
+  }
+
+  $resolvedWorkspaceRoot = if (Test-Path -LiteralPath $WorkspaceRoot -PathType Container) {
+    (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  } else {
+    [System.IO.Path]::GetFullPath($WorkspaceRoot)
+  }
+
+  $command = if (Test-HostIsWindows) { 'powershell.exe' } else { 'pwsh' }
+  $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $resolvedNotifyScriptPath, '-WorkspaceRoot', $resolvedWorkspaceRoot)
+
+  return [pscustomobject]@{
+    command = $command
+    args = @($args)
+  }
+}
+
+function Render-RaymanManagedNotifyBlock {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$SliceState
+  )
+
+  if ($null -eq $SliceState -or -not [bool]$SliceState.should_write) {
+    return ''
+  }
+
+  $notify = Get-RaymanCodexNotifyDefinition -WorkspaceRoot $WorkspaceRoot
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add('# >>> Rayman managed notify >>>')
+  $lines.Add('# Rayman manages this block. Edit outside these markers only.')
+  $lines.Add('')
+  $lines.Add(('notify = {0}' -f (ConvertTo-TomlArray -Values (@([string]$notify.command) + @($notify.args)))))
+  $lines.Add('# <<< Rayman managed notify <<<')
+  return (($lines -join "`r`n").TrimEnd())
+}
+
 function Render-RaymanManagedProjectDocBlock {
   param(
     [object]$SliceState
@@ -1190,6 +1247,15 @@ function Set-RaymanManagedCapabilitiesBlock {
   )
 
   return (Set-RaymanManagedBlock -ConfigPath $ConfigPath -ManagedBlock $ManagedBlock -BlockName 'capabilities')
+}
+
+function Set-RaymanManagedNotifyBlock {
+  param(
+    [string]$ConfigPath,
+    [string]$ManagedBlock
+  )
+
+  return (Set-RaymanManagedBlock -ConfigPath $ConfigPath -ManagedBlock $ManagedBlock -BlockName 'notify')
 }
 
 function Set-RaymanManagedProjectDocBlock {
@@ -1549,7 +1615,7 @@ function New-CapabilityReportObject {
   $subagentsWritten = $false
 
   $sliceReports = [ordered]@{}
-  foreach ($sliceName in @('capabilities', 'project_doc', 'profiles', 'subagents')) {
+  foreach ($sliceName in @('capabilities', 'notify', 'project_doc', 'profiles', 'subagents')) {
     $sliceState = if (Test-MapHasKey -Map $ManagedSliceStates -Key $sliceName) { $ManagedSliceStates[$sliceName] } else { $null }
     $present = if (Test-MapHasKey -Map $ManagedBlockPresence -Key $sliceName) { [bool]$ManagedBlockPresence[$sliceName] } else { $false }
     $changed = if (Test-MapHasKey -Map $ManagedBlockChanges -Key $sliceName) { [bool]$ManagedBlockChanges[$sliceName] } else { $false }
@@ -1663,10 +1729,12 @@ function New-CapabilityReportObject {
     codex_config_path = $CodexConfigPath
     codex_config_exists = (Test-Path -LiteralPath $CodexConfigPath -PathType Leaf)
     managed_block_present = [bool]$sliceReports['capabilities'].present
+    notify_managed_block_present = [bool]$sliceReports['notify'].present
     project_doc_managed_block_present = [bool]$sliceReports['project_doc'].present
     profiles_managed_block_present = [bool]$sliceReports['profiles'].present
     multi_agent_managed_block_present = [bool]$sliceReports['subagents'].present
     capability_block_changed = [bool]$sliceReports['capabilities'].changed
+    notify_block_changed = [bool]$sliceReports['notify'].changed
     project_doc_block_changed = [bool]$sliceReports['project_doc'].changed
     profiles_block_changed = [bool]$sliceReports['profiles'].changed
     multi_agent_block_changed = [bool]$sliceReports['subagents'].changed
@@ -1765,7 +1833,7 @@ function Write-CapabilityReportFiles {
   $md.Add(('- Multi-agent trust gate: `{0}` ({1})' -f [string]$Report.multi_agent_trust_status, [string]$Report.multi_agent_trust_assumption))
   $md.Add(('- Multi-agent roles: {0}' -f $(if (@($Report.multi_agent_roles).Count -gt 0) { ((@($Report.multi_agent_roles) | ForEach-Object { [string]$_ }) -join ', ') } else { '(none)' })))
   $md.Add(('- Custom agents present: `{0}`; skills present: `{1}`' -f [string]([bool]$Report.custom_agents_present).ToString().ToLowerInvariant(), [string]([bool]$Report.skills_present).ToString().ToLowerInvariant()))
-  foreach ($sliceName in @('capabilities', 'project_doc', 'profiles', 'subagents')) {
+  foreach ($sliceName in @('capabilities', 'notify', 'project_doc', 'profiles', 'subagents')) {
     $slice = $null
     if ($Report.managed_slices -is [System.Collections.IDictionary]) {
       $slice = $Report.managed_slices[$sliceName]
@@ -1833,11 +1901,13 @@ $multiAgentSupport = Get-CodexMultiAgentSupportStatus -Registry $multiAgentRegis
 $multiAgentState = Resolve-RaymanMultiAgentState -Registry $multiAgentRegistry -Support $multiAgentSupport -TrustState $trustState
 $managedSliceStates = Get-RaymanManagedSliceStates -CodexProbe $codexProbe -MultiAgentRegistry $multiAgentRegistry -MultiAgentState $multiAgentState
 $managedBlock = Render-RaymanManagedCapabilitiesBlock -Capabilities $state.capabilities -WorkspaceRoot $WorkspaceRoot
+$notifyBlock = Render-RaymanManagedNotifyBlock -WorkspaceRoot $WorkspaceRoot -SliceState $managedSliceStates['notify']
 $projectDocBlock = Render-RaymanManagedProjectDocBlock -SliceState $managedSliceStates['project_doc']
 $profilesBlock = Render-RaymanManagedProfilesBlock -SliceState $managedSliceStates['profiles']
 $multiAgentBlock = Render-RaymanManagedMultiAgentBlock -MultiAgentState $multiAgentState -SliceState $managedSliceStates['subagents']
 $managedBlockChanges = @{
   capabilities = $false
+  notify = $false
   project_doc = $false
   profiles = $false
   subagents = $false
@@ -1852,6 +1922,8 @@ $prepareResult = [pscustomobject]@{
 if ($Action -eq 'sync') {
   $syncResult = Set-RaymanManagedCapabilitiesBlock -ConfigPath $codexConfigPath -ManagedBlock $managedBlock
   $managedBlockChanges['capabilities'] = [bool]$syncResult.changed
+  $notifySyncResult = Set-RaymanManagedNotifyBlock -ConfigPath $codexConfigPath -ManagedBlock $notifyBlock
+  $managedBlockChanges['notify'] = [bool]$notifySyncResult.changed
   $projectDocSyncResult = Set-RaymanManagedProjectDocBlock -ConfigPath $codexConfigPath -ManagedBlock $projectDocBlock
   $managedBlockChanges['project_doc'] = [bool]$projectDocSyncResult.changed
   $profilesSyncResult = Set-RaymanManagedProfilesBlock -ConfigPath $codexConfigPath -ManagedBlock $profilesBlock
@@ -1873,6 +1945,7 @@ if ($Action -eq 'sync') {
 
 $managedBlockPresence = @{
   capabilities = $false
+  notify = $false
   project_doc = $false
   profiles = $false
   subagents = $false
@@ -1880,6 +1953,7 @@ $managedBlockPresence = @{
 if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
   $codexRaw = Get-Content -LiteralPath $codexConfigPath -Raw -Encoding UTF8
   $managedBlockPresence['capabilities'] = Test-RaymanManagedBlockPresent -ConfigRaw $codexRaw -BlockName 'capabilities'
+  $managedBlockPresence['notify'] = Test-RaymanManagedBlockPresent -ConfigRaw $codexRaw -BlockName 'notify'
   $managedBlockPresence['project_doc'] = Test-RaymanManagedBlockPresent -ConfigRaw $codexRaw -BlockName 'project_doc'
   $managedBlockPresence['profiles'] = Test-RaymanManagedBlockPresent -ConfigRaw $codexRaw -BlockName 'profiles'
   $managedBlockPresence['subagents'] = Test-RaymanManagedBlockPresent -ConfigRaw $codexRaw -BlockName 'subagents'

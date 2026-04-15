@@ -32,6 +32,15 @@ Describe 'release_gate.lib' {
     Get-DisplayRelativePath -BasePath $base -FullPath $full | Should -Be '.Rayman/scripts/release/release_gate.ps1'
   }
 
+  It 'ignores Rayman-owned dynamic sandbox residue under .temp only' {
+    $rules = @(Get-ReleaseGateScanIgnoreRules)
+
+    (Test-ReleaseGatePathIgnored -FullPath 'E:\repo\.temp\rayman-dynamic-sandbox\agents.md' -Rules $rules) | Should -Be $true
+    (Test-ReleaseGatePathIgnored -FullPath 'E:\repo\.temp\rayman-dynamic-sandbox-20260330\agents.md' -Rules $rules) | Should -Be $true
+    (Test-ReleaseGatePathIgnored -FullPath 'E:\repo\.Rayman\scripts\testing\pester\release_gate.Tests.ps1' -Rules $rules) | Should -Be $true
+    (Test-ReleaseGatePathIgnored -FullPath 'E:\repo\.temp\custom\agents.md' -Rules $rules) | Should -Be $false
+  }
+
   It 'maps success-based test lane reports to PASS/FAIL' {
     $ok = Get-TestLaneReportEvaluation -Report ([pscustomobject]@{ schema = 'rayman.testing.fast_contract.v1'; success = $true }) -ExpectedSchema 'rayman.testing.fast_contract.v1'
     $fail = Get-TestLaneReportEvaluation -Report ([pscustomobject]@{ schema = 'rayman.testing.fast_contract.v1'; success = $false }) -ExpectedSchema 'rayman.testing.fast_contract.v1'
@@ -98,5 +107,53 @@ Describe 'release_gate.lib' {
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
+  }
+
+  It 'supports wildcard freshness paths when checking stale reports' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_release_gate_wildcard_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root 'logs') | Out-Null
+      $reportPath = Join-Path $root 'fast.report.json'
+      $logPath = Join-Path $root 'logs\fast.requirements_layout.log'
+
+      Set-Content -LiteralPath $reportPath -Encoding UTF8 -Value '{}'
+      Set-Content -LiteralPath $logPath -Encoding UTF8 -Value 'new log'
+
+      $nowUtc = [datetime]::UtcNow
+      (Get-Item -LiteralPath $reportPath).LastWriteTimeUtc = $nowUtc.AddMinutes(-5)
+      (Get-Item -LiteralPath $logPath).LastWriteTimeUtc = $nowUtc
+
+      $result = Get-TestLaneReportEvaluation -Report ([pscustomobject]@{
+          schema = 'rayman.project_gate.v1'
+          overall = 'PASS'
+          workspace_root = $root
+          generated_at = ($nowUtc.AddMinutes(-5).ToString('o'))
+        }) -ExpectedSchema 'rayman.project_gate.v1' -SuccessProperty '' -OverallProperty 'overall' -WorkspaceRoot $root -ReportPath $reportPath -FreshnessPaths @('logs/fast.*.log') -RequireGeneratedAt
+
+      $result.status | Should -Be 'STALE'
+      $result.detail | Should -Match 'stale_report_older_than_inputs'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'can auto-run a release-gate lane through the provided runner' {
+    $result = Invoke-ReleaseGateLaneAutoRun -WorkspaceRoot 'E:\repo' -Action '执行 bash ./.Rayman/scripts/testing/run_fast_contract.sh' -Runner {
+      param($commandText)
+      [pscustomobject]@{
+        attempted = $true
+        started = $true
+        success = $true
+        exit_code = 0
+        reason = 'completed'
+        command = $commandText
+        output = 'ok'
+      }
+    }
+
+    [bool]$result.attempted | Should -Be $true
+    [bool]$result.started | Should -Be $true
+    [bool]$result.success | Should -Be $true
+    [string]$result.command | Should -Be 'bash ./.Rayman/scripts/testing/run_fast_contract.sh'
   }
 }

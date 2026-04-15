@@ -14,6 +14,7 @@
 | --- | --- | --- | --- |
 | Review baseline | 维护 `.Rayman/release/FEATURE_INVENTORY.md` 与本路线图 | 把“功能盘点”和“增强建议”变成 tracked 资产，而不是聊天记录 | `check_agent_contract.ps1`, governance docs tests, dist parity |
 | Agentic pipeline contract | 把 `planner_v1` 默认链路、`.RaymanAgent/agentic/*`、requirements gate、first-pass telemetry 作为同一组受管资产维护 | 默认路径已经切到 `plan -> tool/subagent select -> execute -> reflect -> verify -> doc close`，必须防止 runtime/文档/契约再次漂移 | `dispatch`, `review_loop`, `validate_requirements.sh`, `first_pass_report.ps1`, dist parity |
+| Interaction mode governance | 把工作区级 `RAYMAN_INTERACTION_MODE`、菜单入口、context/prompt 注入和 delegated preamble 作为同一组受管资产维护 | “full-auto” 容易被误解成“可以替用户决定需求”；需要明确多路径/歧义时何时先给 plan | `rayman.ps1`, `.rayman.env.ps1`, `generate_context.ps1`, `inject_codex_fix_prompt.ps1`, `dispatch`, docs parity |
 | Instruction layering | 收紧 `.github/copilot-instructions.md`，把 repository-wide、path-specific、model policy、review docs 的职责分开 | 减少 `.github` 规则重复、冲突和 typo 漂移 | agent contract, human review |
 | Hosted platform boundary | 维护 `.github/model-policy.md`，明确 Auto model selection / custom agents / hosted MCP 只做文档与检测 | 避免把平台能力误写成 repo 保证 | agent contract, README links |
 | README parity | 修正 watcher / alert 默认值、补 review docs 和 platform-opportunity 链接 | 当前 README 容易成为运维与功能认知入口，漂移成本高 | README review, host smoke indirect |

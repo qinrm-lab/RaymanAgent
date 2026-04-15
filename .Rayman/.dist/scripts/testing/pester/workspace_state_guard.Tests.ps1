@@ -56,4 +56,37 @@ Describe 'workspace_state_guard' {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
+
+  It 'treats equivalent WSL workspace paths as local and avoids false scrub' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_workspace_guard_wsl_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\runtime\test_lanes') | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\logs') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Value 'v164' -Encoding UTF8
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\logs\keep.log') -Value 'keep' -Encoding UTF8
+
+      $rootForJson = $root -replace '\\', '/'
+      if ($rootForJson -match '^(?<drive>[A-Za-z]):/(?<rest>.*)$') {
+        $wslRoot = ('/mnt/{0}/{1}' -f [string]$Matches['drive'].ToLowerInvariant(), [string]$Matches['rest'])
+      } else {
+        $wslRoot = $rootForJson
+      }
+
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\runtime\test_lanes\host_smoke.report.json') -Encoding UTF8 -Value @"
+{
+  "schema": "rayman.testing.host_smoke.v1",
+  "workspace_root": "$wslRoot",
+  "overall": "PASS"
+}
+"@
+
+      $result = Invoke-RaymanWorkspaceStateGuard -WorkspaceRoot $root
+
+      $result.scrubbed | Should -BeFalse
+      Test-Path -LiteralPath (Join-Path $root '.Rayman\logs\keep.log') -PathType Leaf | Should -Be $true
+      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\test_lanes\host_smoke.report.json') -PathType Leaf | Should -Be $true
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 }

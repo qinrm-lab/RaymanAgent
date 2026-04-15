@@ -21,6 +21,7 @@ Describe 'context generation' {
 
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_context_generation_' + [Guid]::NewGuid().ToString('N'))
     $previousSkillsSelected = [Environment]::GetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', 'Process')
+    $previousInteractionMode = [Environment]::GetEnvironmentVariable('RAYMAN_INTERACTION_MODE', 'Process')
     try {
       New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\scripts\utils') | Out-Null
       New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\scripts\skills') | Out-Null
@@ -56,6 +57,7 @@ Describe 'context generation' {
 '@
 
       [Environment]::SetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', $null, 'Process')
+      [Environment]::SetEnvironmentVariable('RAYMAN_INTERACTION_MODE', $null, 'Process')
       & $psHost.Source -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root '.Rayman\scripts\utils\generate_context.ps1') -WorkspaceRoot $root | Out-Null
       $first = Get-Content -LiteralPath (Join-Path $root '.Rayman\CONTEXT.md') -Raw -Encoding UTF8
 
@@ -65,6 +67,9 @@ Describe 'context generation' {
       $first | Should -Not -Match 'matched_user_config'
       $first | Should -Not -Match 'openai_docs'
       $first | Should -Match 'environment-specific'
+      $first | Should -Match '## Collaboration Preference'
+      $first | Should -Match 'Mode: `detailed` \(详细\)'
+      $first | Should -Match 'Post-command hygiene'
 
       Set-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_capabilities.report.json') -Encoding UTF8 -Value @'
 {
@@ -81,6 +86,7 @@ Describe 'context generation' {
       $second | Should -Be $first
     } finally {
       [Environment]::SetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', $previousSkillsSelected, 'Process')
+      [Environment]::SetEnvironmentVariable('RAYMAN_INTERACTION_MODE', $previousInteractionMode, 'Process')
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

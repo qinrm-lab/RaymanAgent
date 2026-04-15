@@ -423,6 +423,29 @@ function Get-CopySmokeLatestVsCodeAuditPath([string]$TempRayman) {
   return ''
 }
 
+function Get-CopySmokePowerShellPath {
+  foreach ($candidate in @('powershell.exe', 'powershell', 'pwsh.exe', 'pwsh')) {
+    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      return [string]$cmd.Source
+    }
+  }
+
+  throw 'powershell host not found for mapped file hold'
+}
+
+function Get-CopySmokeManagedWriteAuditRuntimePath([string]$TempRayman) {
+  return (Join-Path $TempRayman 'runtime\managed_write.last.json')
+}
+
+function Get-CopySmokeManagedWriteAuditPath([string]$TempRayman) {
+  $auditPath = Get-CopySmokeManagedWriteAuditRuntimePath -TempRayman $TempRayman
+  if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
+    return $auditPath
+  }
+  return ''
+}
+
 function Convert-CopySmokePassNameToSlug([string]$PassName) {
   $value = if ([string]::IsNullOrWhiteSpace($PassName)) { 'setup-pass' } else { $PassName.Trim().ToLowerInvariant() }
   $slug = [regex]::Replace($value, '[^a-z0-9]+', '-').Trim('-')
@@ -495,6 +518,130 @@ function Add-CopySmokeSetupRunAudit {
   return (Write-CopySmokeSetupRunAuditFile -TempRoot $TempRoot)
 }
 
+function Open-CopySmokeMappedFileHold {
+  param(
+    [string]$Path,
+    [int]$SleepMs = 5000
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw 'mapped file hold path is required'
+  }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw ("mapped file hold target missing: {0}" -f $Path)
+  }
+
+  $token = [Guid]::NewGuid().ToString('N')
+  $scriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("rayman_copy_smoke_hold_{0}.ps1" -f $token)
+  $readyPath = Join-Path ([System.IO.Path]::GetTempPath()) ("rayman_copy_smoke_hold_{0}.ready" -f $token)
+  @'
+param(
+  [Parameter(Mandatory = $true)][string]$TargetPath,
+  [Parameter(Mandatory = $true)][string]$ReadyPath,
+  [int]$SleepMs = 5000
+)
+
+$mmf = $null
+$view = $null
+try {
+  $mmf = [System.IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile($TargetPath, [System.IO.FileMode]::Open, ('rayman_copy_smoke_hold_' + [Guid]::NewGuid().ToString('N')), 0)
+  $view = $mmf.CreateViewAccessor()
+  New-Item -ItemType File -Force -Path $ReadyPath | Out-Null
+  Start-Sleep -Milliseconds $SleepMs
+} finally {
+  try { if ($null -ne $view) { $view.Dispose() } } catch {}
+  try { if ($null -ne $mmf) { $mmf.Dispose() } } catch {}
+}
+'@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+
+  $startProcessParams = @{
+    FilePath = (Get-CopySmokePowerShellPath)
+    ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath, '-TargetPath', $Path, '-ReadyPath', $readyPath, '-SleepMs', [string]$SleepMs)
+    PassThru = $true
+  }
+  if (Test-CopySmokeHostIsWindows) {
+    $startProcessParams.WindowStyle = 'Hidden'
+  }
+  $process = Start-Process @startProcessParams
+
+  $deadline = (Get-Date).AddSeconds(5)
+  while (-not (Test-Path -LiteralPath $readyPath) -and -not $process.HasExited -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 25
+  }
+  if (-not (Test-Path -LiteralPath $readyPath)) {
+    try {
+      if (-not $process.HasExited) {
+        $process.Kill()
+      }
+    } catch {}
+    try { $process.Dispose() } catch {}
+    Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+    throw ("failed to acquire mapped file hold for {0}" -f $Path)
+  }
+
+  return [pscustomobject]@{
+    path = $Path
+    sleep_ms = [int]$SleepMs
+    process = $process
+    script_path = $scriptPath
+    ready_path = $readyPath
+  }
+}
+
+function Close-CopySmokeMappedFileHold([object]$Hold) {
+  if ($null -eq $Hold) { return }
+
+  try {
+    if ($Hold.PSObject.Properties['process'] -and $null -ne $Hold.process) {
+      try {
+        if (-not $Hold.process.HasExited) {
+          [void]$Hold.process.WaitForExit(5000)
+        }
+      } catch {}
+      try {
+        if (-not $Hold.process.HasExited) {
+          $Hold.process.Kill()
+        }
+      } catch {}
+      try { $Hold.process.Dispose() } catch {}
+    }
+  } finally {
+    foreach ($propertyName in @('script_path', 'ready_path')) {
+      if (-not $Hold.PSObject.Properties[$propertyName]) { continue }
+      $value = $Hold.$propertyName
+      if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+      try {
+        Remove-Item -LiteralPath $value -Force -ErrorAction SilentlyContinue
+      } catch {}
+    }
+  }
+}
+
+function Set-CopySmokeManagedWriteTargetsDirty {
+  param(
+    [string]$WorkspaceRoot,
+    [string[]]$Targets = @()
+  )
+
+  foreach ($target in @($Targets)) {
+    if ([string]::IsNullOrWhiteSpace([string]$target)) { continue }
+    $path = Join-Path $WorkspaceRoot $target
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+
+    $existing = ''
+    try {
+      $existing = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop
+    } catch {}
+    if ($null -eq $existing) { $existing = '' }
+
+    $dirtyPrefix = "# copy-smoke stale`r`n"
+    if ([string]$existing -notmatch '(?i)copy-smoke stale') {
+      Set-Content -LiteralPath $path -Value ($dirtyPrefix + [string]$existing) -Encoding UTF8
+    }
+  }
+}
+
 function Invoke-CopySmokeSetupRun {
   param(
     [string]$SetupScript,
@@ -523,6 +670,8 @@ function Invoke-CopySmokeSetupRun {
     SetupLogArchivePath = ''
     VsCodeAuditPath = ''
     VsCodeAuditArchivePath = ''
+    ManagedWriteAuditPath = ''
+    ManagedWriteAuditArchivePath = ''
     AuditFilePath = ''
   }
   $runEnvBackup = @{}
@@ -608,11 +757,14 @@ function Invoke-CopySmokeSetupRun {
     $run.FinishedAt = (Get-Date).ToString('o')
     $latestSetupLog = Get-CopySmokeLatestSetupLog -TempRayman $tempRayman
     $latestVsCodeAudit = Get-CopySmokeLatestVsCodeAuditPath -TempRayman $tempRayman
+    $latestManagedWriteAudit = Get-CopySmokeManagedWriteAuditPath -TempRayman $tempRayman
     $archiveDir = Get-CopySmokeSetupRunArchiveDir -TempRoot $TempRoot
     $run.LatestSetupLog = $latestSetupLog
     $run.SetupLogArchivePath = Save-CopySmokeArtifactCopy -SourcePath $latestSetupLog -DestinationPath (Join-Path $archiveDir ("{0}.setup.log" -f $passSlug))
     $run.VsCodeAuditPath = $latestVsCodeAudit
     $run.VsCodeAuditArchivePath = Save-CopySmokeArtifactCopy -SourcePath $latestVsCodeAudit -DestinationPath (Join-Path $archiveDir ("{0}.vscode_windows.json" -f $passSlug))
+    $run.ManagedWriteAuditPath = $latestManagedWriteAudit
+    $run.ManagedWriteAuditArchivePath = Save-CopySmokeArtifactCopy -SourcePath $latestManagedWriteAudit -DestinationPath (Join-Path $archiveDir ("{0}.managed_write.json" -f $passSlug))
     Restore-EnvOverrides -Backup $runEnvBackup
     $run.AuditFilePath = Add-CopySmokeSetupRunAudit -TempRoot $TempRoot -RunRecord $run
   }
@@ -992,6 +1144,179 @@ function Invoke-CopySmokeTrackedNoiseContract {
   return [pscustomobject]$result
 }
 
+function Get-CopySmokeMappedWriteTargets {
+  param([string]$WorkspaceRoot)
+
+  $targets = @(
+    '.github/copilot-instructions.md'
+    '.cursorrules'
+    '.clinerules'
+    '.github/workflows/rayman-project-fast-gate.yml'
+  )
+
+  return @($targets | Where-Object { Test-Path -LiteralPath (Join-Path $WorkspaceRoot $_) -PathType Leaf })
+}
+
+function Test-CopySmokeManagedWriteAuditHasRecovery {
+  param(
+    [string]$AuditPath,
+    [string[]]$Targets = @(),
+    [string]$RunStartedAt = '',
+    [string]$RunFinishedAt = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($AuditPath) -or -not (Test-Path -LiteralPath $AuditPath -PathType Leaf)) {
+    return $false
+  }
+
+  $records = @()
+  try {
+    $audit = Get-Content -LiteralPath $AuditPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    if ($audit.PSObject.Properties['recent_writes']) {
+      $records = @($audit.recent_writes)
+    } elseif ($audit.PSObject.Properties['last_write'] -and $null -ne $audit.last_write) {
+      $records = @($audit.last_write)
+    }
+  } catch {
+    return $false
+  }
+
+  function ConvertTo-CopySmokeAuditTimestamp([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTimeOffset]) { return [DateTimeOffset]$Value }
+    if ($Value -is [DateTime]) { return [DateTimeOffset]$Value }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Value)) {
+      return [DateTimeOffset]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    return $null
+  }
+
+  $runStarted = $null
+  $runFinished = $null
+  try {
+    if (-not [string]::IsNullOrWhiteSpace([string]$RunStartedAt)) {
+      $runStarted = ConvertTo-CopySmokeAuditTimestamp -Value $RunStartedAt
+    }
+  } catch {
+    $runStarted = $null
+  }
+  try {
+    if (-not [string]::IsNullOrWhiteSpace([string]$RunFinishedAt)) {
+      $runFinished = ConvertTo-CopySmokeAuditTimestamp -Value $RunFinishedAt
+    }
+  } catch {
+    $runFinished = $null
+  }
+
+  $normalizedTargets = @($Targets | ForEach-Object { ([string]$_).Replace('\', '/').ToLowerInvariant() })
+  foreach ($record in @($records)) {
+    if ($null -eq $record) { continue }
+    if ($null -ne $runStarted -or $null -ne $runFinished) {
+      $recordUpdatedAt = $null
+      try {
+        if ($record.PSObject.Properties['updated_at'] -and -not [string]::IsNullOrWhiteSpace([string]$record.updated_at)) {
+          $recordUpdatedAt = ConvertTo-CopySmokeAuditTimestamp -Value $record.updated_at
+        }
+      } catch {
+        $recordUpdatedAt = $null
+      }
+      if ($null -eq $recordUpdatedAt) { continue }
+      if ($null -ne $runStarted -and $recordUpdatedAt -lt $runStarted) { continue }
+      if ($null -ne $runFinished -and $recordUpdatedAt -gt $runFinished) { continue }
+    }
+    $mode = [string]$record.mode
+    if ($mode -notin @('retry_success', 'in_place_fallback')) { continue }
+    $recordPath = ([string]$record.path).Replace('\', '/').ToLowerInvariant()
+    foreach ($target in @($normalizedTargets)) {
+      if (-not [string]::IsNullOrWhiteSpace($recordPath) -and $recordPath.EndsWith($target)) {
+        return $true
+      }
+    }
+  }
+
+  return $false
+}
+
+function Invoke-CopySmokeMappedWriteContract {
+  param(
+    [string]$TempRoot,
+    [string]$TempRayman,
+    [string]$SetupScript,
+    [string]$Scope,
+    [int]$TimeoutSeconds
+  )
+
+  $result = [ordered]@{
+    Ok = $false
+    Message = ''
+    FailureLog = ''
+    AuditPath = ''
+    Skipped = $false
+  }
+
+  if (-not (Test-CopySmokeHostIsWindows)) {
+    $result.Ok = $true
+    $result.Skipped = $true
+    $result.Message = 'windows-only mapped-write contract skipped'
+    return [pscustomobject]$result
+  }
+
+  $targets = @(Get-CopySmokeMappedWriteTargets -WorkspaceRoot $TempRoot)
+  if ($targets.Count -lt 4) {
+    $result.Message = ("mapped-write contract missing required targets: {0}" -f ($targets -join ', '))
+    return [pscustomobject]$result
+  }
+
+  $holds = New-Object 'System.Collections.Generic.List[object]'
+  try {
+    $managedWriteAuditRuntimePath = Get-CopySmokeManagedWriteAuditRuntimePath -TempRayman $TempRayman
+    if (Test-Path -LiteralPath $managedWriteAuditRuntimePath -PathType Leaf) {
+      Remove-Item -LiteralPath $managedWriteAuditRuntimePath -Force -ErrorAction SilentlyContinue
+    }
+    Set-CopySmokeManagedWriteTargetsDirty -WorkspaceRoot $TempRoot -Targets $targets
+
+    foreach ($target in @($targets)) {
+      $absolutePath = Join-Path $TempRoot $target
+      $holds.Add((Open-CopySmokeMappedFileHold -Path $absolutePath -SleepMs 5000)) | Out-Null
+    }
+
+    $mappedRun = Invoke-CopySmokeSetupRun -SetupScript $SetupScript -TempRoot $TempRoot -Scope $Scope -TimeoutSeconds $TimeoutSeconds -StrictMode $true -TrackedAssetsMode 'clear' -PassName '05-mapped-write-rerun-pass'
+    $mappedLog = if (-not [string]::IsNullOrWhiteSpace([string]$mappedRun.SetupLogArchivePath)) { [string]$mappedRun.SetupLogArchivePath } else { [string]$mappedRun.LatestSetupLog }
+    $result.FailureLog = $mappedLog
+    $result.AuditPath = if (-not [string]::IsNullOrWhiteSpace([string]$mappedRun.ManagedWriteAuditArchivePath)) { [string]$mappedRun.ManagedWriteAuditArchivePath } else { [string]$mappedRun.ManagedWriteAuditPath }
+
+    if ($mappedRun.ExitCode -ne 0) {
+      $result.Message = ("mapped write rerun failed（exit={0}）" -f $mappedRun.ExitCode)
+      return [pscustomobject]$result
+    }
+
+    foreach ($target in @($targets)) {
+      if (-not (Test-Path -LiteralPath (Join-Path $TempRoot $target) -PathType Leaf)) {
+        $result.Message = ("mapped write rerun missing required file: {0}" -f $target)
+        return [pscustomobject]$result
+      }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($mappedLog) -and (Select-String -LiteralPath $mappedLog -Pattern 'project workflow generation failed' -Quiet -ErrorAction SilentlyContinue)) {
+      $result.Message = 'mapped write rerun log still contains project workflow generation failed'
+      return [pscustomobject]$result
+    }
+
+    if (-not (Test-CopySmokeManagedWriteAuditHasRecovery -AuditPath $result.AuditPath -Targets $targets -RunStartedAt ([string]$mappedRun.StartedAt) -RunFinishedAt ([string]$mappedRun.FinishedAt))) {
+      $result.Message = 'managed write audit did not record retry_success or in_place_fallback for mapped targets'
+      return [pscustomobject]$result
+    }
+  } finally {
+    foreach ($hold in @($holds.ToArray())) {
+      Close-CopySmokeMappedFileHold -Hold $hold
+    }
+  }
+
+  $result.Ok = $true
+  $result.Message = 'mapped write rerun pass -> required files stable -> audit recorded retry/fallback recovery'
+  return [pscustomobject]$result
+}
+
 function Show-CopySmokeOpenHints([string]$TempRoot) {
   if ([string]::IsNullOrWhiteSpace($TempRoot)) { return }
   $quoted = '"' + $TempRoot.Replace('"','\"') + '"'
@@ -1075,6 +1400,9 @@ function Build-CopySmokeDebugSummary {
     }
     if ($setupRun.PSObject.Properties['VsCodeAuditArchivePath'] -and -not [string]::IsNullOrWhiteSpace([string]$setupRun.VsCodeAuditArchivePath)) {
       $lines.Add(("{0}_vscode_audit={1}" -f $prefix, [string]$setupRun.VsCodeAuditArchivePath)) | Out-Null
+    }
+    if ($setupRun.PSObject.Properties['ManagedWriteAuditArchivePath'] -and -not [string]::IsNullOrWhiteSpace([string]$setupRun.ManagedWriteAuditArchivePath)) {
+      $lines.Add(("{0}_managed_write_audit={1}" -f $prefix, [string]$setupRun.ManagedWriteAuditArchivePath)) | Out-Null
     }
   }
   if (@($VsCodeAuditCleanupPids).Count -gt 0) {
@@ -1455,6 +1783,20 @@ try {
         Ok ("project fast gate verified: {0}" -f [string]$projectFastGateContract.Message)
         if (-not [string]::IsNullOrWhiteSpace([string]$projectFastGateContract.ReportPath)) {
           Info ("project fast gate report: {0}" -f [string]$projectFastGateContract.ReportPath)
+        }
+        $mappedWriteContract = Invoke-CopySmokeMappedWriteContract -TempRoot $tmpRoot -TempRayman $tmpRayman -SetupScript $setupScript -Scope $Scope -TimeoutSeconds $TimeoutSeconds
+        if (-not [bool]$mappedWriteContract.Ok) {
+          $setupExitCode = 16
+          $setupException = ("copy-smoke mapped-write contract failed: {0}" -f [string]$mappedWriteContract.Message)
+          $setupExceptionLocation = 'copy_smoke_mapped_write'
+          if (-not [string]::IsNullOrWhiteSpace([string]$mappedWriteContract.FailureLog)) {
+            $setupExceptionStackTop = [string]$mappedWriteContract.FailureLog
+          }
+        } elseif (-not [bool]$mappedWriteContract.Skipped) {
+          Ok ("mapped write rerun verified: {0}" -f [string]$mappedWriteContract.Message)
+          if (-not [string]::IsNullOrWhiteSpace([string]$mappedWriteContract.AuditPath)) {
+            Info ("managed write audit: {0}" -f [string]$mappedWriteContract.AuditPath)
+          }
         }
       }
     }

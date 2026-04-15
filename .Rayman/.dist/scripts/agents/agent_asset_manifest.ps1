@@ -13,6 +13,38 @@ function New-RaymanManagedAssetContractItem {
   }
 }
 
+function New-RaymanManualCommandDocumentScopeItem {
+  param(
+    [string]$RelativePath,
+    [ValidateSet('live', 'historical')][string]$Mode = 'live',
+    [string[]]$RequiredTokens = @(),
+    [switch]$StripGeneratedCommandBlock
+  )
+
+  return [pscustomobject]@{
+    relative_path = [string]$RelativePath
+    mode = [string]$Mode
+    required_tokens = @($RequiredTokens | ForEach-Object { [string]$_ })
+    strip_generated_command_block = [bool]$StripGeneratedCommandBlock
+  }
+}
+
+function New-RaymanManualCommandVerificationRuleItem {
+  param(
+    [string]$MatchPattern,
+    [ValidateSet('cli_help', 'unit_backed', 'script_exists')][string]$VerificationProfile,
+    [string]$VerificationTarget = '',
+    [string]$Notes = ''
+  )
+
+  return [pscustomobject]@{
+    match_pattern = [string]$MatchPattern
+    verification_profile = [string]$VerificationProfile
+    verification_target = [string]$VerificationTarget
+    notes = [string]$Notes
+  }
+}
+
 function Get-RaymanReviewPromptManifest {
   return @(
     [pscustomobject]@{
@@ -36,13 +68,43 @@ function Get-RaymanReviewPromptManifest {
   )
 }
 
+function Get-RaymanManualCommandDocumentScopes {
+  return @(
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.Rayman/README.md' -StripGeneratedCommandBlock
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/copilot-instructions.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/agents/rayman-browser.agent.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/agents/rayman-winapp.agent.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/skills/browser-e2e-debug/SKILL.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/skills/winapp-debug/SKILL.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.github/skills/worker-remote-debug/SKILL.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.Rayman/release/FEATURE_INVENTORY.md'
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.Rayman/release/delivery-pack-v159-20260307.md' -Mode historical -RequiredTokens @('Historical archive:')
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.Rayman/release/public-release-notes-v159-20260307.md' -Mode historical -RequiredTokens @('Historical archive:')
+    New-RaymanManualCommandDocumentScopeItem -RelativePath '.Rayman/release/release-notes-v159-20260307.md' -Mode historical -RequiredTokens @('Historical archive:')
+  )
+}
+
+function Get-RaymanManualCommandVerificationRules {
+  return @(
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+copy-self-check\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/rayman_copy_self_check.Tests.ps1' -Notes 'copy-self-check command path'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+worker\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/manage_workers.Tests.ps1' -Notes 'worker management surface'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+workspace-install\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/workspace_install.Tests.ps1' -Notes 'workspace install flow'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+workspace-register\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/workspace_register.Tests.ps1' -Notes 'workspace register flow'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+watch-stop\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/watch_lifecycle.Tests.ps1' -Notes 'shared watcher stop flow'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+state-(?:save|list|resume)\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/state_sessions.Tests.ps1' -Notes 'state session flow'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+worktree-create\b' -VerificationProfile unit_backed -VerificationTarget '.Rayman/scripts/testing/pester/state_sessions.Tests.ps1' -Notes 'worktree session flow'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:rayman|rayman\.ps1)\s+(?:help|init|watch|fast-init|migrate|doctor|check|ensure-test-deps|ensure-playwright|ensure-winapp|pwa-test|winapp-test|winapp-inspect|linux-test|dispatch|codex|interaction-mode|agent-contract|agent-capabilities|sound-check|review-loop|first-pass-report|prompts|fast-gate|browser-gate|full-gate|release-gate|release|version|newversion|package-dist|clean|snapshot|metrics|trend|baseline-guard|telemetry-export|telemetry-index|telemetry-prune|deploy|cache-clear|test-fix|dist-sync|diagnostics-residual|context-update|health-check|one-click-health|proxy-health|ensure-wsl-deps|ensure-win-deps|single-repo-upgrade|single-repo-kpi|menu|transfer-export|transfer-import)\b' -VerificationProfile cli_help -Notes 'catalog-backed command'
+    New-RaymanManualCommandVerificationRuleItem -MatchPattern '^(?:\.?[/\\])?\.?Rayman[/\\]scripts[/\\][A-Za-z0-9_.\\/-]+\.ps1\b' -VerificationProfile script_exists -Notes 'internal script reference'
+  )
+}
+
 function Get-RaymanManagedAssetContracts {
   $contracts = New-Object System.Collections.Generic.List[object]
   $staticContracts = @(
     @{ path = 'AGENTS.md'; tokens = @('skills.auto.md', 'RELEASE_REQUIREMENTS.md') }
-    @{ path = '.github/copilot-instructions.md'; tokens = @('.github/instructions/general.instructions.md', '.github/model-policy.md', '.Rayman/CONTEXT.md', '.Rayman/context/skills.auto.md', '.Rayman/release/FEATURE_INVENTORY.md', '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md', '.codex/config.toml', 'OpenAI Docs MCP', 'Playwright MCP', 'Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts', 'gh auth setup-git') }
+    @{ path = '.github/copilot-instructions.md'; tokens = @('.github/instructions/general.instructions.md', '.github/model-policy.md', '.Rayman/CONTEXT.md', '.Rayman/context/skills.auto.md', '.Rayman/release/FEATURE_INVENTORY.md', '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md', '.codex/config.toml', 'OpenAI Docs MCP', 'Playwright MCP', 'Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts', 'gh auth setup-git', '明确验收标准', 'Codex Plan Mode') }
     @{ path = '.github/model-policy.md'; tokens = @('Rayman Model Policy', 'Auto model selection', 'repository-managed', 'hosted / policy-dependent', 'OpenAI Docs MCP') }
-    @{ path = '.github/instructions/general.instructions.md'; tokens = @('description', 'Rayman General Instructions', '.codex/config.toml', '.github/model-policy.md', '.Rayman/release/FEATURE_INVENTORY.md', '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md', 'Agent capabilities', 'Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts') }
+    @{ path = '.github/instructions/general.instructions.md'; tokens = @('description', 'Rayman General Instructions', '.codex/config.toml', '.github/model-policy.md', '.Rayman/release/FEATURE_INVENTORY.md', '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md', 'Agent capabilities', 'Rayman WinApp MCP', '.github/agents', '.github/skills', '.github/prompts', 'acceptance criteria', 'Codex Plan Mode') }
     @{ path = '.github/instructions/backend.instructions.md'; tokens = @('applyTo', '**/*.ps1') }
     @{ path = '.github/instructions/frontend.instructions.md'; tokens = @('applyTo', '**/*.{ts,tsx,js,jsx,css,scss,html}') }
     @{ path = '.github/agents/rayman-explorer.agent.md'; tokens = @('name: rayman-explorer', 'description:') }
@@ -68,6 +130,7 @@ function Get-RaymanManagedAssetContracts {
     @{ path = '.Rayman/scripts/codex/manage_accounts.ps1'; tokens = @('rayman codex', 'Invoke-ActionLogin', 'Invoke-ActionSwitch', 'Invoke-ActionRun') }
     @{ path = '.Rayman/config/agent_capabilities.json'; tokens = @('rayman.agent_capabilities.v1', '"openai_docs"', '"web_auto_test"', '"winapp_auto_test"') }
     @{ path = '.Rayman/scripts/agents/ensure_agent_capabilities.ps1'; tokens = @('RAYMAN_AGENT_CAPABILITIES_ENABLED', '.codex', 'agent_capabilities.report.json', 'playwright.ready.windows.json', 'winapp.ready.windows.json', 'raymanWinApp', 'project_doc_fallback_filenames', 'Render-RaymanManagedProfilesBlock', 'rayman_docs', 'codex_runtime_host', 'path_normalization_status', 'multi_agent_trust_assumption') }
+    @{ path = '.Rayman/scripts/agents/validate_manual_command_contracts.ps1'; tokens = @('Get-RaymanManualCommandDocumentScopes', 'Get-RaymanManualCommandVerificationRules', 'manual_command_contracts') }
     @{ path = '.Rayman/config/model_routing.json'; tokens = @('review.initial.prompt.md', 'review.counter.prompt.md', 'review.final.prompt.md') }
     @{ path = '.Rayman/config/codex_agents/rayman_explorer.toml'; tokens = @('name = "rayman_explorer"', 'description =', 'model = "gpt-5.4-mini"') }
     @{ path = '.Rayman/config/codex_agents/rayman_reviewer.toml'; tokens = @('name = "rayman_reviewer"', 'description =', 'model = "gpt-5.4"') }
@@ -75,7 +138,7 @@ function Get-RaymanManagedAssetContracts {
     @{ path = '.Rayman/config/codex_agents/rayman_browser_debugger.toml'; tokens = @('name = "rayman_browser_debugger"', 'description =', 'model = "gpt-5.4"', 'mcp_servers.playwright.enabled = true', 'browser-e2e-debug') }
     @{ path = '.Rayman/config/codex_agents/rayman_winapp_debugger.toml'; tokens = @('name = "rayman_winapp_debugger"', 'description =', 'model = "gpt-5.4"', 'mcp_servers.raymanWinApp.enabled = true', 'winapp-debug') }
     @{ path = '.Rayman/config/codex_agents/rayman_worker.toml'; tokens = @('name = "rayman_worker"', 'description =', 'model = "gpt-5.3-codex"', 'sandbox_mode = "workspace-write"') }
-    @{ path = '.Rayman/README.md'; tokens = @('rayman.ps1 context-update', 'rayman.ps1 agent-contract', 'rayman agent-capabilities', 'rayman.ps1 worker', '.codex/config.toml', '.Rayman/release/FEATURE_INVENTORY.md', '.github/model-policy.md') }
+    @{ path = '.Rayman/README.md'; tokens = @('rayman.ps1 context-update', 'rayman.ps1 agent-contract', 'rayman.ps1 agent-capabilities', 'rayman.ps1 worker', '.codex/config.toml', '.Rayman/release/FEATURE_INVENTORY.md', '.github/model-policy.md', '明确验收标准', 'Codex Plan Mode') }
     @{ path = '.Rayman/release/FEATURE_INVENTORY.md'; tokens = @('Rayman Feature Inventory', 'Entrypoints And Setup', 'Watch / Alerts / Lifecycle', 'Agent / Capability / Prompt Governance', 'Browser / PWA / WinApp', 'Release / CI / Security', 'State / Transfer / Docs / Telemetry') }
     @{ path = '.Rayman/release/ENHANCEMENT_ROADMAP_2026.md'; tokens = @('Rayman Enhancement Roadmap 2026', 'P0', 'P1', 'P2', 'Codex SDK', 'artifact attestations', 'Appium Windows Driver') }
     @{ path = '.Rayman/rayman.ps1'; tokens = @('"context-update"', '"agent-contract"', '"agent-capabilities"', '"codex"', '"worker"', '"ensure-winapp"', '"winapp-test"', '"winapp-inspect"') }

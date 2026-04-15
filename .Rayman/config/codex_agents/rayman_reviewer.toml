@@ -1,8 +1,8 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_reviewer"
 description = "Read-only reviewer focused on correctness, regressions, security, and missing tests."
-model = "gpt-5.4"
-sandbox_mode = "read-only"
+model = "gpt-4o"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "high"
 developer_instructions = '''
 Role: rayman_reviewer

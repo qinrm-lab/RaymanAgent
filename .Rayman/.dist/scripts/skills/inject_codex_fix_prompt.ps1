@@ -5,6 +5,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
+  . $commonPath
+}
+
 function Get-RaymanPreferredNewLine {
   param([string]$Text)
 
@@ -69,12 +74,29 @@ if ([string]::IsNullOrWhiteSpace([string]$SkillsSelected) -and (Test-Path -Liter
   } catch {}
 }
 $SkillsSelectedText = if ($SkillsSelected) { $SkillsSelected } else { "（未生成）" }
+$interactionMode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionMode -WorkspaceRoot $Root
+} else {
+  'detailed'
+}
+$interactionLabel = if (Get-Command Get-RaymanInteractionModeLabel -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionModeLabel -Mode $interactionMode
+} else {
+  '详细'
+}
+$interactionDescription = if (Get-Command Get-RaymanInteractionModeDescription -ErrorAction SilentlyContinue) {
+  Get-RaymanInteractionModeDescription -Mode $interactionMode
+} else {
+  '只要目标不明确、存在明显多路径或不同方案结果差异明显，就先给 plan、解释选项与结果，并写出明确验收标准。'
+}
 
-$Begin = "<!-- RAYMAN:SKILLS:BEGIN -->"
-$End   = "<!-- RAYMAN:SKILLS:END -->"
+$skillsBegin = "<!-- RAYMAN:SKILLS:BEGIN -->"
+$skillsEnd   = "<!-- RAYMAN:SKILLS:END -->"
+$interactionBegin = "<!-- RAYMAN:INTERACTION:BEGIN -->"
+$interactionEnd = "<!-- RAYMAN:INTERACTION:END -->"
 
-$Header = @"
-$Begin
+$skillsHeader = @"
+$skillsBegin
 # Skills（自动注入）
 
 - 推断结果：$SkillsSelectedText
@@ -84,7 +106,23 @@ $Begin
 - 开始工作前，先阅读并遵守上面 skills 建议。
 - 如果建议与实际冲突，以可复现/可验证为准，并在输出中解释原因。
 
-$End
+$skillsEnd
+"@
+
+$interactionHeader = @"
+$interactionBegin
+# 交互偏好（自动注入）
+
+- 当前模式：$interactionLabel（$interactionMode）
+- 当前规则：$interactionDescription
+- 硬门槛：只要提示不足够明确，且歧义会影响目标、范围、实现路径、风险、测试期望、目标工作区或回滚方式，就必须先给选项并写出明确验收标准；该规则不依赖 Codex Plan Mode。
+- 详细：只要目标不明确、存在明显多路径或不同方案结果差异明显，就先给 plan、解释选项与结果，并写出明确验收标准。
+- 一般：只在会明显改变结果、范围、实现路径、风险、测试期望或返工成本的歧义上先停下来确认；一旦停下，同样必须给出选项和验收标准；次要细节可带默认假设继续。
+- 简单：只在高风险、不可逆、跨工作区、发布/架构级或明显可能走错方向时先停下来确认；一旦停下，同样必须给出选项和验收标准；其余按推荐默认继续并显式写出假设。
+- 硬门禁：跨工作区 target 选择、policy block、release gate、危险操作仍然必须停下，不受模式影响。
+- 注意：full-auto 代表改动已审批，不代表可以替用户决定需求或在多方案里自己拍板。
+
+$interactionEnd
 "@
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Rayman "runtime") | Out-Null
@@ -100,14 +138,24 @@ if (!(Test-Path $PromptFile)) {
 # backup (best effort)
 try { Copy-Item -Force $PromptFile (Join-Path $Rayman "runtime\codex_fix_prompt.bak.txt") } catch {}
 
+function Set-RaymanManagedPromptBlock {
+  param(
+    [string]$Text,
+    [string]$BeginMarker,
+    [string]$EndMarker,
+    [string]$BlockText
+  )
+
+  if ($Text.Contains($BeginMarker) -and $Text.Contains($EndMarker)) {
+    $pattern = [regex]::Escape($BeginMarker) + ".*?" + [regex]::Escape($EndMarker)
+    return [regex]::Replace($Text, $pattern, $BlockText, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+  }
+
+  return ($BlockText + "`r`n`r`n" + $Text)
+}
+
 $Text = Get-Content -Raw -Encoding UTF8 $PromptFile
 $newLine = Get-RaymanPreferredNewLine -Text $Text
-
-if ($Text.Contains($Begin) -and $Text.Contains($End)) {
-  $Pattern = [regex]::Escape($Begin) + ".*?" + [regex]::Escape($End)
-  $New = [regex]::Replace($Text, $Pattern, $Header, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-  $null = Set-RaymanUtf8BomTextIfChanged -Path $PromptFile -Text $New -NewLine $newLine
-} else {
-  $New = $Header + "`r`n`r`n" + $Text
-  $null = Set-RaymanUtf8BomTextIfChanged -Path $PromptFile -Text $New -NewLine $newLine
-}
+$newText = Set-RaymanManagedPromptBlock -Text $Text -BeginMarker $interactionBegin -EndMarker $interactionEnd -BlockText $interactionHeader
+$newText = Set-RaymanManagedPromptBlock -Text $newText -BeginMarker $skillsBegin -EndMarker $skillsEnd -BlockText $skillsHeader
+$null = Set-RaymanUtf8BomTextIfChanged -Path $PromptFile -Text $newText -NewLine $newLine

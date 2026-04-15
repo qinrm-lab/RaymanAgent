@@ -7,6 +7,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$workspaceCommonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
+if (Test-Path -LiteralPath $workspaceCommonPath -PathType Leaf) {
+    . $workspaceCommonPath
+}
+
+$dotNetWorkspaceProjectsPath = Join-Path $PSScriptRoot 'dotnet_workspace_projects.ps1'
+if (Test-Path -LiteralPath $dotNetWorkspaceProjectsPath -PathType Leaf) {
+    . $dotNetWorkspaceProjectsPath -NoMain
+}
+
 function Get-RaymanWorkspacePlatformTextValue {
     param(
         [object]$Object,
@@ -28,7 +38,7 @@ function Get-RaymanWorkspacePlatformTargetFrameworksFromText {
     param([string]$ProjectText)
 
     $frameworks = New-Object 'System.Collections.Generic.List[string]'
-    if ([string]::IsNullOrWhiteSpace($ProjectText)) {
+    if ([string]::IsNullOrWhiteSpace([string]$ProjectText)) {
         return @()
     }
 
@@ -36,7 +46,7 @@ function Get-RaymanWorkspacePlatformTargetFrameworksFromText {
         $raw = [string]$match.Groups[1].Value
         foreach ($part in ($raw -split ';')) {
             $token = [string]$part
-            if ([string]::IsNullOrWhiteSpace($token)) { continue }
+            if ([string]::IsNullOrWhiteSpace([string]$token)) { continue }
             $token = $token.Trim()
             if ($token -match '\$\(') { continue }
             if (-not $frameworks.Contains($token)) {
@@ -103,21 +113,52 @@ function Get-RaymanWorkspacePlatformProjectSignals {
     }
 }
 
+function Get-RaymanWorkspacePlatformDotNetProjectPaths {
+    param([string]$WorkspaceRoot)
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $workspaceKind = if (Get-Command Get-RaymanWorkspaceKind -ErrorAction SilentlyContinue) {
+        [string](Get-RaymanWorkspaceKind -WorkspaceRoot $resolvedRoot)
+    } else {
+        'external'
+    }
+    [string[]]$solutionPaths = @()
+    if (Get-Command Get-RaymanDotNetRootSolutionPaths -ErrorAction SilentlyContinue) {
+        $solutionPaths = @(
+            Get-RaymanDotNetRootSolutionPaths -WorkspaceRoot $resolvedRoot |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                ForEach-Object { [string]$_ }
+        )
+    }
+
+    if ($workspaceKind -eq 'source' -and @($solutionPaths).Count -gt 0 -and (Get-Command Get-RaymanDotNetSolutionProjectRelativePaths -ErrorAction SilentlyContinue) -and (Get-Command Resolve-RaymanDotNetSolutionProjectPath -ErrorAction SilentlyContinue)) {
+        foreach ($solutionPath in @($solutionPaths)) {
+            $resolvedProjectPaths = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($relativePath in @(Get-RaymanDotNetSolutionProjectRelativePaths -SolutionPath $solutionPath)) {
+                $projectPath = Resolve-RaymanDotNetSolutionProjectPath -ProjectRelativePath $relativePath -WorkspaceRoot $resolvedRoot -ExecutionRoot $resolvedRoot
+                if ([string]::IsNullOrWhiteSpace([string]$projectPath)) { continue }
+                if (-not $resolvedProjectPaths.Contains([string]$projectPath)) {
+                    $resolvedProjectPaths.Add([string]$projectPath) | Out-Null
+                }
+            }
+            if ($resolvedProjectPaths.Count -gt 0) {
+                return @($resolvedProjectPaths.ToArray())
+            }
+        }
+    }
+
+    if (Get-Command Get-RaymanDotNetProjectFiles -ErrorAction SilentlyContinue) {
+        return @(Get-RaymanDotNetProjectFiles -Root $resolvedRoot -ProjectExtensions @('.csproj', '.fsproj', '.vbproj') -ExcludedSegments @('.git', '.rayman', '.venv', 'node_modules', 'bin', 'obj'))
+    }
+
+    return @()
+}
+
 function Get-RaymanWorkspacePlatformProfile {
     param([string]$WorkspaceRoot)
 
     $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-    $excludeSegs = @('\.git\', '\.Rayman\', '\.venv\', '\node_modules\', '\bin\', '\obj\')
-    function Is-ExcludedPlatformPath([string]$FullPath) {
-        $p = $FullPath.Replace('/', '\')
-        foreach ($seg in $excludeSegs) {
-            if ($p -like ('*' + $seg + '*')) { return $true }
-        }
-        return $false
-    }
-
-    $projectFiles = @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -File -Include *.sln,*.slnx,*.csproj,*.fsproj,*.vbproj -ErrorAction SilentlyContinue |
-        Where-Object { -not (Is-ExcludedPlatformPath -FullPath $_.FullName) })
+    $projectFiles = @(Get-RaymanWorkspacePlatformDotNetProjectPaths -WorkspaceRoot $resolvedRoot)
 
     $dotNetProjectPaths = New-Object 'System.Collections.Generic.List[string]'
     $targetFrameworks = New-Object 'System.Collections.Generic.List[string]'
@@ -125,28 +166,26 @@ function Get-RaymanWorkspacePlatformProfile {
     $windowsProjectPaths = New-Object 'System.Collections.Generic.List[string]'
     $mauiProjects = New-Object 'System.Collections.Generic.List[object]'
 
-    $needsDotNet = $false
+    $needsDotNet = ($projectFiles.Count -gt 0)
     $hasWindowsTargeting = $false
     $hasWindowsDesktopUi = $false
     $requiresWindowsHost = $false
     $windowsOnlyDesktopProject = $false
 
-    foreach ($file in $projectFiles) {
-        $needsDotNet = $true
-        if (-not $dotNetProjectPaths.Contains($file.FullName)) {
-            $dotNetProjectPaths.Add($file.FullName) | Out-Null
+    foreach ($projectPath in @($projectFiles)) {
+        if ([string]::IsNullOrWhiteSpace([string]$projectPath)) { continue }
+        if (-not $dotNetProjectPaths.Contains([string]$projectPath)) {
+            $dotNetProjectPaths.Add([string]$projectPath) | Out-Null
         }
 
         $raw = ''
-        if ($file.Extension -in @('.csproj', '.fsproj', '.vbproj')) {
-            try {
-                $raw = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
-            } catch {
-                $raw = ''
-            }
+        try {
+            $raw = Get-Content -LiteralPath $projectPath -Raw -Encoding UTF8
+        } catch {
+            $raw = ''
         }
 
-        $signals = Get-RaymanWorkspacePlatformProjectSignals -ProjectPath $file.FullName -ProjectText $raw
+        $signals = Get-RaymanWorkspacePlatformProjectSignals -ProjectPath $projectPath -ProjectText $raw
         $projects.Add($signals) | Out-Null
 
         foreach ($framework in @($signals.target_frameworks)) {
@@ -158,8 +197,8 @@ function Get-RaymanWorkspacePlatformProfile {
 
         if ([bool]$signals.has_windows_target -or [bool]$signals.has_windows_desktop_ui) {
             $hasWindowsTargeting = $true
-            if (-not $windowsProjectPaths.Contains($file.FullName)) {
-                $windowsProjectPaths.Add($file.FullName) | Out-Null
+            if (-not $windowsProjectPaths.Contains([string]$projectPath)) {
+                $windowsProjectPaths.Add([string]$projectPath) | Out-Null
             }
         }
         if ([bool]$signals.has_windows_desktop_ui) {

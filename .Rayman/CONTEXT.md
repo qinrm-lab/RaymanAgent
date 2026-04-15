@@ -7,7 +7,7 @@
 ## Workspace Snapshot
 
 - Root: `.`
-- Top-level entries: .gitattributes, .github, .gitignore, .Rayman, .RaymanAgent, .SolutionName, AGENTS.md
+- Top-level entries: .gitattributes, .github, .gitignore, .Rayman, .RaymanAgent, .SolutionName, AGENTS.md, RaymanAgent.slnx
 
 ## Governance & Agent Assets
 
@@ -61,6 +61,7 @@
 - watch
 - windows
 - worker
+- workspace
 
 ## Agent Config
 
@@ -79,6 +80,14 @@
 - File: `.Rayman\context\skills.auto.md`
 - Summary: # Skills（自动）
 
+## Collaboration Preference
+
+- Mode: `detailed` (详细)
+- Summary: 只要目标不明确、存在明显多路径或不同方案结果差异明显，就先给 plan、解释选项与结果，并写出明确验收标准。
+- Ambiguity floor: if the prompt is not clear enough and the ambiguity can affect goal, scope, implementation path, risk, test expectations, target workspace, or rollback, Rayman must provide concrete options plus explicit acceptance criteria before proceeding, even outside Codex Plan Mode.
+- Hard gates: cross-workspace target selection, policy block, release gate, and dangerous operations still require a stop.
+- Post-command hygiene: Rayman auto-cleans safe transient residue after each CLI command, auto-fixes tracked Rayman generated assets unless `RAYMAN_ALLOW_TRACKED_RAYMAN_ASSETS=1`, and only warns when non-Rayman dirty tree still remains.
+
 ## Agent Capabilities
 
 - Report: `.Rayman\runtime\agent_capabilities.report.md`
@@ -93,6 +102,8 @@
 - `[ all ]` `rayman dispatch`：Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`：Manage Rayman-scoped Codex accounts, switching, and CLI execution.
 - `[ windows-only ]` `rayman.ps1 worker`：Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
+- `[ windows-only ]` `rayman.ps1 workspace-install`：Install distributable .Rayman into a local workspace, run setup, and default self-check.
+- `[ windows-only ]` `rayman.ps1 workspace-register`：Register this RaymanAgent source workspace and install the rayman-here bootstrap launcher.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`：Sync or inspect Rayman-managed Codex capabilities.
 - `[ pwsh-only ]` `rayman.ps1 review-loop`：Run the dispatch plus test-fix review loop.
 - `[ pwsh-only ]` `rayman.ps1 release-gate`：Run release readiness checks and reports.

@@ -15,14 +15,17 @@ Describe 'skills prompt injection' {
 
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_skills_prompt_' + [Guid]::NewGuid().ToString('N'))
     $previousSkillsSelected = [Environment]::GetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', 'Process')
+    $previousInteractionMode = [Environment]::GetEnvironmentVariable('RAYMAN_INTERACTION_MODE', 'Process')
     try {
       New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\scripts\skills') | Out-Null
       New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\templates') | Out-Null
 
+      Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.Rayman\common.ps1') -Destination (Join-Path $root '.Rayman\common.ps1')
       Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\skills\inject_codex_fix_prompt.ps1') -Destination (Join-Path $root '.Rayman\scripts\skills\inject_codex_fix_prompt.ps1')
       Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.Rayman\templates\codex_fix_prompt.base.txt') -Destination (Join-Path $root '.Rayman\templates\codex_fix_prompt.base.txt')
 
       [Environment]::SetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', 'docs,spreadsheets', 'Process')
+      [Environment]::SetEnvironmentVariable('RAYMAN_INTERACTION_MODE', $null, 'Process')
 
       & $psHost.Source -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root '.Rayman\scripts\skills\inject_codex_fix_prompt.ps1') | Out-Null
       $first = Get-Content -LiteralPath (Join-Path $root '.Rayman\codex_fix_prompt.txt') -Raw -Encoding UTF8
@@ -34,8 +37,13 @@ Describe 'skills prompt injection' {
       $second | Should -Not -Match '时间：'
       $second | Should -Match '推断结果：docs,spreadsheets'
       $second | Should -Match ([regex]::Escape('详细建议：.Rayman/context/skills.auto.md'))
+      $second | Should -Match '当前模式：详细（detailed）'
+      $second | Should -Match '明确验收标准'
+      $second | Should -Match 'Codex Plan Mode'
+      $second | Should -Match 'full-auto 代表改动已审批'
     } finally {
       [Environment]::SetEnvironmentVariable('RAYMAN_SKILLS_SELECTED', $previousSkillsSelected, 'Process')
+      [Environment]::SetEnvironmentVariable('RAYMAN_INTERACTION_MODE', $previousInteractionMode, 'Process')
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

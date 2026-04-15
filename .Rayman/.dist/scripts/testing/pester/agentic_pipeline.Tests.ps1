@@ -22,6 +22,7 @@ function script:New-AgenticWorkspace {
   Set-Content -LiteralPath (Join-Path $Root '.SolutionName') -Encoding UTF8 -Value 'RaymanAgent'
   Set-Content -LiteralPath (Join-Path $Root '.Rayman\RELEASE_REQUIREMENTS.md') -Encoding UTF8 -Value '# release'
   foreach ($rel in @(
+    '.Rayman\common.ps1',
     '.Rayman\config\agent_router.json',
     '.Rayman\config\agent_policy.json',
     '.Rayman\config\review_loop.json',
@@ -69,7 +70,8 @@ Describe 'agentic pipeline helpers' {
       'RAYMAN_AGENT_PIPELINE',
       'RAYMAN_AGENT_DOC_GATE',
       'RAYMAN_AGENT_OPENAI_OPTIONAL',
-      'RAYMAN_SYSTEM_SLIM_ENABLED'
+      'RAYMAN_SYSTEM_SLIM_ENABLED',
+      'RAYMAN_INTERACTION_MODE'
     )) {
       $script:agenticEnvBackup[$name] = [Environment]::GetEnvironmentVariable($name)
       [Environment]::SetEnvironmentVariable($name, $null)
@@ -313,11 +315,14 @@ Describe 'agentic pipeline helpers' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_agentic_dispatch_' + [Guid]::NewGuid().ToString('N'))
     try {
       New-AgenticWorkspace -Root $root -IncludeManagedDocLinks
+      $dispatchScript = Join-Path $root '.Rayman\scripts\agents\dispatch.ps1'
 
-      & $script:DispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs prompt review' -PromptKey 'review.initial.prompt.md' -DryRun | Out-Null
+      & $dispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs prompt review' -PromptKey 'review.initial.prompt.md' -DryRun | Out-Null
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_runs\last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
       $summary.agentic_execution.backend_order[0] | Should -Be 'codex'
+      $summary.interaction_mode | Should -Be 'detailed'
+      $summary.codex_capability_preamble | Should -Match '\[RaymanInteractionMode\]'
       @($summary.agentic_execution.optional_requests | ForEach-Object { $_.name }) | Should -Contain 'background_mode'
       @($summary.agentic_execution.optional_requests | ForEach-Object { $_.name }) | Should -Contain 'prompt_optimizer'
       @($summary.agentic_execution.optional_requests | Where-Object { $_.name -eq 'background_mode' } | Select-Object -First 1).support_mode | Should -Be 'disabled_until_supported'
@@ -331,9 +336,10 @@ Describe 'agentic pipeline helpers' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_agentic_dispatch_doc_off_' + [Guid]::NewGuid().ToString('N'))
     try {
       New-AgenticWorkspace -Root $root
+      $dispatchScript = Join-Path $root '.Rayman\scripts\agents\dispatch.ps1'
       [Environment]::SetEnvironmentVariable('RAYMAN_AGENT_DOC_GATE', '0')
 
-      & $script:DispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs prompt review' -DryRun | Out-Null
+      & $dispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs prompt review' -DryRun | Out-Null
       $LASTEXITCODE | Should -Be 0
 
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_runs\last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -351,6 +357,7 @@ Describe 'agentic pipeline helpers' {
     $stubLog = Join-Path $root 'rayman.stub.log'
     try {
       New-AgenticWorkspace -Root $root -IncludeManagedDocLinks
+      $dispatchScript = Join-Path $root '.Rayman\scripts\agents\dispatch.ps1'
       New-Item -ItemType Directory -Force -Path $binDir | Out-Null
       Set-Content -LiteralPath (Join-Path $binDir 'rayman.cmd') -Encoding ASCII -Value @'
 @echo off
@@ -361,7 +368,7 @@ exit /b 0
       [Environment]::SetEnvironmentVariable('RAYMAN_STUB_LOG', $stubLog)
       [Environment]::SetEnvironmentVariable('PATH', ('{0};{1};{2}' -f $binDir, $env:SystemRoot, (Join-Path $env:SystemRoot 'System32')))
 
-      & $script:DispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'browser ui e2e review' | Out-Null
+      & $dispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'browser ui e2e review' | Out-Null
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_runs\last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
       $stubLines = @(Get-Content -LiteralPath $stubLog -Encoding UTF8)
 

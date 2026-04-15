@@ -39,7 +39,7 @@ rayman_should_emit_done_alert() {
   shift || true
 
   case "${command_name}" in
-    ""|help|-h|--help|copy-self-check|self-check|copy-check) return 1 ;;
+    ""|help|-h|--help|copy-self-check|codex) return 1 ;;
   esac
 
   if rayman_bool_enabled "${CI:-}" 0; then
@@ -121,7 +121,7 @@ orig_args=("$@")
 rayman_show_help() {
   local catalog="./.Rayman/config/command_catalog.tsv"
   cat <<'TXT'
-Rayman CLI (v161)
+Rayman CLI (v165)
 
 Usage:
   ./.Rayman/rayman <command>
@@ -228,7 +228,7 @@ case "$cmd" in
     fi
     ;;
 
-  copy-self-check|self-check|copy-check)
+  copy-self-check)
     exec bash "$0" doctor --copy-smoke "$@"
     ;;
 

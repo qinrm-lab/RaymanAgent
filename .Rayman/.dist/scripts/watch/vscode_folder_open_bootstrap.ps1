@@ -7,11 +7,29 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$savedVscodeBootstrapCliState = @{
+  WorkspaceRoot = $WorkspaceRoot
+  VscodeOwnerPid = $VscodeOwnerPid
+  NoMain = [bool]$NoMain
+}
+
 $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
   throw "common.ps1 not found: $commonPath"
 }
 . $commonPath
+$legacyCleanupScript = Join-Path $PSScriptRoot '..\utils\legacy_rayman_cleanup.ps1'
+if (Test-Path -LiteralPath $legacyCleanupScript -PathType Leaf) {
+  . $legacyCleanupScript -NoMain
+}
+$workspaceInstallScript = Join-Path $PSScriptRoot '..\workspace\install_workspace.ps1'
+if (Test-Path -LiteralPath $workspaceInstallScript -PathType Leaf) {
+  . $workspaceInstallScript -NoMain
+}
+
+$WorkspaceRoot = [string]$savedVscodeBootstrapCliState.WorkspaceRoot
+$VscodeOwnerPid = [string]$savedVscodeBootstrapCliState.VscodeOwnerPid
+$NoMain = [bool]$savedVscodeBootstrapCliState.NoMain
 
 function Read-JsonOrNull([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -93,6 +111,12 @@ function Test-ContextRefreshFingerprintPath {
   $relative = $pathNorm.Substring($rootNorm.Length).TrimStart('/')
   $relativeLower = $relative.ToLowerInvariant()
   $segments = @($relativeLower -split '/' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+
+  if (Get-Command Test-RaymanLegacyWorkspaceResidueRelativePath -ErrorAction SilentlyContinue) {
+    if (Test-RaymanLegacyWorkspaceResidueRelativePath -RelativePath $relativeLower) {
+      return $false
+    }
+  }
 
   foreach ($segment in $segments) {
     if ($segment -in @('.tmp', '.temp')) { return $false }
@@ -284,6 +308,30 @@ $script:HasStepFailures = $false
 $runId = [Guid]::NewGuid().ToString('n')
 $startedAt = Get-Date
 $effectiveOwnerPid = if ([string]::IsNullOrWhiteSpace($VscodeOwnerPid)) { [string]$PID } else { [string]$VscodeOwnerPid }
+$activeAutoUpgradeLock = $null
+if (Get-Command Get-RaymanWorkspaceInstallActiveAutoUpgradeLock -ErrorAction SilentlyContinue) {
+  try {
+    $activeAutoUpgradeLock = Get-RaymanWorkspaceInstallActiveAutoUpgradeLock -WorkspaceRoot $WorkspaceRoot
+  } catch {}
+}
+
+if ($null -ne $activeAutoUpgradeLock) {
+  Add-StepResult -Name 'wait-for-auto-upgrade' -Status 'skipped' -Reason 'auto-upgrade-in-progress' -DurationMs 0 -CacheHit $true -Mandatory $true
+  Write-Json -Path $reportPath -Value ([ordered]@{
+    schema = 'rayman.vscode_bootstrap.v1'
+    run_id = $runId
+    workspace_root = $WorkspaceRoot
+    profile = $script:BootstrapProfile
+    owner_pid = $effectiveOwnerPid
+    started_at = $startedAt.ToString('o')
+    finished_at = (Get-Date).ToString('o')
+    duration_ms = 0
+    auto_upgrade_lock = $activeAutoUpgradeLock
+    steps = @($script:StepResults.ToArray())
+  })
+  Write-Info '[vscode-bootstrap] skipped because Rayman auto-upgrade is in progress.'
+  exit 0
+}
 
 $existingSession = Read-JsonOrNull -Path $sessionPath
 if ($null -ne $existingSession) {

@@ -86,6 +86,19 @@ if (-not $SkipContextRefresh) {
 Test-NonEmptyFile -RelativePath '.Rayman/CONTEXT.md' -RequiredTokens @('## Workspace Snapshot', '## Auto Skills', '## Agent Capabilities')
 Test-NonEmptyFile -RelativePath '.Rayman/context/skills.auto.md' -RequiredTokens @('选择结果', '## 你应当使用的能力/工具')
 
+$manualCommandValidator = Join-Path $raymanRoot 'scripts\agents\validate_manual_command_contracts.ps1'
+if (-not (Test-Path -LiteralPath $manualCommandValidator -PathType Leaf)) {
+  Add-Check -Name 'manual-command-contracts' -Passed $false -Detail ("missing validator: {0}" -f $manualCommandValidator)
+} else {
+  try {
+    $validatorJson = & $manualCommandValidator -WorkspaceRoot $resolvedWorkspaceRoot -AsJson
+    $validatorResult = ($validatorJson | ForEach-Object { [string]$_ }) -join [Environment]::NewLine | ConvertFrom-Json -ErrorAction Stop
+    Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail ("checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count)
+  } catch {
+    Add-Check -Name 'manual-command-contracts' -Passed $false -Detail $_.Exception.Message
+  }
+}
+
 $checkItems = [object[]]$checks.ToArray()
 $result = [pscustomobject]@{
   workspaceRoot = $resolvedWorkspaceRoot

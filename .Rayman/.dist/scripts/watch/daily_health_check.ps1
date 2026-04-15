@@ -12,6 +12,10 @@ $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
+$sessionCommonPath = Join-Path $PSScriptRoot '..\state\session_common.ps1'
+if (Test-Path -LiteralPath $sessionCommonPath -PathType Leaf) {
+  . $sessionCommonPath
+}
 
 function Info([string]$Message) { Write-Host ("[daily-health] {0}" -f $Message) -ForegroundColor Cyan }
 function Warn([string]$Message) { Write-Host ("[daily-health] {0}" -f $Message) -ForegroundColor Yellow }
@@ -54,11 +58,17 @@ function Get-DailyHealthFingerprint {
   foreach ($candidate in @(
     (Join-Path $Root 'AGENTS.md'),
     (Join-Path $Root '.Rayman\scripts\watch\daily_health_check.ps1'),
-    (Join-Path $Root '.Rayman\scripts\utils\generate_context.ps1'),
-    (Join-Path $Root '.Rayman\state\pending_task.md')
+    (Join-Path $Root '.Rayman\scripts\utils\generate_context.ps1')
   )) {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) {
       $fingerprintPaths.Add($candidate) | Out-Null
+    }
+  }
+
+  $sessionRoot = Join-Path $Root '.Rayman\state\sessions'
+  if (Test-Path -LiteralPath $sessionRoot -PathType Container) {
+    foreach ($manifest in @(Get-ChildItem -LiteralPath $sessionRoot -Recurse -File -Filter 'session.json' -ErrorAction SilentlyContinue)) {
+      $fingerprintPaths.Add([string]$manifest.FullName) | Out-Null
     }
   }
 
@@ -222,6 +232,10 @@ $summary.Add(('- generated_at: {0}' -f (Get-Date).ToString('o'))) | Out-Null
 $summary.Add(('- mode: {0}' -f $modeKey)) | Out-Null
 $summary.Add(('- git: {0}' -f $gitSummary)) | Out-Null
 $summary.Add(('- todo_fixme_hits: {0}' -f $todoMatches.Count)) | Out-Null
+if (Get-Command Get-RaymanSessionRecords -ErrorAction SilentlyContinue) {
+  $pausedSessions = @(Get-RaymanSessionRecords -WorkspaceRoot $WorkspaceRoot)
+  $summary.Add(('- paused_sessions: {0}' -f $pausedSessions.Count)) | Out-Null
+}
 try {
   if (Get-Command Resolve-RaymanCodexContext -ErrorAction SilentlyContinue) {
     $codexContext = Resolve-RaymanCodexContext -WorkspaceRoot $WorkspaceRoot

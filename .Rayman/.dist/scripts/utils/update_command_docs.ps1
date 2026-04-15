@@ -6,6 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot '..\..\common.ps1')
 . (Join-Path $PSScriptRoot 'command_catalog.ps1')
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
@@ -20,6 +21,15 @@ function Write-Utf8NoBomFile {
     [string]$Path,
     [string]$Content
   )
+
+  if (Get-Command Set-RaymanManagedUtf8File -ErrorAction SilentlyContinue) {
+    $writeResult = Set-RaymanManagedUtf8File -Path $Path -Content $Content -AuditRoot $WorkspaceRoot -Label ('command-doc:' + (Split-Path -Leaf $Path))
+    if (-not [bool]$writeResult.ok) {
+      $detail = if (-not [string]::IsNullOrWhiteSpace([string]$writeResult.error_message)) { [string]$writeResult.error_message } else { [string]$writeResult.reason }
+      throw ("managed-write-failed: {0} (reason={1}): {2}" -f $Path, [string]$writeResult.reason, $detail)
+    }
+    return
+  }
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)

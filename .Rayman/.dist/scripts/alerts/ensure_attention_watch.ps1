@@ -43,7 +43,7 @@ if (-not (Test-Path -LiteralPath $watchScript -PathType Leaf)) {
   exit 0
 }
 
-$watchNames = @(Get-RaymanAttentionWatchProcessNames)
+$watchNames = @(Get-RaymanAttentionWatchProcessNames -WorkspaceRoot $WorkspaceRoot)
 if (-not (Get-RaymanEnvBool -Name 'RAYMAN_ALERT_WATCH_ALL_PROCESSES' -Default $false)) {
   if ($watchNames.Count -eq 0) {
     Write-EnsureInfo '[alert-watch] no configured target processes; skip start.'

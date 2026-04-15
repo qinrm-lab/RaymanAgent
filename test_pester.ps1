@@ -1,0 +1,1 @@
+Import-Module Pester; Describe 'test' { It 'mock test' { Mock Move-Item { Write-Host 'mocked'; Microsoft.PowerShell.Management\Move-Item @PSBoundParameters }; Move-Item -LiteralPath 'a' -Destination 'b' -WhatIf } }

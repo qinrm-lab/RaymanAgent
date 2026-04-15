@@ -351,9 +351,13 @@ function Invoke-RaymanVersionSet {
     param($match)
     return ("{0}'{1}'{2}" -f [string]$match.Groups[1].Value, $upper, [string]$match.Groups[2].Value)
   }
-  Invoke-RaymanRegexReplace -Path $paths.ReleaseGate -Pattern 'RAYMAN:MANDATORY_REQUIREMENTS_V\d+' -Evaluator {
+  Invoke-RaymanRegexReplace -Path $paths.ReleaseGate -Pattern '(?m)^(\s*if \(\$agentsRaw -notmatch '')RAYMAN:MANDATORY_REQUIREMENTS_V\d+(''.*)$' -Evaluator {
     param($match)
-    return ('RAYMAN:MANDATORY_REQUIREMENTS_{0}' -f $upper)
+    return ("{0}RAYMAN:MANDATORY_REQUIREMENTS_{1}{2}" -f [string]$match.Groups[1].Value, $upper, [string]$match.Groups[2].Value)
+  }
+  Invoke-RaymanRegexReplace -Path $paths.ReleaseGate -Pattern '(?m)^(\s*if \(\$templateRaw -notmatch '')RAYMAN:MANDATORY_REQUIREMENTS_V\d+(''.*)$' -Evaluator {
+    param($match)
+    return ("{0}RAYMAN:MANDATORY_REQUIREMENTS_{1}{2}" -f [string]$match.Groups[1].Value, $upper, [string]$match.Groups[2].Value)
   }
   Invoke-RaymanRegexReplace -Path $paths.ReleaseGate -Pattern 'missing V\d+ marker' -Evaluator {
     param($match)

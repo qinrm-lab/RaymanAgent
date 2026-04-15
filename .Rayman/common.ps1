@@ -360,7 +360,7 @@ function Get-RaymanWorkspaceEnvString {
     )
 
     $processValue = [Environment]::GetEnvironmentVariable($Name)
-    if ($null -ne $processValue) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$processValue)) {
         return [string]$processValue
     }
 
@@ -402,6 +402,378 @@ function Get-RaymanWorkspaceEnvString {
     } catch {}
 
     return $Default
+}
+
+function Get-RaymanWorkspaceEnvStringEntry {
+    param(
+        [string]$WorkspaceRoot,
+        [string]$Name
+    )
+
+    $empty = [pscustomobject]@{
+        configured = $false
+        source = 'default'
+        value = ''
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $empty
+    }
+
+    $processValue = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace([string]$processValue)) {
+        return [pscustomobject]@{
+            configured = $true
+            source = 'process'
+            value = [string]$processValue
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+        return $empty
+    }
+
+    $workspaceRootPath = Resolve-RaymanLiteralPath -PathValue $WorkspaceRoot -AllowMissing
+    if ([string]::IsNullOrWhiteSpace($workspaceRootPath)) {
+        return $empty
+    }
+
+    $envFile = [System.IO.Path]::Combine($workspaceRootPath, '.rayman.env.ps1')
+    if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
+        return $empty
+    }
+
+    try {
+        $pattern = ('^\s*\$env:{0}\s*=\s*(?<value>[^#\r\n]+?)\s*(?:#.*)?$' -f [regex]::Escape($Name))
+        foreach ($line in @(Get-Content -LiteralPath $envFile -Encoding UTF8)) {
+            $candidate = [string]$line
+            if ([string]::IsNullOrWhiteSpace($candidate)) {
+                continue
+            }
+
+            $match = [regex]::Match($candidate, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if (-not $match.Success) {
+                continue
+            }
+
+            $rawValue = [string]$match.Groups['value'].Value
+            if (($rawValue.StartsWith("'") -and $rawValue.EndsWith("'")) -or ($rawValue.StartsWith('"') -and $rawValue.EndsWith('"'))) {
+                if ($rawValue.Length -ge 2) {
+                    $rawValue = $rawValue.Substring(1, $rawValue.Length - 2)
+                }
+            }
+
+            return [pscustomobject]@{
+                configured = $true
+                source = 'workspace_env'
+                value = $rawValue
+            }
+        }
+    } catch {}
+
+    return $empty
+}
+
+function Set-RaymanManagedTextBlock {
+    param(
+        [string]$Path,
+        [string]$BeginMarker,
+        [string]$EndMarker,
+        [string[]]$Lines = @(),
+        [string]$AuditRoot = '',
+        [string]$Label = 'managed-text-block'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'managed block path is required.'
+    }
+    if ([string]::IsNullOrWhiteSpace($BeginMarker) -or [string]::IsNullOrWhiteSpace($EndMarker)) {
+        throw 'managed block markers are required.'
+    }
+
+    $existing = ''
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $existing = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    }
+    if ($null -eq $existing) { $existing = '' }
+
+    $newline = if ($existing -match "`r`n") { "`r`n" } else { "`n" }
+    $blockLines = @([string]$BeginMarker)
+    foreach ($line in @($Lines)) {
+        $blockLines += [string]$line
+    }
+    $blockLines += [string]$EndMarker
+    $blockText = (($blockLines -join $newline).TrimEnd("`r", "`n") + $newline)
+
+    $updated = $existing
+    $pattern = '(?s)' + [regex]::Escape($BeginMarker) + '.*?' + [regex]::Escape($EndMarker) + '\r?\n?'
+    if ($updated -match $pattern) {
+        $updated = [regex]::Replace($updated, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $blockText }, 1)
+    } else {
+        if (-not [string]::IsNullOrWhiteSpace($updated)) {
+            if ($updated -notmatch "(\r?\n)$") {
+                $updated += $newline
+            }
+            if ($updated -notmatch "(\r?\n){2}$") {
+                $updated += $newline
+            }
+        }
+        $updated += $blockText
+    }
+
+    if ($updated -eq $existing) {
+        return [pscustomobject]@{
+            ok = $true
+            changed = $false
+            path = $Path
+            reason = 'unchanged'
+        }
+    }
+
+    $resolvedAuditRoot = if ([string]::IsNullOrWhiteSpace($AuditRoot)) { Split-Path -Parent $Path } else { $AuditRoot }
+    $writeResult = Set-RaymanManagedUtf8File -Path $Path -Content $updated -AuditRoot $resolvedAuditRoot -Label $Label
+    if (-not [bool]$writeResult.ok) {
+        return [pscustomobject]@{
+            ok = $false
+            changed = $false
+            path = $Path
+            reason = [string]$writeResult.reason
+            error_message = [string]$writeResult.error_message
+        }
+    }
+
+    return [pscustomobject]@{
+        ok = $true
+        changed = [bool]$writeResult.changed
+        path = $Path
+        reason = [string]$writeResult.reason
+        error_message = ''
+    }
+}
+
+function Normalize-RaymanInteractionMode {
+    param(
+        [string]$Mode,
+        [string]$Default = 'detailed'
+    )
+
+    $allowEmptyFallback = [string]::IsNullOrWhiteSpace([string]$Default)
+    $fallback = if ($allowEmptyFallback) { '' } else { ([string]$Default).Trim().ToLowerInvariant() }
+    switch (([string]$fallback).Trim().ToLowerInvariant()) {
+        'general' { $fallback = 'general' }
+        'simple' { $fallback = 'simple' }
+        'detailed' { $fallback = 'detailed' }
+        default {
+            if ($allowEmptyFallback) {
+                $fallback = ''
+            } else {
+                $fallback = 'detailed'
+            }
+        }
+    }
+
+    $candidate = if ([string]::IsNullOrWhiteSpace([string]$Mode)) { '' } else { ([string]$Mode).Trim().ToLowerInvariant() }
+    switch ($candidate) {
+        'detailed' { return 'detailed' }
+        'general' { return 'general' }
+        'simple' { return 'simple' }
+        default { return $fallback }
+    }
+}
+
+function Get-RaymanInteractionMode {
+    param([string]$WorkspaceRoot = '')
+
+    $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_INTERACTION_MODE' -Default 'detailed')
+    return (Normalize-RaymanInteractionMode -Mode $raw -Default 'detailed')
+}
+
+function Get-RaymanInteractionModeLabel {
+    param([string]$Mode)
+
+    switch (Normalize-RaymanInteractionMode -Mode $Mode -Default 'detailed') {
+        'general' { return '一般' }
+        'simple' { return '简单' }
+        default { return '详细' }
+    }
+}
+
+function Get-RaymanInteractionModeDescription {
+    param([string]$Mode)
+
+    switch (Normalize-RaymanInteractionMode -Mode $Mode -Default 'detailed') {
+        'general' {
+            return '当歧义会明显改变结果、范围、实现路径、风险、测试期望或返工成本时先给 plan、选项与明确验收标准；次要细节可带默认假设继续。'
+        }
+        'simple' {
+            return '只在高风险、不可逆、跨工作区、发布/架构级或明显可能走错方向时先给 plan、选项与明确验收标准；其余按推荐默认继续并写出假设。'
+        }
+        default {
+            return '只要目标不明确、存在明显多路径或不同方案结果差异明显，就先给 plan、解释选项与结果，并写出明确验收标准。'
+        }
+    }
+}
+
+function Get-RaymanInteractionModeExamples {
+    param([string]$Mode)
+
+    switch (Normalize-RaymanInteractionMode -Mode $Mode -Default 'detailed') {
+        'general' { return '适合中等规模确认：关键分歧先问，低影响细节可默认。' }
+        'simple' { return '适合低打断：仅高风险场景停下，其余快速执行。' }
+        default { return '适合高协作密度：尽可能多把关键分歧摊开说明后再执行。' }
+    }
+}
+
+function Get-RaymanInteractionModePromptPreamble {
+    param([string]$WorkspaceRoot = '')
+
+    $mode = Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
+    $modeLabel = Get-RaymanInteractionModeLabel -Mode $mode
+    $activeRule = Get-RaymanInteractionModeDescription -Mode $mode
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('[RaymanInteractionMode]')
+    $lines.Add(('mode={0}' -f $mode))
+    $lines.Add(('mode_label={0}' -f $modeLabel))
+    $lines.Add(('active_rule={0}' -f $activeRule))
+    $lines.Add('ambiguity_floor=When the prompt is not clear enough and ambiguity can affect goal, scope, implementation path, risk, test expectations, target workspace, or rollback, stop first and provide concrete options plus explicit acceptance criteria. This applies outside Codex Plan Mode.')
+    $lines.Add('detailed=When the goal is unclear, multiple implementation paths exist, or outcomes differ meaningfully, stop first, explain options, state acceptance criteria, and collect more user choices before locking the spec.')
+    $lines.Add('general=Ask when ambiguity materially changes outcome, scope, implementation path, risk, test expectations, or rework cost; if you ask, include concrete options and explicit acceptance criteria; proceed on lower-impact details with explicit assumptions.')
+    $lines.Add('simple=Ask only on high-risk, irreversible, cross-workspace, release/architecture-level, or likely-wrong-direction ambiguity; if you ask, include concrete options and explicit acceptance criteria; otherwise proceed with explicit assumptions.')
+    $lines.Add('hard_gates=Cross-workspace target selection, policy blocks, release gates, and dangerous operations still require a stop.')
+    $lines.Add('full_auto_note=Full-auto approves code changes, but it does not authorize guessing user intent when multiple meaningful paths exist.')
+    $lines.Add('[/RaymanInteractionMode]')
+    return ($lines -join "`n")
+}
+
+function Set-RaymanWorkspaceEnvValue {
+    param(
+        [string]$WorkspaceRoot,
+        [string]$Name,
+        [string]$Value,
+        [switch]$AddIfMissing,
+        [string]$ManagedBlockId = '',
+        [string]$ManagedBy = 'Rayman'
+    )
+
+    $result = [ordered]@{
+        Ok = $false
+        Updated = $false
+        Added = $false
+        Reason = ''
+        Path = ''
+        PreviousValue = ''
+        NewValue = [string]$Value
+    }
+
+    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot) -or -not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
+        $result.Reason = 'workspace_not_found'
+        return [pscustomobject]$result
+    }
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        $result.Reason = 'name_required'
+        return [pscustomobject]$result
+    }
+
+    $envFile = Join-Path $WorkspaceRoot '.rayman.env.ps1'
+    $result.Path = $envFile
+    $raw = ''
+    if (Test-Path -LiteralPath $envFile -PathType Leaf) {
+        try {
+            $raw = Get-Content -LiteralPath $envFile -Raw -Encoding UTF8
+        } catch {
+            $result.Reason = ("read_failed:{0}" -f $_.Exception.Message)
+            return [pscustomobject]$result
+        }
+    } elseif (-not $AddIfMissing) {
+        $result.Reason = 'env_file_missing'
+        return [pscustomobject]$result
+    }
+    if ($null -eq $raw) { $raw = '' }
+
+    $newline = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
+    $lines = @([regex]::Split($raw, "\r?\n"))
+    $pattern = ('^(?<indent>\s*)\$env:{0}\s*=\s*(?<raw>[^#\r\n]+?)(?<suffix>\s*(?:#.*)?)$' -f [regex]::Escape($Name))
+    $matchIndex = -1
+    $replacementLine = ''
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = [string]$lines[$i]
+        $match = [regex]::Match($line, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $match.Success) {
+            continue
+        }
+
+        $matchIndex = $i
+        $rawValue = [string]$match.Groups['raw'].Value
+        $trimmedValue = $rawValue.Trim()
+        if (($trimmedValue.StartsWith("'") -and $trimmedValue.EndsWith("'")) -or ($trimmedValue.StartsWith('"') -and $trimmedValue.EndsWith('"'))) {
+            if ($trimmedValue.Length -ge 2) {
+                $trimmedValue = $trimmedValue.Substring(1, $trimmedValue.Length - 2)
+            }
+        }
+        $result.PreviousValue = $trimmedValue
+        $replacementLine = ('{0}$env:{1} = ''{2}''{3}' -f [string]$match.Groups['indent'].Value, $Name, ($Value -replace "'", "''"), [string]$match.Groups['suffix'].Value)
+        break
+    }
+
+    if ($matchIndex -ge 0) {
+        if ([string]$lines[$matchIndex] -eq $replacementLine) {
+            $result.Ok = $true
+            return [pscustomobject]$result
+        }
+
+        $lines[$matchIndex] = $replacementLine
+        $newContent = ($lines -join $newline)
+        $writeResult = Set-RaymanManagedUtf8File -Path $envFile -Content $newContent -AuditRoot $WorkspaceRoot -Label ("workspace-env:{0}" -f $Name)
+        if (-not [bool]$writeResult.ok) {
+            $detail = if (-not [string]::IsNullOrWhiteSpace([string]$writeResult.error_message)) {
+                [string]$writeResult.error_message
+            } else {
+                [string]$writeResult.reason
+            }
+            $result.Reason = ("write_failed:{0}" -f $detail)
+            return [pscustomobject]$result
+        }
+
+        $result.Ok = $true
+        $result.Updated = [bool]$writeResult.changed
+        return [pscustomobject]$result
+    }
+
+    if (-not $AddIfMissing) {
+        $result.Reason = 'assignment_not_found'
+        return [pscustomobject]$result
+    }
+
+    $blockId = if ([string]::IsNullOrWhiteSpace([string]$ManagedBlockId)) { ('RAYMAN:ENV:{0}' -f $Name) } else { [string]$ManagedBlockId }
+    $beginMarker = ('# {0}:BEGIN' -f $blockId)
+    $endMarker = ('# {0}:END' -f $blockId)
+    $escapedValue = [string]$Value -replace "'", "''"
+    $blockLines = @(
+        ('# {0} managed workspace env assignment.' -f $ManagedBy),
+        ('if ([string]::IsNullOrWhiteSpace([string]`$env:{0})) {{' -f $Name),
+        ("    `$env:{0} = '{1}'" -f $Name, $escapedValue),
+        '}'
+    )
+    $blockResult = Set-RaymanManagedTextBlock `
+        -Path $envFile `
+        -BeginMarker $beginMarker `
+        -EndMarker $endMarker `
+        -AuditRoot $WorkspaceRoot `
+        -Label ("workspace-env:{0}" -f $Name) `
+        -Lines $blockLines
+    if (-not [bool]$blockResult.ok) {
+        $detail = if ($blockResult.PSObject.Properties['error_message']) { [string]$blockResult.error_message } else { [string]$blockResult.reason }
+        $result.Reason = ("write_failed:{0}" -f $detail)
+        return [pscustomobject]$result
+    }
+
+    $result.Ok = $true
+    $result.Updated = [bool]$blockResult.changed
+    $result.Added = $true
+    $result.Reason = 'added_managed_block'
+    return [pscustomobject]$result
 }
 
 function Remove-RaymanJsonComments {
@@ -983,7 +1355,7 @@ function Get-RaymanAttentionAlertEnabled {
             return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_MANUAL_ENABLED' -Default $true)
         }
         'done' {
-            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_DONE_ENABLED' -Default $false)
+            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_DONE_ENABLED' -Default $true)
         }
         default {
             return $true
@@ -1111,6 +1483,200 @@ function Get-RaymanAttentionSpeechEnabled {
     }
 }
 
+function Get-RaymanAttentionSoundPath {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    $envEntry = Get-RaymanWorkspaceEnvStringEntry -WorkspaceRoot $root -Name 'RAYMAN_ALERT_SOUND_PATH'
+    if (-not [bool]$envEntry.configured) {
+        return (Resolve-RaymanAttentionDefaultSoundPath -WorkspaceRoot $root)
+    }
+
+    $trimmed = [string]$envEntry.value
+    if ([string]::IsNullOrWhiteSpace([string]$trimmed)) {
+        return ''
+    }
+    $trimmed = $trimmed.Trim()
+    if ([string]::IsNullOrWhiteSpace([string]$trimmed)) {
+        return ''
+    }
+    if ([System.IO.Path]::IsPathRooted($trimmed) -or [string]::IsNullOrWhiteSpace([string]$root)) {
+        return $trimmed
+    }
+
+    return (Join-Path $root $trimmed)
+}
+
+function Get-RaymanAttentionUserHomePath {
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+    if ([string]::IsNullOrWhiteSpace([string]$userHome)) {
+        $userHome = [Environment]::GetEnvironmentVariable('USERPROFILE')
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$userHome)) {
+        $userHome = [Environment]::GetEnvironmentVariable('HOME')
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$userHome)) {
+        try {
+            $userHome = [System.IO.Path]::GetFullPath('~')
+        } catch {
+            $userHome = ''
+        }
+    }
+    return [string]$userHome
+}
+
+function Get-RaymanAttentionStateRoot {
+    $override = [Environment]::GetEnvironmentVariable('RAYMAN_HOME')
+    if (-not [string]::IsNullOrWhiteSpace([string]$override)) {
+        if ([System.IO.Path]::IsPathRooted([string]$override)) {
+            return [System.IO.Path]::GetFullPath([string]$override)
+        }
+
+        $userHome = Get-RaymanAttentionUserHomePath
+        if (-not [string]::IsNullOrWhiteSpace([string]$userHome)) {
+            return [System.IO.Path]::GetFullPath((Join-Path $userHome ([string]$override)))
+        }
+        return [System.IO.Path]::GetFullPath([string]$override)
+    }
+
+    $resolvedUserHome = Get-RaymanAttentionUserHomePath
+    if ([string]::IsNullOrWhiteSpace([string]$resolvedUserHome)) {
+        return ''
+    }
+
+    return (Join-Path $resolvedUserHome '.rayman')
+}
+
+function Get-RaymanManagedAttentionSoundPath {
+    $stateRoot = Get-RaymanAttentionStateRoot
+    if ([string]::IsNullOrWhiteSpace([string]$stateRoot)) {
+        return ''
+    }
+    return (Join-Path $stateRoot 'codex\notify.wav')
+}
+
+function Get-RaymanLegacyAttentionSoundPath {
+    $userHome = Get-RaymanAttentionUserHomePath
+    if ([string]::IsNullOrWhiteSpace([string]$userHome)) {
+        return ''
+    }
+    return (Join-Path $userHome '.codex\notify.wav')
+}
+
+function Get-RaymanAttentionBackupSoundPath {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace([string]$root)) {
+        return ''
+    }
+
+    $backupRoot = Join-Path $root '.Rayman\runtime\backups\codex-notify'
+    if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+        return ''
+    }
+
+    try {
+        $latest = Get-ChildItem -LiteralPath $backupRoot -Recurse -Filter 'global-notify.wav' -File -ErrorAction Stop |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($null -ne $latest) {
+            return [string]$latest.FullName
+        }
+    } catch {}
+
+    return ''
+}
+
+function Resolve-RaymanAttentionDefaultSoundPath {
+    param(
+        [string]$WorkspaceRoot = ''
+    )
+
+    $managedPath = Get-RaymanManagedAttentionSoundPath
+    if ([string]::IsNullOrWhiteSpace([string]$managedPath)) {
+        return ''
+    }
+
+    if (Test-Path -LiteralPath $managedPath -PathType Leaf) {
+        return $managedPath
+    }
+
+    $sourcePath = Get-RaymanLegacyAttentionSoundPath
+    if ([string]::IsNullOrWhiteSpace([string]$sourcePath) -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        $sourcePath = Get-RaymanAttentionBackupSoundPath -WorkspaceRoot $WorkspaceRoot
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$sourcePath) -and (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        try {
+            $parent = Split-Path -Parent $managedPath
+            if (-not [string]::IsNullOrWhiteSpace([string]$parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath $sourcePath -Destination $managedPath -Force
+            if (Test-Path -LiteralPath $managedPath -PathType Leaf) {
+                return $managedPath
+            }
+        } catch {
+            return [string]$sourcePath
+        }
+    }
+
+    return $managedPath
+}
+
+function Get-RaymanAttentionSoundEnabled {
+    param(
+        [string]$WorkspaceRoot = '',
+        [string]$Kind = 'manual'
+    )
+
+    $root = Get-RaymanAttentionWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
+    if (-not (Get-RaymanAttentionAlertEnabled -WorkspaceRoot $root -Kind $Kind)) {
+        return $false
+    }
+    if (-not (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_SOUND_ENABLED' -Default $true)) {
+        return $false
+    }
+
+    $kindValue = if ([string]::IsNullOrWhiteSpace([string]$Kind)) { 'manual' } else { [string]$Kind }
+    switch ($kindValue.Trim().ToLowerInvariant()) {
+        'done' {
+            return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $root -Name 'RAYMAN_ALERT_SOUND_DONE_ENABLED' -Default $true)
+        }
+        default {
+            return $true
+        }
+    }
+}
+
+function Invoke-RaymanAttentionSoundFile {
+    param(
+        [string]$Path
+    )
+
+    if (-not (Test-RaymanWindowsPlatform)) {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $player = New-Object System.Media.SoundPlayer $Path
+        $player.Load()
+        $player.PlaySync()
+        try { $player.Dispose() } catch {}
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Get-RaymanWorkspaceKind {
     param(
         [string]$WorkspaceRoot
@@ -1161,95 +1727,357 @@ function Get-RaymanWorkspaceKind {
     return 'external'
 }
 
-function Set-RaymanWorkspaceEnvValue {
+function Invoke-RaymanUtf8NoBomDirectWrite {
     param(
-        [string]$WorkspaceRoot,
-        [string]$Name,
-        [string]$Value
+        [string]$Path,
+        [AllowEmptyString()][string]$Content
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Test-RaymanMappedSectionWriteError {
+    param(
+        [object]$ErrorRecord
+    )
+
+    if ($null -eq $ErrorRecord) {
+        return $false
+    }
+
+    $messages = New-Object 'System.Collections.Generic.List[string]'
+    $exceptionCandidates = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($seed in @(
+            $ErrorRecord,
+            $ErrorRecord.Exception,
+            $(if ($null -ne $ErrorRecord.Exception) { $ErrorRecord.Exception.InnerException } else { $null })
+        )) {
+        $current = $seed
+        for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
+            [void]$exceptionCandidates.Add($current)
+            if ($current -is [System.Management.Automation.ErrorRecord]) {
+                $current = $current.Exception
+                continue
+            }
+            if ($current -is [System.Exception]) {
+                $current = $current.InnerException
+                continue
+            }
+            break
+        }
+    }
+
+    foreach ($candidate in @($exceptionCandidates.ToArray())) {
+        if ($null -eq $candidate) { continue }
+
+        $message = ''
+        try {
+            if ($candidate -is [System.Management.Automation.ErrorRecord]) {
+                $message = [string]$candidate.Exception.Message
+            } elseif ($candidate -is [System.Exception]) {
+                $message = [string]$candidate.Message
+                $nativeCode = ([int]$candidate.HResult -band 0xFFFF)
+                if ($nativeCode -eq 32 -or $nativeCode -eq 33) {
+                    return $true
+                }
+            } elseif ($candidate.PSObject.Properties['Message']) {
+                $message = [string]$candidate.Message
+            }
+        } catch {
+            $message = ''
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($message)) {
+            [void]$messages.Add($message.Trim().ToLowerInvariant())
+        }
+    }
+
+    foreach ($message in @($messages.ToArray())) {
+        if ($message.Contains('user-mapped section open')) { return $true }
+        if ($message.Contains('mapped section')) { return $true }
+        if ($message.Contains('being used by another process')) { return $true }
+        if ($message.Contains('process cannot access the file')) { return $true }
+        if ($message.Contains('sharing violation')) { return $true }
+        if ($message.Contains('lock violation')) { return $true }
+    }
+
+    return $false
+}
+
+function Invoke-RaymanUtf8NoBomInPlaceWrite {
+    param(
+        [string]$Path,
+        [AllowEmptyString()][string]$Content
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'path is required for in-place write.'
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw ("path does not exist for in-place write: {0}" -f $Path)
+    }
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes([string]$Content)
+    $fileInfo = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ([int64]$fileInfo.Length -ne [int64]$bytes.Length) {
+        throw ("in-place write requires identical byte length (current={0}, target={1})" -f [int64]$fileInfo.Length, [int64]$bytes.Length)
+    }
+
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $stream.Position = 0
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Get-RaymanManagedWriteAuditPath {
+    param(
+        [string]$AuditRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AuditRoot)) {
+        return ''
+    }
+
+    return (Join-Path $AuditRoot '.Rayman\runtime\managed_write.last.json')
+}
+
+function Write-RaymanManagedWriteAudit {
+    param(
+        [string]$AuditRoot,
+        [object]$Record
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AuditRoot) -or $null -eq $Record) {
+        return
+    }
+
+    $auditPath = Get-RaymanManagedWriteAuditPath -AuditRoot $AuditRoot
+    if ([string]::IsNullOrWhiteSpace($auditPath)) {
+        return
+    }
+
+    try {
+        $parent = Split-Path -Parent $auditPath
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }
+
+        $recentWrites = New-Object 'System.Collections.Generic.List[object]'
+        if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
+            try {
+                $existingAudit = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+                if ($null -ne $existingAudit) {
+                    if ($existingAudit.PSObject.Properties['recent_writes']) {
+                        foreach ($entry in @($existingAudit.recent_writes)) {
+                            if ($null -ne $entry) {
+                                [void]$recentWrites.Add($entry)
+                            }
+                        }
+                    } elseif ($existingAudit.PSObject.Properties['last_write'] -and $null -ne $existingAudit.last_write) {
+                        [void]$recentWrites.Add($existingAudit.last_write)
+                    }
+                }
+            } catch {}
+        }
+
+        [void]$recentWrites.Add($Record)
+        while ($recentWrites.Count -gt 25) {
+            $recentWrites.RemoveAt(0)
+        }
+
+        $payload = [ordered]@{
+            schema = 'rayman.managed_write.audit.v1'
+            updated_at = (Get-Date).ToString('o')
+            last_write = $Record
+            recent_writes = @($recentWrites.ToArray())
+        }
+
+        Invoke-RaymanUtf8NoBomDirectWrite -Path $auditPath -Content ($payload | ConvertTo-Json -Depth 8)
+    } catch {}
+}
+
+function Set-RaymanManagedUtf8File {
+    param(
+        [string]$Path,
+        [AllowEmptyString()][string]$Content,
+        [string]$AuditRoot = '',
+        [string]$Label = '',
+        [int[]]$RetryDelaysMs = @(500, 1500, 3500),
+        [scriptblock]$DirectWriteAction = $null,
+        [scriptblock]$InPlaceWriteAction = $null
     )
 
     $result = [ordered]@{
-        Ok = $false
-        Updated = $false
-        Reason = ''
-        Path = ''
-        PreviousValue = ''
-        NewValue = [string]$Value
+        ok = $false
+        changed = $false
+        mode = 'failed'
+        reason = 'unknown'
+        retry_count = 0
+        path = [string]$Path
+        previous_bytes = 0
+        target_bytes = 0
+        error_message = ''
+        label = [string]$Label
+        updated_at = (Get-Date).ToString('o')
     }
 
-    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot) -or -not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
-        $result.Reason = 'workspace_not_found'
-        return [pscustomobject]$result
-    }
-    if ([string]::IsNullOrWhiteSpace($Name)) {
-        $result.Reason = 'name_required'
-        return [pscustomobject]$result
-    }
-
-    $envFile = Join-Path $WorkspaceRoot '.rayman.env.ps1'
-    $result.Path = $envFile
-    if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) {
-        $result.Reason = 'env_file_missing'
-        return [pscustomobject]$result
-    }
-
-    $raw = ''
-    try {
-        $raw = Get-Content -LiteralPath $envFile -Raw -Encoding UTF8
-    } catch {
-        $result.Reason = ("read_failed:{0}" -f $_.Exception.Message)
-        return [pscustomobject]$result
-    }
-    if ($null -eq $raw) { $raw = '' }
-
-    $newline = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
-    $lines = @([regex]::Split($raw, "\r?\n"))
-    $pattern = ('^(?<indent>\s*)\$env:{0}\s*=\s*(?<raw>[^#\r\n]+?)(?<suffix>\s*(?:#.*)?)$' -f [regex]::Escape($Name))
-    $matchIndex = -1
-    $replacementLine = ''
-
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = [string]$lines[$i]
-        $match = [regex]::Match($line, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        if (-not $match.Success) {
-            continue
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $targetContent = if ($null -eq $Content) { '' } else { [string]$Content }
+    $result.target_bytes = [int]$encoding.GetByteCount($targetContent)
+    if ($null -eq $DirectWriteAction) {
+        $DirectWriteAction = {
+            param($TargetPath, $TargetContent)
+            Invoke-RaymanUtf8NoBomDirectWrite -Path $TargetPath -Content $TargetContent
         }
+    }
+    if ($null -eq $InPlaceWriteAction) {
+        $InPlaceWriteAction = {
+            param($TargetPath, $TargetContent)
+            Invoke-RaymanUtf8NoBomInPlaceWrite -Path $TargetPath -Content $TargetContent
+        }
+    }
 
-        $matchIndex = $i
-        $rawValue = [string]$match.Groups['raw'].Value
-        $trimmedValue = $rawValue.Trim()
-        if (($trimmedValue.StartsWith("'") -and $trimmedValue.EndsWith("'")) -or ($trimmedValue.StartsWith('"') -and $trimmedValue.EndsWith('"'))) {
-            if ($trimmedValue.Length -ge 2) {
-                $trimmedValue = $trimmedValue.Substring(1, $trimmedValue.Length - 2)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $result.reason = 'path_required'
+        $auditRecord = [pscustomobject]$result
+        Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+        return $auditRecord
+    }
+
+    $existingContent = ''
+    $existingRead = $false
+    $readMappedSectionBlocked = $false
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        try {
+            $existingContent = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+            if ($null -eq $existingContent) { $existingContent = '' }
+            $existingRead = $true
+            $result.previous_bytes = [int]$encoding.GetByteCount([string]$existingContent)
+        } catch {
+            if (Test-RaymanMappedSectionWriteError -ErrorRecord $_) {
+                $readMappedSectionBlocked = $true
+                $existingRead = $false
+                $existingContent = ''
+                $result.previous_bytes = 0
+            } else {
+                $result.reason = 'read_failed'
+                $result.error_message = $_.Exception.Message
+                $auditRecord = [pscustomobject]$result
+                Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+                return $auditRecord
             }
         }
-        $result.PreviousValue = $trimmedValue
-        $replacementLine = ('{0}$env:{1} = ''{2}''{3}' -f [string]$match.Groups['indent'].Value, $Name, ($Value -replace "'", "''"), [string]$match.Groups['suffix'].Value)
-        break
     }
 
-    if ($matchIndex -lt 0) {
-        $result.Reason = 'assignment_not_found'
-        return [pscustomobject]$result
+    if ($existingRead -and ([string]$existingContent -ceq [string]$targetContent)) {
+        $result.ok = $true
+        $result.mode = 'unchanged'
+        $result.reason = 'unchanged'
+        $auditRecord = [pscustomobject]$result
+        Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+        return $auditRecord
     }
 
-    if ([string]$lines[$matchIndex] -eq $replacementLine) {
-        $result.Ok = $true
-        return [pscustomobject]$result
-    }
-
-    $lines[$matchIndex] = $replacementLine
-    $newContent = ($lines -join $newline)
+    $lastError = $null
     try {
-        Set-Content -LiteralPath $envFile -Value $newContent -Encoding UTF8
+        & $DirectWriteAction $Path $targetContent
+        $result.ok = $true
+        $result.changed = $true
+        $result.mode = 'direct'
+        $result.reason = 'ok'
+        $auditRecord = [pscustomobject]$result
+        Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+        return $auditRecord
     } catch {
-        $result.Reason = ("write_failed:{0}" -f $_.Exception.Message)
-        return [pscustomobject]$result
+        $lastError = $_
     }
 
-    $result.Ok = $true
-    $result.Updated = $true
-    return [pscustomobject]$result
+    if (-not (Test-RaymanMappedSectionWriteError -ErrorRecord $lastError)) {
+        $result.reason = 'direct_write_failed'
+        $result.error_message = $lastError.Exception.Message
+        $auditRecord = [pscustomobject]$result
+        Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+        return $auditRecord
+    }
+
+    foreach ($delayMs in @($RetryDelaysMs)) {
+        if ([int]$delayMs -gt 0) {
+            Start-Sleep -Milliseconds ([int]$delayMs)
+        }
+        $result.retry_count++
+
+        try {
+            & $DirectWriteAction $Path $targetContent
+            $result.ok = $true
+            $result.changed = $true
+            $result.mode = 'retry_success'
+            $result.reason = 'ok'
+            $result.error_message = ''
+            $auditRecord = [pscustomobject]$result
+            Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+            return $auditRecord
+        } catch {
+            $lastError = $_
+            if (-not (Test-RaymanMappedSectionWriteError -ErrorRecord $lastError)) {
+                $result.reason = 'retry_failed'
+                $result.error_message = $lastError.Exception.Message
+                $auditRecord = [pscustomobject]$result
+                Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+                return $auditRecord
+            }
+        }
+    }
+
+    if ((Get-Command Test-RaymanWindowsPlatform -ErrorAction SilentlyContinue) -and (Test-RaymanWindowsPlatform) -and $existingRead -and ($result.previous_bytes -eq $result.target_bytes)) {
+        try {
+            & $InPlaceWriteAction $Path $targetContent
+            $result.ok = $true
+            $result.changed = $true
+            $result.mode = 'in_place_fallback'
+            $result.reason = 'mapped_section_same_length'
+            $result.error_message = ''
+            $auditRecord = [pscustomobject]$result
+            Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+            return $auditRecord
+        } catch {
+            $result.reason = 'in_place_fallback_failed'
+            $result.error_message = $_.Exception.Message
+            $auditRecord = [pscustomobject]$result
+            Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+            return $auditRecord
+        }
+    }
+
+    if ((Get-Command Test-RaymanWindowsPlatform -ErrorAction SilentlyContinue) -and (Test-RaymanWindowsPlatform) -and $existingRead -and ($result.previous_bytes -ne $result.target_bytes)) {
+        $result.reason = 'mapped_section_length_mismatch'
+    } elseif ($readMappedSectionBlocked) {
+        $result.reason = 'mapped_section_existing_content_unavailable'
+    } elseif (-not $existingRead) {
+        $result.reason = 'mapped_section_existing_content_unavailable'
+    } else {
+        $result.reason = 'mapped_section_retry_exhausted'
+    }
+    if ($null -ne $lastError -and $lastError.Exception) {
+        $result.error_message = $lastError.Exception.Message
+    }
+
+    $auditRecord = [pscustomobject]$result
+    Write-RaymanManagedWriteAudit -AuditRoot $AuditRoot -Record $auditRecord
+    return $auditRecord
 }
 
 function Get-RaymanEnvInt {
@@ -1294,16 +2122,42 @@ function Get-RaymanStringListEnv {
     return $items
 }
 
+function Get-RaymanWorkspaceStringListEnv {
+    param(
+        [string]$WorkspaceRoot,
+        [string]$Name,
+        [string[]]$Default = @()
+    )
+
+    $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name $Name -Default '')
+    if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+        return @($Default)
+    }
+
+    $items = @($raw -split '[,;|]' | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($items.Count -eq 0) {
+        return @($Default)
+    }
+
+    return @($items)
+}
+
 function Get-RaymanAttentionWatchProcessNames {
-    $explicit = [Environment]::GetEnvironmentVariable('RAYMAN_ALERT_WATCH_PROCESS_NAMES')
-    if (-not [string]::IsNullOrWhiteSpace($explicit)) {
-        return @(Get-RaymanStringListEnv -Name 'RAYMAN_ALERT_WATCH_PROCESS_NAMES' -Default @())
+    param([string]$WorkspaceRoot = '')
+
+    $explicit = @(
+        Get-RaymanWorkspaceStringListEnv -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_ALERT_WATCH_PROCESS_NAMES' -Default @()
+    )
+    if ($explicit.Count -gt 0) {
+        return @($explicit)
     }
 
     $names = New-Object 'System.Collections.Generic.List[string]'
-    if (Get-RaymanEnvBool -Name 'RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED' -Default $false) {
+    if (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED' -Default $true) {
         $names.Add('Code') | Out-Null
         $names.Add('Code - Insiders') | Out-Null
+        $names.Add('Codex') | Out-Null
+        $names.Add('OpenAI.Codex') | Out-Null
     }
     $names.Add('WindowsSandbox') | Out-Null
     $names.Add('WindowsSandboxClient') | Out-Null
@@ -1442,6 +2296,7 @@ function Invoke-RaymanNativeCommandCapture {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_native_capture_' + [Guid]::NewGuid().ToString('N'))
     $stdoutPath = $tempBase + '.stdout.txt'
     $stderrPath = $tempBase + '.stderr.txt'
+    $proc = $null
 
     try {
         $params = @{
@@ -1454,6 +2309,9 @@ function Invoke-RaymanNativeCommandCapture {
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
             $params['WorkingDirectory'] = $WorkingDirectory
+        }
+        if (Test-RaymanWindowsPlatform) {
+            $params['WindowStyle'] = 'Hidden'
         }
 
         $proc = Start-Process @params
@@ -1479,6 +2337,11 @@ function Invoke-RaymanNativeCommandCapture {
         $joinedOutput = @($result.stdout + $result.stderr) -join [Environment]::NewLine
         $result.output = [string]$joinedOutput
     } finally {
+        try {
+            if ($null -ne $proc) {
+                $proc.Dispose()
+            }
+        } catch {}
         try { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } catch {}
         try { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } catch {}
     }
@@ -1863,6 +2726,11 @@ function Invoke-RaymanGitBootstrap {
             $report.error_message = if (-not [string]::IsNullOrWhiteSpace([string]$loginResult.output)) { [string]$loginResult.output } else { [string]$loginResult.error }
             $report.repair_action = ('手工执行 `{0} auth login --hostname {1} --git-protocol {2} --web` 完成登录。' -f [string]$report.github_cli, $GitHubHost, $GitProtocol)
         }
+        try {
+            if ($null -ne $loginProc) {
+                $loginProc.Dispose()
+            }
+        } catch {}
     } elseif ($report.github_auth_status -eq 'unknown') {
         $report.error_message = [string]$authStatus.output
         $report.repair_action = ('执行 `{0} auth status --hostname {1}` 确认状态；必要时再执行 `{0} auth login --hostname {1} --git-protocol {2} --web`。' -f [string]$report.github_cli, $GitHubHost, $GitProtocol)
@@ -2091,7 +2959,22 @@ function Invoke-RaymanGitSafe {
             }
         }) -join ' '
 
-        $proc = Start-Process -FilePath ([string]$gitCmd.Source) -ArgumentList $argumentString -WorkingDirectory $WorkspaceRoot -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $params = @{
+            FilePath = [string]$gitCmd.Source
+            ArgumentList = $argumentString
+            WorkingDirectory = $WorkspaceRoot
+            Wait = $true
+            PassThru = $true
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+        }
+        if (Test-RaymanWindowsPlatform) {
+            $params['WindowStyle'] = 'Hidden'
+        } else {
+            $params['NoNewWindow'] = $true
+        }
+
+        $proc = Start-Process @params
 
         if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
             $result.stdout = @([string[]](Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue))
@@ -2107,6 +2990,11 @@ function Invoke-RaymanGitSafe {
         $result.reason = 'start_failed'
         $result.stderr = @($_.Exception.Message)
     } finally {
+        try {
+            if ($null -ne $proc) {
+                $proc.Dispose()
+            }
+        } catch {}
         try { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } catch {}
         try { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } catch {}
     }
@@ -2138,6 +3026,9 @@ function Get-RaymanScmTrackedNoiseRules {
         [pscustomobject]@{ Key = 'cursor_rules'; Label = '.cursorrules'; QueryRoot = '.cursorrules'; Path = '.cursorrules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'cline_rules'; Label = '.clinerules'; QueryRoot = '.clinerules'; Path = '.clinerules'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'workspace_env'; Label = '.rayman.env.ps1'; QueryRoot = '.rayman.env.ps1'; Path = '.rayman.env.ps1'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'workspace_project'; Label = '.rayman.project.json'; QueryRoot = '.rayman.project.json'; Path = '.rayman.project.json'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'all_dev_ps1'; Label = 'all-dev.ps1'; QueryRoot = 'all-dev.ps1'; Path = 'all-dev.ps1'; Recursive = $false; Kind = 'rayman' },
+        [pscustomobject]@{ Key = 'all_dev_bat'; Label = 'all-dev.bat'; QueryRoot = 'all-dev.bat'; Path = 'all-dev.bat'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_tasks'; Label = '.vscode/tasks.json'; QueryRoot = '.vscode/tasks.json'; Path = '.vscode/tasks.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_settings'; Label = '.vscode/settings.json'; QueryRoot = '.vscode/settings.json'; Path = '.vscode/settings.json'; Recursive = $false; Kind = 'rayman' },
         [pscustomobject]@{ Key = 'vscode_launch'; Label = '.vscode/launch.json'; QueryRoot = '.vscode/launch.json'; Path = '.vscode/launch.json'; Recursive = $false; Kind = 'rayman' },
@@ -2519,6 +3410,7 @@ function Invoke-RaymanAttentionAlert {
 
     $alertEnabled = Get-RaymanAttentionAlertEnabled -WorkspaceRoot $root -Kind $Kind
     $speechEnabled = Get-RaymanAttentionSpeechEnabled -WorkspaceRoot $root -Kind $Kind
+    $soundEnabled = Get-RaymanAttentionSoundEnabled -WorkspaceRoot $root -Kind $Kind
     $surface = Get-RaymanAttentionSurface -WorkspaceRoot $root -Default 'log'
 
     if (-not $alertEnabled) {
@@ -2547,30 +3439,38 @@ function Invoke-RaymanAttentionAlert {
     } catch {}
 
     $delivered = $false
-    if ($surface -eq 'toast') {
-        if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-            try {
-                $attentionParams = @{
-                    Kind = $Kind
-                    Message = $message
-                    Title = $toastTitle
-                    WorkspaceRoot = $root
-                }
-                if ($speechEnabled) {
-                    $attentionParams['EnableSpeech'] = $true
-                } else {
-                    $attentionParams['DisableSpeech'] = $true
-                }
-                & $scriptPath @attentionParams | Out-Null
-                $delivered = $true
-            } catch {
-                Write-RaymanDiag -Scope 'attention' -Message ("request_attention failed: {0}" -f $_.Exception.ToString()) -WorkspaceRoot $root
+    $shouldInvokeScript = (
+        -not [string]::IsNullOrWhiteSpace($scriptPath) -and
+        (Test-Path -LiteralPath $scriptPath -PathType Leaf) -and
+        ($surface -eq 'toast' -or $speechEnabled -or $soundEnabled)
+    )
+    if ($shouldInvokeScript) {
+        try {
+            $attentionParams = @{
+                Kind = $Kind
+                Message = $message
+                Title = $toastTitle
+                WorkspaceRoot = $root
+            }
+            if ($speechEnabled) {
+                $attentionParams['EnableSpeech'] = $true
+            } else {
+                $attentionParams['DisableSpeech'] = $true
+            }
+            if (-not $soundEnabled) {
+                $attentionParams['DisableSound'] = $true
+            }
+            & $scriptPath @attentionParams | Out-Null
+            $delivered = $true
+        } catch {
+            Write-RaymanDiag -Scope 'attention' -Message ("request_attention failed: {0}" -f $_.Exception.ToString()) -WorkspaceRoot $root
+            if ($surface -ne 'silent') {
                 Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
             }
-        } else {
-            Write-RaymanRequiredAssetDiagnostics -Analysis $assetAnalysis -Scope 'attention'
-            Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
         }
+    } elseif ($surface -eq 'toast') {
+        Write-RaymanRequiredAssetDiagnostics -Analysis $assetAnalysis -Scope 'attention'
+        Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
     } elseif ($surface -eq 'log') {
         Write-RaymanAttentionConsoleMessage -Kind $Kind -Title $toastTitle -Message $message
     }

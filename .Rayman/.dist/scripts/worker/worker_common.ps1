@@ -6,6 +6,11 @@ if (Test-Path -LiteralPath $workerCommonPath -PathType Leaf) {
   . $workerCommonPath
 }
 
+$workerDotNetWorkspaceProjectsPath = Join-Path $PSScriptRoot '..\utils\dotnet_workspace_projects.ps1'
+if (Test-Path -LiteralPath $workerDotNetWorkspaceProjectsPath -PathType Leaf) {
+  . $workerDotNetWorkspaceProjectsPath -NoMain
+}
+
 function Ensure-RaymanWorkerDirectory {
   param([string]$Path)
 
@@ -165,6 +170,24 @@ function Get-RaymanWorkerDebugLastPath {
   return (Join-Path (Get-RaymanWorkerRuntimeRoot -WorkspaceRoot $WorkspaceRoot) 'debug.last.json')
 }
 
+function Get-RaymanWorkerAutoSyncStatusPath {
+  param([string]$WorkspaceRoot)
+
+  return (Join-Path (Get-RaymanWorkerRuntimeRoot -WorkspaceRoot $WorkspaceRoot) 'auto_sync.last.json')
+}
+
+function Get-RaymanWorkerExportDefaultsPath {
+  param([string]$WorkspaceRoot)
+
+  return (Join-Path (Get-RaymanWorkerDevStateRoot -WorkspaceRoot $WorkspaceRoot) 'export.defaults.json')
+}
+
+function Get-RaymanWorkerExportLastPath {
+  param([string]$WorkspaceRoot)
+
+  return (Join-Path (Get-RaymanWorkerRuntimeRoot -WorkspaceRoot $WorkspaceRoot) 'export.last.json')
+}
+
 function Get-RaymanWorkerHostRuntimeRoot {
   param([string]$WorkspaceRoot)
 
@@ -195,6 +218,22 @@ function Get-RaymanWorkerSyncLastPath {
   param([string]$WorkspaceRoot)
 
   return (Join-Path (Get-RaymanWorkerHostRuntimeRoot -WorkspaceRoot $WorkspaceRoot) 'sync.last.json')
+}
+
+function Set-RaymanWorkerAttachedSyncManifest {
+  param([string]$WorkspaceRoot)
+
+  $manifest = [pscustomobject]@{
+    schema = 'rayman.worker.sync_manifest.v1'
+    generated_at = (Get-Date).ToString('o')
+    mode = 'attached'
+    workspace_root = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    staging_root = ''
+    cleanup_hint = ''
+    rollback_hint = ''
+  }
+  Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot) -Value $manifest
+  return $manifest
 }
 
 function Get-RaymanWorkerVsdbgStatusPath {
@@ -316,6 +355,110 @@ function Get-RaymanWorkerAuthToken {
   return [string]$raw
 }
 
+function Get-RaymanWorkerPolicyString {
+  param(
+    [string]$WorkspaceRoot = '',
+    [string]$Name,
+    [string]$Default = ''
+  )
+
+  if (Get-Command Get-RaymanWorkspaceEnvString -ErrorAction SilentlyContinue) {
+    $value = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name $Name -Default $Default)
+    if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+      return $value
+    }
+    return $Default
+  }
+
+  $raw = [Environment]::GetEnvironmentVariable($Name)
+  if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+    return $Default
+  }
+  return [string]$raw
+}
+
+function Get-RaymanWorkerPolicyBool {
+  param(
+    [string]$WorkspaceRoot = '',
+    [string]$Name,
+    [bool]$Default = $false
+  )
+
+  if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    return [bool](Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name $Name -Default $Default)
+  }
+
+  $raw = [Environment]::GetEnvironmentVariable($Name)
+  if ([string]::IsNullOrWhiteSpace([string]$raw)) {
+    return $Default
+  }
+  return ($raw -match '^(?i:true|1|yes|y|on)$')
+}
+
+function Get-RaymanWorkerPreferredRemoteWorkerId {
+  param([string]$WorkspaceRoot = '')
+
+  return [string](Get-RaymanWorkerPolicyString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_PREFERRED_REMOTE_ID' -Default '9366f479e6b9199a')
+}
+
+function Get-RaymanWorkerPreferredRemoteWorkerName {
+  param([string]$WorkspaceRoot = '')
+
+  return [string](Get-RaymanWorkerPolicyString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_PREFERRED_REMOTE_NAME' -Default 'INTEL-RAYMANWEB:RaymanAgent.Worker')
+}
+
+function Get-RaymanWorkerPreferredRemoteControlUrl {
+  param([string]$WorkspaceRoot = '')
+
+  return [string](Get-RaymanWorkerPolicyString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL' -Default 'http://192.168.2.107:47632/')
+}
+
+function Get-RaymanWorkerProtectedMachineNames {
+  param([string]$WorkspaceRoot = '')
+
+  $raw = [string](Get-RaymanWorkerPolicyString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_PROTECTED_MACHINE_NAMES' -Default 'QIN5521')
+  return @($raw -split '[,;]' | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { $_.Trim().ToUpperInvariant() })
+}
+
+function Get-RaymanWorkerAllowProtectedLocal {
+  param([string]$WorkspaceRoot = '')
+
+  return [bool](Get-RaymanWorkerPolicyBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_ALLOW_PROTECTED_LOCAL' -Default $false)
+}
+
+function Test-RaymanWorkerProtectedDevMachine {
+  param([string]$WorkspaceRoot = '')
+
+  $currentMachine = [string](Get-RaymanWorkerMachineName)
+  if ([string]::IsNullOrWhiteSpace([string]$currentMachine)) {
+    return $false
+  }
+
+  return (@(Get-RaymanWorkerProtectedMachineNames -WorkspaceRoot $WorkspaceRoot) -contains $currentMachine.ToUpperInvariant())
+}
+
+function Get-RaymanWorkerStatusTimeoutSeconds {
+  param([string]$WorkspaceRoot = '')
+
+  return [int](Get-RaymanWorkerEnvInt -Name 'RAYMAN_WORKER_STATUS_TIMEOUT_SECONDS' -Default 10 -Min 1 -Max 600)
+}
+
+function Get-RaymanWorkerStatusFallbackTimeoutSeconds {
+  param([string]$WorkspaceRoot = '')
+
+  return [int](Get-RaymanWorkerEnvInt -Name 'RAYMAN_WORKER_STATUS_FALLBACK_TIMEOUT_SECONDS' -Default 60 -Min 5 -Max 600)
+}
+
+function Test-RaymanWorkerControlAuthRequired {
+  param([string]$WorkspaceRoot = '')
+
+  if (-not (Get-RaymanWorkerLanEnabled -WorkspaceRoot $WorkspaceRoot)) {
+    return $false
+  }
+
+  return (-not [string]::IsNullOrWhiteSpace([string](Get-RaymanWorkerAuthToken -WorkspaceRoot $WorkspaceRoot)))
+}
+
 function Get-RaymanWorkerAdvertisedAddress {
   param([string]$WorkspaceRoot)
 
@@ -350,11 +493,196 @@ function Get-RaymanWorkerControlHeaders {
   param([string]$WorkspaceRoot = '')
 
   $headers = @{}
-  $token = [string](Get-RaymanWorkerAuthToken -WorkspaceRoot $WorkspaceRoot)
-  if (-not [string]::IsNullOrWhiteSpace([string]$token)) {
+  if (Test-RaymanWorkerControlAuthRequired -WorkspaceRoot $WorkspaceRoot) {
+    $token = [string](Get-RaymanWorkerAuthToken -WorkspaceRoot $WorkspaceRoot)
     $headers['X-Rayman-Worker-Token'] = $token
   }
   return $headers
+}
+
+function Get-RaymanWorkerNormalizedControlUrl {
+  param([string]$ControlUrl = '')
+
+  if ([string]::IsNullOrWhiteSpace([string]$ControlUrl)) {
+    return ''
+  }
+
+  try {
+    return (([System.Uri]([string]$ControlUrl)).AbsoluteUri.TrimEnd('/')).ToLowerInvariant()
+  } catch {
+    return ([string]$ControlUrl).Trim().TrimEnd('/').ToLowerInvariant()
+  }
+}
+
+function Get-RaymanWorkerPreferredRemoteDescriptor {
+  param([string]$WorkspaceRoot = '')
+
+  return [pscustomobject]@{
+    worker_id = [string](Get-RaymanWorkerPreferredRemoteWorkerId -WorkspaceRoot $WorkspaceRoot)
+    worker_name = [string](Get-RaymanWorkerPreferredRemoteWorkerName -WorkspaceRoot $WorkspaceRoot)
+    control_url = [string](Get-RaymanWorkerPreferredRemoteControlUrl -WorkspaceRoot $WorkspaceRoot)
+  }
+}
+
+function Get-RaymanWorkerControlHost {
+  param([object]$Worker)
+
+  if ($null -eq $Worker) {
+    return ''
+  }
+
+  if ($Worker.PSObject.Properties['control_url'] -and -not [string]::IsNullOrWhiteSpace([string]$Worker.control_url)) {
+    try {
+      return [string](([System.Uri]([string]$Worker.control_url)).Host)
+    } catch {}
+  }
+  if ($Worker.PSObject.Properties['address']) {
+    return [string]$Worker.address
+  }
+  return ''
+}
+
+function Test-RaymanWorkerMatchesPreferredRemote {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Worker
+  )
+
+  if ($null -eq $Worker) {
+    return $false
+  }
+
+  $preferred = Get-RaymanWorkerPreferredRemoteDescriptor -WorkspaceRoot $WorkspaceRoot
+  if (-not [string]::IsNullOrWhiteSpace([string]$preferred.worker_id) -and $Worker.PSObject.Properties['worker_id'] -and [string]$Worker.worker_id -eq [string]$preferred.worker_id) {
+    return $true
+  }
+
+  $normalizedPreferredControlUrl = Get-RaymanWorkerNormalizedControlUrl -ControlUrl ([string]$preferred.control_url)
+  if (-not [string]::IsNullOrWhiteSpace([string]$normalizedPreferredControlUrl) -and $Worker.PSObject.Properties['control_url']) {
+    $normalizedWorkerControlUrl = Get-RaymanWorkerNormalizedControlUrl -ControlUrl ([string]$Worker.control_url)
+    if ($normalizedWorkerControlUrl -eq $normalizedPreferredControlUrl) {
+      return $true
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$preferred.worker_name) -and $Worker.PSObject.Properties['worker_name'] -and [string]$Worker.worker_name -ieq [string]$preferred.worker_name) {
+    return $true
+  }
+
+  return $false
+}
+
+function Get-RaymanPreferredRemoteWorker {
+  param(
+    [string]$WorkspaceRoot,
+    [object[]]$Workers = @()
+  )
+
+  $candidates = @($Workers)
+  if ($candidates.Count -eq 0) {
+    $candidates = @((Get-RaymanWorkerRegistryDocument -WorkspaceRoot $WorkspaceRoot).workers)
+  }
+
+  return ($candidates | Where-Object { Test-RaymanWorkerMatchesPreferredRemote -WorkspaceRoot $WorkspaceRoot -Worker $_ } | Select-Object -First 1)
+}
+
+function Test-RaymanWorkerReferencesCurrentMachine {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Worker
+  )
+
+  if ($null -eq $Worker) {
+    return $false
+  }
+
+  $resolvedWorkspaceRoot = ''
+  try {
+    $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  } catch {}
+  $localStableId = ''
+  if (-not [string]::IsNullOrWhiteSpace([string]$resolvedWorkspaceRoot)) {
+    try {
+      $localStableId = [string](Get-RaymanWorkerStableId -WorkspaceRoot $resolvedWorkspaceRoot)
+    } catch {}
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$localStableId) -and $Worker.PSObject.Properties['worker_id'] -and [string]$Worker.worker_id -eq $localStableId) {
+    return $true
+  }
+
+  $currentMachine = [string](Get-RaymanWorkerMachineName)
+  if (-not [string]::IsNullOrWhiteSpace([string]$currentMachine)) {
+    if ($Worker.PSObject.Properties['machine_name'] -and [string]$Worker.machine_name -ieq $currentMachine) {
+      return $true
+    }
+    if ($Worker.PSObject.Properties['worker_name'] -and [string]$Worker.worker_name -ilike ('{0}:*' -f $currentMachine)) {
+      return $true
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$resolvedWorkspaceRoot) -and $Worker.PSObject.Properties['workspace_root'] -and -not [string]::IsNullOrWhiteSpace([string]$Worker.workspace_root)) {
+    try {
+      if ((Resolve-Path -LiteralPath ([string]$Worker.workspace_root)).Path -eq $resolvedWorkspaceRoot) {
+        return $true
+      }
+    } catch {}
+  }
+
+  $controlHost = [string](Get-RaymanWorkerControlHost -Worker $Worker)
+  if ($controlHost -match '^(?i:127\.0\.0\.1|localhost)$') {
+    return $true
+  }
+
+  if ($Worker.PSObject.Properties['address'] -and [string]$Worker.address -match '^(?i:127\.0\.0\.1|localhost)$') {
+    return $true
+  }
+
+  return $false
+}
+
+function Test-RaymanWorkerProtectedLocalCandidate {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Worker
+  )
+
+  if (Get-RaymanWorkerAllowProtectedLocal -WorkspaceRoot $WorkspaceRoot) {
+    return $false
+  }
+  if (-not (Test-RaymanWorkerProtectedDevMachine -WorkspaceRoot $WorkspaceRoot)) {
+    return $false
+  }
+
+  return (Test-RaymanWorkerReferencesCurrentMachine -WorkspaceRoot $WorkspaceRoot -Worker $Worker)
+}
+
+function Get-RaymanSelectableRegistryWorkers {
+  param(
+    [string]$WorkspaceRoot,
+    [object[]]$Workers = @()
+  )
+
+  $candidates = @($Workers)
+  if ($candidates.Count -eq 0) {
+    $candidates = @((Get-RaymanWorkerRegistryDocument -WorkspaceRoot $WorkspaceRoot).workers)
+  }
+  if (Get-RaymanWorkerAllowProtectedLocal -WorkspaceRoot $WorkspaceRoot) {
+    return @($candidates)
+  }
+
+  return @($candidates | Where-Object { -not (Test-RaymanWorkerProtectedLocalCandidate -WorkspaceRoot $WorkspaceRoot -Worker $_) })
+}
+
+function Get-RaymanVisibleWorkerRegistryDocument {
+  param([string]$WorkspaceRoot)
+
+  $doc = Get-RaymanWorkerRegistryDocument -WorkspaceRoot $WorkspaceRoot
+  return [pscustomobject]@{
+    schema = [string]$doc.schema
+    generated_at = [string]$doc.generated_at
+    workers = @(Get-RaymanSelectableRegistryWorkers -WorkspaceRoot $WorkspaceRoot -Workers @($doc.workers))
+  }
 }
 
 function Get-RaymanWorkerCurrentUser {
@@ -366,6 +694,235 @@ function Get-RaymanWorkerCurrentUser {
     }
     return ''
   }
+}
+
+function Test-RaymanWorkerElevatedSession {
+  if (-not (Test-RaymanWorkerWindowsHost)) {
+    return $false
+  }
+
+  try {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+  } catch {
+    return $false
+  }
+}
+
+function Test-RaymanWorkerFirewallManagementAvailable {
+  if (-not (Test-RaymanWorkerWindowsHost)) {
+    return $false
+  }
+
+  foreach ($commandName in @('Get-NetFirewallRule', 'New-NetFirewallRule', 'Remove-NetFirewallRule')) {
+    $command = Get-Command $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) {
+      return $false
+    }
+  }
+
+  return $true
+}
+
+function Get-RaymanWorkerFirewallRulePrefix {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  return ('Rayman Worker {0}' -f (Get-RaymanWorkerStableId -WorkspaceRoot $resolvedWorkspaceRoot))
+}
+
+function Get-RaymanWorkerFirewallRuleSpecs {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $prefix = Get-RaymanWorkerFirewallRulePrefix -WorkspaceRoot $resolvedWorkspaceRoot
+  $discoveryPort = Get-RaymanWorkerDiscoveryPort
+  $controlPort = Get-RaymanWorkerControlPort
+
+  return @(
+    [pscustomobject]@{
+      purpose = 'discovery'
+      display_name = ('{0} Discovery UDP {1}' -f $prefix, $discoveryPort)
+      protocol = 'UDP'
+      local_port = $discoveryPort
+    },
+    [pscustomobject]@{
+      purpose = 'control'
+      display_name = ('{0} Control TCP {1}' -f $prefix, $controlPort)
+      protocol = 'TCP'
+      local_port = $controlPort
+    }
+  )
+}
+
+function Get-RaymanWorkerFirewallRuleRecords {
+  param([string]$WorkspaceRoot)
+
+  $records = New-Object System.Collections.Generic.List[object]
+  foreach ($spec in @(Get-RaymanWorkerFirewallRuleSpecs -WorkspaceRoot $WorkspaceRoot)) {
+    $rules = @()
+    if (Test-RaymanWorkerFirewallManagementAvailable) {
+      $rules = @(Get-NetFirewallRule -DisplayName ([string]$spec.display_name) -ErrorAction SilentlyContinue)
+    }
+
+    $rulesPresent = ($rules.Count -gt 0)
+    $enabled = ($rulesPresent -and (@($rules | Where-Object { [string]$_.Enabled -eq 'True' }).Count -gt 0))
+    $allow = ($rulesPresent -and (@($rules | Where-Object { [string]$_.Action -eq 'Allow' }).Count -gt 0))
+    $records.Add([pscustomobject]@{
+        purpose = [string]$spec.purpose
+        display_name = [string]$spec.display_name
+        protocol = [string]$spec.protocol
+        local_port = [int]$spec.local_port
+        exists = $rulesPresent
+        enabled = $enabled
+        action_allow = $allow
+      }) | Out-Null
+  }
+
+  return @($records.ToArray())
+}
+
+function Get-RaymanWorkerFirewallStatus {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $required = Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedWorkspaceRoot
+  $supported = Test-RaymanWorkerFirewallManagementAvailable
+  $elevated = if ($supported) { Test-RaymanWorkerElevatedSession } else { $false }
+  $records = @(Get-RaymanWorkerFirewallRuleRecords -WorkspaceRoot $resolvedWorkspaceRoot)
+  $ready = if (-not $required) {
+    $true
+  } elseif (-not $supported) {
+    $false
+  } else {
+    (@($records | Where-Object { -not $_.exists -or -not $_.enabled -or -not $_.action_allow }).Count -eq 0)
+  }
+
+  $errorMessage = ''
+  if ($required -and -not $ready) {
+    if (-not $supported) {
+      $errorMessage = 'Windows Firewall cmdlets are unavailable; worker LAN access could not be verified automatically.'
+    } elseif (-not $elevated) {
+      $errorMessage = 'Worker LAN firewall rules are missing or disabled; re-run `rayman.ps1 worker install-local` from an elevated PowerShell session.'
+    } else {
+      $errorMessage = 'Worker LAN firewall rules are missing or disabled.'
+    }
+  }
+
+  return [pscustomobject]@{
+    schema = 'rayman.worker.firewall.status.v1'
+    generated_at = (Get-Date).ToString('o')
+    required = [bool]$required
+    supported = [bool]$supported
+    elevated = [bool]$elevated
+    firewall_ready = [bool]$ready
+    rule_prefix = (Get-RaymanWorkerFirewallRulePrefix -WorkspaceRoot $resolvedWorkspaceRoot)
+    remote_address = 'LocalSubnet'
+    profiles = 'Any'
+    configured = $false
+    configured_count = 0
+    rules = @($records)
+    firewall_error = [string]$errorMessage
+  }
+}
+
+function Ensure-RaymanWorkerFirewallRules {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $status = Get-RaymanWorkerFirewallStatus -WorkspaceRoot $resolvedWorkspaceRoot
+  if (-not [bool]$status.required -or [bool]$status.firewall_ready -or -not [bool]$status.supported -or -not [bool]$status.elevated) {
+    return $status
+  }
+
+  $configuredCount = 0
+  $configuredSpecs = New-Object System.Collections.Generic.List[object]
+  try {
+    foreach ($spec in @(Get-RaymanWorkerFirewallRuleSpecs -WorkspaceRoot $resolvedWorkspaceRoot)) {
+      $existing = @(Get-NetFirewallRule -DisplayName ([string]$spec.display_name) -ErrorAction SilentlyContinue)
+      if ($existing.Count -gt 0) {
+        $existing | Remove-NetFirewallRule -ErrorAction Stop
+      }
+
+      New-NetFirewallRule -DisplayName ([string]$spec.display_name) `
+        -Direction Inbound `
+        -Action Allow `
+        -Protocol ([string]$spec.protocol) `
+        -LocalPort ([int]$spec.local_port) `
+        -Profile Any `
+        -RemoteAddress LocalSubnet | Out-Null
+      $configuredCount++
+      $configuredSpecs.Add($spec) | Out-Null
+    }
+
+    $updated = Get-RaymanWorkerFirewallStatus -WorkspaceRoot $resolvedWorkspaceRoot
+    if ($configuredSpecs.Count -gt 0) {
+      $mergedRules = New-Object System.Collections.Generic.List[object]
+      $configuredMap = @{}
+      foreach ($spec in @($configuredSpecs.ToArray())) {
+        $configuredMap[[string]$spec.display_name] = $spec
+      }
+      foreach ($record in @($updated.rules)) {
+        if ($configuredMap.ContainsKey([string]$record.display_name)) {
+          $spec = $configuredMap[[string]$record.display_name]
+          $mergedRules.Add([pscustomobject]@{
+              purpose = [string]$spec.purpose
+              display_name = [string]$spec.display_name
+              protocol = [string]$spec.protocol
+              local_port = [int]$spec.local_port
+              exists = $true
+              enabled = $true
+              action_allow = $true
+            }) | Out-Null
+          $configuredMap.Remove([string]$record.display_name) | Out-Null
+        } else {
+          $mergedRules.Add($record) | Out-Null
+        }
+      }
+      foreach ($spec in @($configuredMap.Values)) {
+        $mergedRules.Add([pscustomobject]@{
+            purpose = [string]$spec.purpose
+            display_name = [string]$spec.display_name
+            protocol = [string]$spec.protocol
+            local_port = [int]$spec.local_port
+            exists = $true
+            enabled = $true
+            action_allow = $true
+          }) | Out-Null
+      }
+      $updated | Add-Member -MemberType NoteProperty -Name rules -Value @($mergedRules.ToArray()) -Force
+      $updated | Add-Member -MemberType NoteProperty -Name firewall_ready -Value $true -Force
+      $updated | Add-Member -MemberType NoteProperty -Name firewall_error -Value '' -Force
+    }
+    $updated | Add-Member -MemberType NoteProperty -Name configured -Value $true -Force
+    $updated | Add-Member -MemberType NoteProperty -Name configured_count -Value $configuredCount -Force
+    return $updated
+  } catch {
+    $failed = Get-RaymanWorkerFirewallStatus -WorkspaceRoot $resolvedWorkspaceRoot
+    $failed | Add-Member -MemberType NoteProperty -Name configured -Value $false -Force
+    $failed | Add-Member -MemberType NoteProperty -Name configured_count -Value $configuredCount -Force
+    $failed | Add-Member -MemberType NoteProperty -Name firewall_error -Value ("failed to configure worker LAN firewall rules: {0}" -f $_.Exception.Message) -Force
+    return $failed
+  }
+}
+
+function Remove-RaymanWorkerFirewallRules {
+  param([string]$WorkspaceRoot)
+
+  if (-not (Test-RaymanWorkerFirewallManagementAvailable) -or -not (Test-RaymanWorkerElevatedSession)) {
+    return 0
+  }
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $prefix = Get-RaymanWorkerFirewallRulePrefix -WorkspaceRoot $resolvedWorkspaceRoot
+  $rules = @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { [string]$_.DisplayName -like ('{0} *' -f $prefix) })
+  if ($rules.Count -eq 0) {
+    return 0
+  }
+
+  $rules | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+  return $rules.Count
 }
 
 function Get-RaymanWorkerGitSnapshot {
@@ -544,67 +1101,233 @@ function Get-RaymanWorkerExecutionRoot {
 function Get-RaymanWorkerProjectTargetFrameworks {
   param([string]$ProjectPath)
 
-  $frameworks = New-Object System.Collections.Generic.List[string]
-  try {
-    [xml]$xml = Get-Content -LiteralPath $ProjectPath -Raw -Encoding UTF8
-    foreach ($propGroup in @($xml.Project.PropertyGroup)) {
-      if ($null -eq $propGroup) { continue }
-      foreach ($name in @('TargetFramework', 'TargetFrameworks')) {
-        $node = $propGroup.$name
-        if ($null -eq $node) { continue }
-        foreach ($segment in @([string]$node -split ';')) {
-          $value = ([string]$segment).Trim()
-          if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
-            $frameworks.Add($value) | Out-Null
-          }
-        }
+  if (Get-Command Get-RaymanDotNetTargetFrameworksFromProjectPath -ErrorAction SilentlyContinue) {
+    return @(Get-RaymanDotNetTargetFrameworksFromProjectPath -ProjectPath $ProjectPath)
+  }
+
+  return @()
+}
+
+function Resolve-RaymanWorkerProjectPath {
+  param(
+    [string]$Path,
+    [switch]$AllowMissing
+  )
+
+  if (Get-Command Resolve-RaymanDotNetWorkspacePath -ErrorAction SilentlyContinue) {
+    return (Resolve-RaymanDotNetWorkspacePath -Path $Path -AllowMissing:$AllowMissing)
+  }
+
+  return ''
+}
+
+function Test-RaymanWorkerProjectPathsEqual {
+  param(
+    [string]$Left,
+    [string]$Right
+  )
+
+  if (Get-Command Test-RaymanDotNetWorkspacePathsEqual -ErrorAction SilentlyContinue) {
+    return (Test-RaymanDotNetWorkspacePathsEqual -Left $Left -Right $Right)
+  }
+
+  return $false
+}
+
+function Get-RaymanWorkerProjectRelativePath {
+  param(
+    [string]$BaseRoot,
+    [string]$Path
+  )
+
+  if (Get-Command Get-RaymanDotNetWorkspaceRelativePath -ErrorAction SilentlyContinue) {
+    return (Get-RaymanDotNetWorkspaceRelativePath -BaseRoot $BaseRoot -Path $Path)
+  }
+
+  return ''
+}
+
+function Test-RaymanWorkerProjectPathExcluded {
+  param(
+    [string]$FullPath,
+    [string]$BaseRoot = ''
+  )
+
+  if (Get-Command Test-RaymanDotNetWorkspacePathExcluded -ErrorAction SilentlyContinue) {
+    return (Test-RaymanDotNetWorkspacePathExcluded -Path $FullPath -BaseRoot $BaseRoot -ExcludedSegments @('.git', '.rayman', '.venv', 'node_modules', 'bin', 'obj'))
+  }
+
+  return $true
+}
+
+function Get-RaymanWorkerSourceSolutionProjectPaths {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ExecutionRoot = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) {
+    return @()
+  }
+
+  $resolvedWorkspaceRoot = Resolve-RaymanWorkerProjectPath -Path $WorkspaceRoot
+  if ([string]::IsNullOrWhiteSpace([string]$resolvedWorkspaceRoot) -or -not (Test-Path -LiteralPath $resolvedWorkspaceRoot -PathType Container)) {
+    return @()
+  }
+
+  $resolvedExecutionRoot = if ([string]::IsNullOrWhiteSpace([string]$ExecutionRoot)) {
+    $resolvedWorkspaceRoot
+  } else {
+    Resolve-RaymanWorkerProjectPath -Path $ExecutionRoot -AllowMissing
+  }
+
+  if (-not (Get-Command Get-RaymanWorkspaceKind -ErrorAction SilentlyContinue)) {
+    return @()
+  }
+  if ((Get-RaymanWorkspaceKind -WorkspaceRoot $resolvedWorkspaceRoot) -ne 'source') {
+    return @()
+  }
+
+  if (-not (Get-Command Get-RaymanDotNetRootSolutionPaths -ErrorAction SilentlyContinue) -or -not (Get-Command Get-RaymanDotNetSolutionProjectRelativePaths -ErrorAction SilentlyContinue) -or -not (Get-Command Resolve-RaymanDotNetSolutionProjectPath -ErrorAction SilentlyContinue)) {
+    return @()
+  }
+
+  foreach ($solutionPath in @(Get-RaymanDotNetRootSolutionPaths -WorkspaceRoot $resolvedWorkspaceRoot)) {
+    $projects = New-Object System.Collections.Generic.List[string]
+    foreach ($relativePath in @(Get-RaymanDotNetSolutionProjectRelativePaths -SolutionPath $solutionPath)) {
+      $projectPath = Resolve-RaymanDotNetSolutionProjectPath -ProjectRelativePath $relativePath -WorkspaceRoot $resolvedWorkspaceRoot -ExecutionRoot $resolvedExecutionRoot
+      if ([string]::IsNullOrWhiteSpace([string]$projectPath)) {
+        continue
+      }
+      if (-not $projects.Contains([string]$projectPath)) {
+        $projects.Add([string]$projectPath) | Out-Null
       }
     }
-  } catch {}
+    if ($projects.Count -gt 0) {
+      return @($projects.ToArray())
+    }
+  }
 
-  return @($frameworks.ToArray() | Select-Object -Unique)
+  return @()
+}
+
+function New-RaymanWorkerDotNetEntrypoint {
+  param([string]$ProjectPath)
+
+  if ([string]::IsNullOrWhiteSpace([string]$ProjectPath)) { return $null }
+  $resolvedProjectPath = Resolve-RaymanWorkerProjectPath -Path $ProjectPath
+  if ([string]::IsNullOrWhiteSpace([string]$resolvedProjectPath) -or -not (Test-Path -LiteralPath $resolvedProjectPath -PathType Leaf)) {
+    return $null
+  }
+
+  $projectName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedProjectPath)
+  if ($projectName -match '(?i)test') { return $null }
+
+  $projectText = if (Get-Command Get-RaymanDotNetProjectText -ErrorAction SilentlyContinue) {
+    Get-RaymanDotNetProjectText -ProjectPath $resolvedProjectPath
+  } else {
+    ''
+  }
+
+  if (Get-Command Test-RaymanDotNetProjectLaunchableFromText -ErrorAction SilentlyContinue) {
+    if (-not (Test-RaymanDotNetProjectLaunchableFromText -ProjectText $projectText)) {
+      return $null
+    }
+  } elseif (Get-Command Test-RaymanDotNetProjectLaunchable -ErrorAction SilentlyContinue) {
+    if (-not (Test-RaymanDotNetProjectLaunchable -ProjectPath $resolvedProjectPath)) {
+      return $null
+    }
+  }
+
+  $frameworks = @(
+    if (-not [string]::IsNullOrWhiteSpace([string]$projectText) -and (Get-Command Get-RaymanDotNetTargetFrameworksFromText -ErrorAction SilentlyContinue)) {
+      @(Get-RaymanDotNetTargetFrameworksFromText -ProjectText $projectText)
+    } else {
+      @(Get-RaymanWorkerProjectTargetFrameworks -ProjectPath $resolvedProjectPath)
+    }
+  )
+  if ($frameworks.Count -eq 0) {
+    $frameworks = @('net8.0')
+  }
+
+  $projectDirectory = Split-Path -Parent $resolvedProjectPath
+  $existingPrograms = New-Object System.Collections.Generic.List[string]
+  $guessedPrograms = New-Object System.Collections.Generic.List[string]
+  foreach ($framework in $frameworks) {
+    foreach ($candidateLeaf in @(
+        ("{0}.dll" -f $projectName),
+        ("{0}.exe" -f $projectName)
+      )) {
+      $candidate = Join-Path $projectDirectory ("bin\Debug\{0}\{1}" -f $framework, $candidateLeaf)
+      $guessedPrograms.Add($candidate) | Out-Null
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        $existingPrograms.Add($candidate) | Out-Null
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    project_name = $projectName
+    project_path = [string]$resolvedProjectPath
+    target_frameworks = @($frameworks)
+    guessed_programs = @($guessedPrograms.ToArray() | Select-Object -Unique)
+    existing_programs = @($existingPrograms.ToArray() | Select-Object -Unique)
+  }
+}
+
+function Get-RaymanWorkerDotNetProjectFiles {
+  param([string]$ExecutionRoot)
+
+  if (-not (Get-Command Get-RaymanDotNetProjectFiles -ErrorAction SilentlyContinue)) {
+    return @()
+  }
+
+  return @(Get-RaymanDotNetProjectFiles -Root $ExecutionRoot -ProjectExtensions @('.csproj', '.fsproj', '.vbproj') -ExcludedSegments @('.git', '.rayman', '.venv', 'node_modules', 'bin', 'obj'))
 }
 
 function Get-RaymanWorkerDotNetEntrypoints {
-  param([string]$ExecutionRoot)
+  param(
+    [string]$ExecutionRoot,
+    [string]$WorkspaceRoot = ''
+  )
 
   $entries = New-Object System.Collections.Generic.List[object]
   if (-not (Test-Path -LiteralPath $ExecutionRoot -PathType Container)) {
     return @()
   }
 
-  $projects = @(Get-ChildItem -LiteralPath $ExecutionRoot -Recurse -Filter '*.csproj' -File -ErrorAction SilentlyContinue)
-  foreach ($project in $projects) {
-    $projectName = [System.IO.Path]::GetFileNameWithoutExtension($project.Name)
-    if ($projectName -match '(?i)test') { continue }
+  $resolvedExecutionRoot = Resolve-RaymanWorkerProjectPath -Path $ExecutionRoot
+  $resolvedWorkspaceRoot = if ([string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) {
+    $resolvedExecutionRoot
+  } else {
+    Resolve-RaymanWorkerProjectPath -Path $WorkspaceRoot -AllowMissing
+  }
 
-    $frameworks = @(Get-RaymanWorkerProjectTargetFrameworks -ProjectPath $project.FullName)
-    if ($frameworks.Count -eq 0) {
-      $frameworks = @('net8.0')
+  $preferredProjectPaths = @()
+  foreach ($projectPath in @(Get-RaymanWorkerSourceSolutionProjectPaths -WorkspaceRoot $resolvedWorkspaceRoot -ExecutionRoot $resolvedExecutionRoot)) {
+    $preferredProjectPaths += [string]$projectPath
+  }
+
+  $projectPaths = if ($preferredProjectPaths.Count -gt 0) {
+    @($preferredProjectPaths)
+  } else {
+    @(Get-RaymanWorkerDotNetProjectFiles -ExecutionRoot $resolvedExecutionRoot)
+  }
+
+  foreach ($projectPath in @($projectPaths)) {
+    $entry = New-RaymanWorkerDotNetEntrypoint -ProjectPath $projectPath
+    if ($null -ne $entry) {
+      $entries.Add($entry) | Out-Null
     }
+  }
 
-    $existingPrograms = New-Object System.Collections.Generic.List[string]
-    $guessedPrograms = New-Object System.Collections.Generic.List[string]
-    foreach ($framework in $frameworks) {
-      foreach ($candidateLeaf in @(
-          ("{0}.dll" -f $projectName),
-          ("{0}.exe" -f $projectName)
-        )) {
-        $candidate = Join-Path $project.Directory.FullName ("bin\Debug\{0}\{1}" -f $framework, $candidateLeaf)
-        $guessedPrograms.Add($candidate) | Out-Null
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-          $existingPrograms.Add($candidate) | Out-Null
-        }
+  if ($entries.Count -eq 0 -and $preferredProjectPaths.Count -gt 0) {
+    foreach ($projectPath in @(Get-RaymanWorkerDotNetProjectFiles -ExecutionRoot $resolvedExecutionRoot)) {
+      $entry = New-RaymanWorkerDotNetEntrypoint -ProjectPath $projectPath
+      if ($null -ne $entry) {
+        $entries.Add($entry) | Out-Null
       }
     }
-
-    $entries.Add([pscustomobject]@{
-        project_name = $projectName
-        project_path = [string]$project.FullName
-        target_frameworks = @($frameworks)
-        guessed_programs = @($guessedPrograms.ToArray() | Select-Object -Unique)
-        existing_programs = @($existingPrograms.ToArray() | Select-Object -Unique)
-      }) | Out-Null
   }
 
   return @($entries.ToArray())
@@ -616,11 +1339,18 @@ function Get-RaymanWorkerVsdbgInstallRoot {
   return (Join-Path $WorkspaceRoot '.Rayman\tools\vsdbg')
 }
 
+function Get-RaymanWorkerVsdbgPackageRoot {
+  param([string]$WorkspaceRoot)
+
+  return (Join-Path $WorkspaceRoot 'download\vsdbg')
+}
+
 function Get-RaymanWorkerVsdbgProbe {
   param([string]$WorkspaceRoot)
 
   $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   $installRoot = Get-RaymanWorkerVsdbgInstallRoot -WorkspaceRoot $resolvedWorkspaceRoot
+  $packageRoot = Get-RaymanWorkerVsdbgPackageRoot -WorkspaceRoot $resolvedWorkspaceRoot
   $override = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_VSDBG_PATH')
   if (-not [string]::IsNullOrWhiteSpace([string]$override)) {
     $candidate = [string]$override
@@ -645,6 +1375,7 @@ function Get-RaymanWorkerVsdbgProbe {
 
   foreach ($candidateInfo in @(
       @{ path = (Join-Path $installRoot 'vsdbg.exe'); source = 'workspace_tools' },
+      @{ path = (Join-Path $packageRoot 'vsdbg.exe'); source = 'package_download_cache' },
       @{ path = (Join-Path $resolvedWorkspaceRoot '.Rayman\runtime\worker\tools\vsdbg\vsdbg.exe'); source = 'legacy_runtime_tools' }
     )) {
     $candidatePath = [string]$candidateInfo.path
@@ -677,7 +1408,7 @@ function Get-RaymanWorkerVsdbgProbe {
     debugger_path = ''
     source = 'missing'
     install_root = $installRoot
-    debugger_error = 'vsdbg was not found; install-local/upgrade/debug will attempt to download it to .Rayman/tools/vsdbg.'
+    debugger_error = 'vsdbg was not found; install-local/upgrade/debug will first check download\vsdbg and then attempt to download it to .Rayman/tools/vsdbg.'
   }
 }
 
@@ -727,12 +1458,46 @@ function Initialize-RaymanWorkerDownloadEnvironment {
   }
 }
 
+function Install-RaymanWorkerVsdbgFromPackageCache {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $packageRoot = Get-RaymanWorkerVsdbgPackageRoot -WorkspaceRoot $resolvedWorkspaceRoot
+  $installRoot = Get-RaymanWorkerVsdbgInstallRoot -WorkspaceRoot $resolvedWorkspaceRoot
+
+  if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'vsdbg.exe') -PathType Leaf)) {
+    throw ("worker package vsdbg cache missing: {0}" -f (Join-Path $packageRoot 'vsdbg.exe'))
+  }
+
+  if (Test-Path -LiteralPath $installRoot) {
+    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction Stop
+  }
+  Ensure-RaymanWorkerDirectory -Path $installRoot
+
+  foreach ($child in @(Get-ChildItem -LiteralPath $packageRoot -Force -ErrorAction SilentlyContinue)) {
+    Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $installRoot $child.Name) -Recurse -Force -ErrorAction Stop
+  }
+
+  return [pscustomobject]@{
+    schema = 'rayman.worker.vsdbg.status.v1'
+    generated_at = (Get-Date).ToString('o')
+    workspace_root = $resolvedWorkspaceRoot
+    debugger_ready = (Test-Path -LiteralPath (Join-Path $installRoot 'vsdbg.exe') -PathType Leaf)
+    debugger_path = (Join-Path $installRoot 'vsdbg.exe')
+    source = 'package_download_cache'
+    install_root = $installRoot
+    download_uri = 'https://aka.ms/getvsdbgps1'
+    proxy_source = [string][Environment]::GetEnvironmentVariable('RAYMAN_PROXY_SOURCE')
+    debugger_error = ''
+  }
+}
+
 function Ensure-RaymanWorkerVsdbg {
   param([string]$WorkspaceRoot)
 
   $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   $status = Get-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot
-  if ([bool]$status.debugger_ready) {
+  if ([bool]$status.debugger_ready -and [string]$status.source -ne 'package_download_cache') {
     Write-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot -Status $status
     return $status
   }
@@ -740,6 +1505,32 @@ function Ensure-RaymanWorkerVsdbg {
   if ([string]$status.source -eq 'env_override') {
     Write-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot -Status $status
     return $status
+  }
+
+  if ([string]$status.source -eq 'package_download_cache') {
+    try {
+      $installed = Install-RaymanWorkerVsdbgFromPackageCache -WorkspaceRoot $resolvedWorkspaceRoot
+      if (-not [bool]$installed.debugger_ready) {
+        $installed | Add-Member -MemberType NoteProperty -Name debugger_error -Value 'vsdbg copy from worker package cache did not produce .Rayman\tools\vsdbg\vsdbg.exe.' -Force
+      }
+      Write-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot -Status $installed
+      return $installed
+    } catch {
+      $status = [pscustomobject]@{
+        schema = 'rayman.worker.vsdbg.status.v1'
+        generated_at = (Get-Date).ToString('o')
+        workspace_root = $resolvedWorkspaceRoot
+        debugger_ready = $false
+        debugger_path = ''
+        source = 'package_download_cache'
+        install_root = (Get-RaymanWorkerVsdbgInstallRoot -WorkspaceRoot $resolvedWorkspaceRoot)
+        download_uri = 'https://aka.ms/getvsdbgps1'
+        proxy_source = [string][Environment]::GetEnvironmentVariable('RAYMAN_PROXY_SOURCE')
+        debugger_error = ("failed to install vsdbg from worker package cache: {0}" -f $_.Exception.Message)
+      }
+      Write-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot -Status $status
+      return $status
+    }
   }
 
   Initialize-RaymanWorkerDownloadEnvironment -WorkspaceRoot $resolvedWorkspaceRoot
@@ -894,7 +1685,8 @@ function Get-RaymanWorkerDotNetProcesses {
 function Get-RaymanWorkerDefaultDebugTarget {
   param(
     [string]$ExecutionRoot,
-    [string]$ProgramOverride = ''
+    [string]$ProgramOverride = '',
+    [string]$WorkspaceRoot = ''
   )
 
   if (-not [string]::IsNullOrWhiteSpace([string]$ProgramOverride)) {
@@ -904,7 +1696,7 @@ function Get-RaymanWorkerDefaultDebugTarget {
     return (Join-Path $ExecutionRoot ($ProgramOverride -replace '/', '\'))
   }
 
-  foreach ($entry in @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $ExecutionRoot)) {
+  foreach ($entry in @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $ExecutionRoot -WorkspaceRoot $WorkspaceRoot)) {
     foreach ($candidate in @($entry.existing_programs + $entry.guessed_programs)) {
       if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) {
         return [string]$candidate
@@ -933,16 +1725,18 @@ function Get-RaymanWorkerStatusSnapshot {
   $advertisedAddress = Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $resolvedWorkspaceRoot
   $git = Get-RaymanWorkerGitSnapshot -WorkspaceRoot $resolvedWorkspaceRoot
   $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $resolvedWorkspaceRoot -SyncManifest $SyncManifest
-  $entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot)
+  $entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot -WorkspaceRoot $resolvedWorkspaceRoot)
   $vsdbgStatus = Get-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot
+  $firewallStatus = Get-RaymanWorkerFirewallStatus -WorkspaceRoot $resolvedWorkspaceRoot
   $processes = if ($IncludeProcesses) { @(Get-RaymanWorkerDotNetProcesses -ExecutionRoot $executionRoot) } else { @() }
+  $authRequired = Test-RaymanWorkerControlAuthRequired -WorkspaceRoot $resolvedWorkspaceRoot
   $debugPayload = [ordered]@{
     supported = $true
     debugger_ready = [bool]$vsdbgStatus.debugger_ready
     debugger_path = [string]$vsdbgStatus.debugger_path
     entrypoints = @($entrypoints)
     processes = @($processes)
-    default_program = (Get-RaymanWorkerDefaultDebugTarget -ExecutionRoot $executionRoot)
+    default_program = (Get-RaymanWorkerDefaultDebugTarget -ExecutionRoot $executionRoot -WorkspaceRoot $resolvedWorkspaceRoot)
   }
   $payload = [ordered]@{
     schema = 'rayman.worker.status.v1'
@@ -961,6 +1755,7 @@ function Get-RaymanWorkerStatusSnapshot {
     address = $advertisedAddress
     debugger_ready = [bool]$vsdbgStatus.debugger_ready
     debugger_path = [string]$vsdbgStatus.debugger_path
+    firewall_ready = [bool]$firewallStatus.firewall_ready
     discovery = [pscustomobject]@{
       protocol = 'rayman.worker.beacon.v1'
       port = $discoveryPort
@@ -971,7 +1766,7 @@ function Get-RaymanWorkerStatusSnapshot {
       port = $controlPort
       base_url = ('http://{0}:{1}/' -f $advertisedAddress, $controlPort)
       scope = if ($lanEnabled) { 'lan' } else { 'loopback' }
-      auth_required = [bool]$lanEnabled
+      auth_required = [bool]$authRequired
     }
     capabilities = [pscustomobject]@{
       remote_exec = $true
@@ -981,6 +1776,7 @@ function Get-RaymanWorkerStatusSnapshot {
       self_upgrade = $true
       windows_only = $true
     }
+    firewall = $firewallStatus
     git = $git
     sync = $SyncManifest
     execution_root = $executionRoot
@@ -990,6 +1786,9 @@ function Get-RaymanWorkerStatusSnapshot {
     $payload['debugger_error'] = [string]$vsdbgStatus.debugger_error
     $debugPayload['debugger_error'] = [string]$vsdbgStatus.debugger_error
     $payload['debug'] = [pscustomobject]$debugPayload
+  }
+  if ($firewallStatus.PSObject.Properties['firewall_error'] -and -not [string]::IsNullOrWhiteSpace([string]$firewallStatus.firewall_error)) {
+    $payload['firewall_error'] = [string]$firewallStatus.firewall_error
   }
   return [pscustomobject]$payload
 }
@@ -1026,11 +1825,15 @@ function Get-RaymanWorkerBeaconPayload {
     control_url = [string]$status.control.base_url
     debugger_ready = if ($status.PSObject.Properties['debugger_ready']) { [bool]$status.debugger_ready } else { $false }
     debugger_path = if ($status.PSObject.Properties['debugger_path']) { [string]$status.debugger_path } else { '' }
+    firewall_ready = if ($status.PSObject.Properties['firewall_ready']) { [bool]$status.firewall_ready } else { $false }
     capabilities = $status.capabilities
     git = $status.git
   }
   if ($status.PSObject.Properties['debugger_error'] -and -not [string]::IsNullOrWhiteSpace([string]$status.debugger_error)) {
     $payload['debugger_error'] = [string]$status.debugger_error
+  }
+  if ($status.PSObject.Properties['firewall_error'] -and -not [string]::IsNullOrWhiteSpace([string]$status.firewall_error)) {
+    $payload['firewall_error'] = [string]$status.firewall_error
   }
   return [pscustomobject]$payload
 }
@@ -1146,7 +1949,7 @@ function Resolve-RaymanWorkerBySelector {
     [switch]$AllowActive
   )
 
-  $registry = @((Get-RaymanWorkerRegistryDocument -WorkspaceRoot $WorkspaceRoot).workers)
+  $registry = @(Get-RaymanSelectableRegistryWorkers -WorkspaceRoot $WorkspaceRoot)
   if (-not [string]::IsNullOrWhiteSpace([string]$WorkerId)) {
     return ($registry | Where-Object { [string]$_.worker_id -eq $WorkerId } | Select-Object -First 1)
   }
@@ -1156,8 +1959,15 @@ function Resolve-RaymanWorkerBySelector {
   if ($AllowActive) {
     $active = Get-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot
     if ($null -ne $active -and -not [string]::IsNullOrWhiteSpace([string]$active.worker_id)) {
-      return ($registry | Where-Object { [string]$_.worker_id -eq [string]$active.worker_id } | Select-Object -First 1)
+      $activeWorker = ($registry | Where-Object { [string]$_.worker_id -eq [string]$active.worker_id } | Select-Object -First 1)
+      if ($null -ne $activeWorker) {
+        return $activeWorker
+      }
     }
+  }
+  $preferred = Get-RaymanPreferredRemoteWorker -WorkspaceRoot $WorkspaceRoot -Workers $registry
+  if ($null -ne $preferred) {
+    return $preferred
   }
   return $null
 }
@@ -1167,6 +1977,9 @@ function Get-RaymanWorkerActiveExecutionContext {
 
   $active = Get-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot
   if ($null -eq $active -or [string]::IsNullOrWhiteSpace([string]$active.worker_id)) {
+    return $null
+  }
+  if (Test-RaymanWorkerProtectedLocalCandidate -WorkspaceRoot $WorkspaceRoot -Worker $active) {
     return $null
   }
 
@@ -1507,7 +2320,7 @@ function New-RaymanWorkerDebugManifest {
     throw $message
   }
 
-  $resolvedProgram = Get-RaymanWorkerDefaultDebugTarget -ExecutionRoot $executionRoot -ProgramOverride $Program
+  $resolvedProgram = Get-RaymanWorkerDefaultDebugTarget -ExecutionRoot $executionRoot -ProgramOverride $Program -WorkspaceRoot $resolvedWorkspaceRoot
   if ($Mode -eq 'launch') {
     if ([string]::IsNullOrWhiteSpace([string]$resolvedProgram)) {
       throw 'launch debug target could not be resolved; pass --program or build a debuggable .NET entrypoint on the worker.'
@@ -1540,7 +2353,7 @@ function New-RaymanWorkerDebugManifest {
     sync_manifest = $SyncManifest
     source_file_map = [pscustomobject]$sourceMap
     candidate_processes = @(Get-RaymanWorkerDotNetProcesses -ExecutionRoot $executionRoot)
-    candidate_entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot)
+    candidate_entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot -WorkspaceRoot $resolvedWorkspaceRoot)
   }
 }
 

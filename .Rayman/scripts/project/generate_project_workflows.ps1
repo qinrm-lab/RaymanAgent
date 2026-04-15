@@ -17,11 +17,53 @@ if ($workspaceKind -eq 'source' -and -not $AllowSource) {
   exit 0
 }
 
+function Get-ProjectWorkflowDisplayPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+  if (Get-Command Get-DisplayRelativePath -ErrorAction SilentlyContinue) {
+    try {
+      return (Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $Path)
+    } catch {}
+  }
+  return $Path
+}
+
+function Invoke-ProjectManagedWrite {
+  param(
+    [string]$Path,
+    [AllowEmptyString()][string]$Content,
+    [string]$Label = ''
+  )
+
+  if (Get-Command Set-RaymanManagedUtf8File -ErrorAction SilentlyContinue) {
+    $writeResult = Set-RaymanManagedUtf8File -Path $Path -Content $Content -AuditRoot $WorkspaceRoot -Label $Label
+    if (-not [bool]$writeResult.ok) {
+      $detail = if (-not [string]::IsNullOrWhiteSpace([string]$writeResult.error_message)) {
+        [string]$writeResult.error_message
+      } else {
+        [string]$writeResult.reason
+      }
+      throw ("managed-write-failed: {0} (reason={1}): {2}" -f (Get-ProjectWorkflowDisplayPath -Path $Path), [string]$writeResult.reason, $detail)
+    }
+    if ([string]$writeResult.mode -eq 'in_place_fallback') {
+      Write-Host ("[project-workflows] {0} 被当前会话占用，已使用定长原地写入回退。" -f (Get-ProjectWorkflowDisplayPath -Path $Path)) -ForegroundColor Yellow
+    }
+    return $writeResult
+  }
+
+  Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
+  return [pscustomobject]@{
+    ok = $true
+    changed = $true
+    mode = 'direct'
+    reason = 'ok'
+  }
+}
+
 $configInfo = Read-RaymanProjectConfig -WorkspaceRoot $WorkspaceRoot
 $configPath = Get-RaymanProjectConfigPath -WorkspaceRoot $WorkspaceRoot
 if (-not $configInfo.exists) {
   $configJson = ConvertTo-RaymanProjectConfigJson -WorkspaceRoot $WorkspaceRoot
-  Set-Content -LiteralPath $configPath -Value $configJson -Encoding UTF8
+  [void](Invoke-ProjectManagedWrite -Path $configPath -Content $configJson -Label 'project-config')
   $configInfo = Read-RaymanProjectConfig -WorkspaceRoot $WorkspaceRoot
 }
 
@@ -68,7 +110,7 @@ function Write-ManagedWorkflow {
   }
 
   if ($allowWrite) {
-    Set-Content -LiteralPath $targetPath -Value $Content -Encoding UTF8
+    [void](Invoke-ProjectManagedWrite -Path $targetPath -Content $Content -Label ('workflow:' + $Lane))
     Write-Host ("[project-workflows] wrote {0}" -f (Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $targetPath)) -ForegroundColor Green
   }
 }

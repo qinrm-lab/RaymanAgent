@@ -2,8 +2,10 @@ param(
   [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\.." | Select-Object -ExpandProperty Path),
   [string]$PidFile = '',
   [int]$IntervalSeconds = 15,
+  [switch]$DisablePromptSync,
   [switch]$EnableEmbeddedAttentionWatch,
   [switch]$EnableEmbeddedAutoSave,
+  [switch]$EnableEmbeddedNetworkResume,
   [switch]$Once
 )
 
@@ -41,7 +43,7 @@ function Invoke-PromptWatchCycle {
 }
 
 function Get-WatchSchedulerSleepMs {
-  param([datetime[]]$NextTimes)
+  param([object[]]$NextTimes)
 
   $validTimes = @($NextTimes | Where-Object { $null -ne $_ })
   if ($validTimes.Count -eq 0) {
@@ -66,6 +68,11 @@ if (-not $embeddedAutoSaveEnabled) {
   $embeddedAutoSaveEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' -Default $false
 }
 
+$embeddedNetworkResumeEnabled = [bool]$EnableEmbeddedNetworkResume.IsPresent
+if (-not $embeddedNetworkResumeEnabled) {
+  $embeddedNetworkResumeEnabled = Get-RaymanEnvBool -Name 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' -Default $true
+}
+
 $attentionState = $null
 if ($embeddedAttentionEnabled) {
   $attentionState = New-RaymanAttentionWatchState -WorkspaceRoot $WorkspaceRoot -ExitWhenIdle $false
@@ -76,13 +83,21 @@ if ($embeddedAutoSaveEnabled) {
   $autoSaveState = New-RaymanAutoSaveWatchState -WorkspaceRoot $WorkspaceRoot
 }
 
+$networkResumeState = $null
+if ($embeddedNetworkResumeEnabled) {
+  $networkResumeState = New-RaymanNetworkResumeWatchState -WorkspaceRoot $WorkspaceRoot
+}
+
 $attentionDelayMs = if ($null -ne $attentionState) { Get-RaymanAttentionWatchDelayMs -State $attentionState } else { 0 }
 $autoSaveIntervalSeconds = Get-RaymanEnvInt -Name 'RAYMAN_AUTO_SAVE_INTERVAL_SECONDS' -Default 300 -Min 30 -Max 86400
+$networkResumeDelayMs = if ($null -ne $networkResumeState) { Get-RaymanNetworkResumeWatchDelayMs -State $networkResumeState } else { 0 }
+$promptSyncEnabled = (-not [bool]$DisablePromptSync.IsPresent)
 
 $enabledFeatures = New-Object System.Collections.Generic.List[string]
-$enabledFeatures.Add('prompt-sync') | Out-Null
+if ($promptSyncEnabled) { $enabledFeatures.Add('prompt-sync') | Out-Null }
 if ($null -ne $attentionState) { $enabledFeatures.Add('attention-scan') | Out-Null }
 if ($null -ne $autoSaveState) { $enabledFeatures.Add('auto-save') | Out-Null }
+if ($null -ne $networkResumeState) { $enabledFeatures.Add('network-resume') | Out-Null }
 
 if ($null -ne $attentionState) {
   Write-Info (Get-RaymanAttentionWatchStartupMessage -State $attentionState)
@@ -90,17 +105,21 @@ if ($null -ne $attentionState) {
 if ($null -ne $autoSaveState) {
   Write-Info ("[auto-save] embedded scheduler enabled (interval={0}s)" -f $autoSaveIntervalSeconds)
 }
+if ($null -ne $networkResumeState) {
+  Write-Info (Get-RaymanNetworkResumeWatchStartupMessage -State $networkResumeState)
+}
 Write-Info ("[win-watch] started (interval={0}s, once={1}, features={2})" -f $IntervalSeconds, $Once.IsPresent, (($enabledFeatures | Select-Object -Unique) -join ','))
 
-$nextPromptAt = Get-Date
+$nextPromptAt = if ($promptSyncEnabled) { Get-Date } else { $null }
 $nextAttentionAt = if ($null -ne $attentionState) { Get-Date } else { $null }
 $nextAutoSaveAt = if ($null -ne $autoSaveState) { Get-Date } else { $null }
+$nextNetworkResumeAt = if ($null -ne $networkResumeState) { Get-Date } else { $null }
 
 try {
   do {
     $now = Get-Date
 
-    if ($now -ge $nextPromptAt) {
+    if ($null -ne $nextPromptAt -and $now -ge $nextPromptAt) {
       Invoke-PromptWatchCycle
       $nextPromptAt = (Get-Date).AddSeconds([Math]::Max(1, $IntervalSeconds))
     }
@@ -121,10 +140,20 @@ try {
       $nextAutoSaveAt = (Get-Date).AddSeconds([Math]::Max(30, $autoSaveIntervalSeconds))
     }
 
+    if ($null -ne $networkResumeState -and $now -ge $nextNetworkResumeAt) {
+      Invoke-RaymanNetworkResumeCycle -State $networkResumeState | Out-Null
+      $nextNetworkResumeAt = (Get-Date).AddMilliseconds([Math]::Max(1000, $networkResumeDelayMs))
+    }
+
     if ($Once) { break }
 
-    Start-Sleep -Milliseconds (Get-WatchSchedulerSleepMs -NextTimes @($nextPromptAt, $nextAttentionAt, $nextAutoSaveAt))
+    Start-Sleep -Milliseconds (Get-WatchSchedulerSleepMs -NextTimes @($nextPromptAt, $nextAttentionAt, $nextAutoSaveAt, $nextNetworkResumeAt))
   } while ($true)
+} catch {
+  Write-Warn ("[win-watch] failed: {0}" -f $_.Exception.Message)
+  try {
+    Write-RaymanDiag -Scope 'win-watch' -Message ("main loop failed: {0}" -f $_.Exception.ToString()) -WorkspaceRoot $WorkspaceRoot
+  } catch {}
 } finally {
   try {
     Clear-RaymanWatcherPidFile -PidFile $PidFile -ExpectedPid $PID

@@ -185,10 +185,6 @@ function Ensure-WindowsAppsInPathBestEffort {
 function Get-RaymanDotNetTargetFrameworksFromText {
     param([string]$ProjectText)
 
-    if (Get-Command Get-RaymanWorkspacePlatformTargetFrameworksFromText -ErrorAction SilentlyContinue) {
-        return @(Get-RaymanWorkspacePlatformTargetFrameworksFromText -ProjectText $ProjectText)
-    }
-
     $frameworks = New-Object 'System.Collections.Generic.List[string]'
     if ([string]::IsNullOrWhiteSpace($ProjectText)) {
         return @()
@@ -356,18 +352,106 @@ function Get-RaymanWorkspaceDependencyProfile {
     $mauiProjects = New-Object 'System.Collections.Generic.List[object]'
     $dotNetProjectPaths = New-Object 'System.Collections.Generic.List[string]'
 
-    if ($null -ne $platformProfile) {
-        foreach ($framework in @($platformProfile.target_frameworks)) {
+    function Add-UniqueString {
+        param(
+            [System.Collections.Generic.List[string]]$List,
+            [string]$Value
+        )
+
+        if ($null -eq $List) { return }
+        if ([string]::IsNullOrWhiteSpace([string]$Value)) { return }
+        if (-not $List.Contains([string]$Value)) {
+            $List.Add([string]$Value) | Out-Null
+        }
+    }
+
+    function Add-MauiProjectSignal {
+        param(
+            [System.Collections.Generic.List[object]]$List,
+            [string]$Path,
+            [string[]]$Frameworks = @()
+        )
+
+        if ($null -eq $List -or [string]::IsNullOrWhiteSpace([string]$Path)) { return }
+
+        $resolvedPath = [string]$Path
+        try {
+            $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+        } catch {}
+
+        $frameworkList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($framework in @($Frameworks)) {
             if ([string]::IsNullOrWhiteSpace([string]$framework)) { continue }
-            if (-not $allFrameworks.Contains([string]$framework)) {
-                $allFrameworks.Add([string]$framework) | Out-Null
+            if (-not $frameworkList.Contains([string]$framework)) {
+                $frameworkList.Add([string]$framework) | Out-Null
             }
         }
-        foreach ($projectPath in @($platformProfile.dotnet_project_paths)) {
-            if ([string]::IsNullOrWhiteSpace([string]$projectPath)) { continue }
-            if (-not $dotNetProjectPaths.Contains([string]$projectPath)) {
-                $dotNetProjectPaths.Add([string]$projectPath) | Out-Null
+
+        $existing = $null
+        foreach ($candidate in @($List.ToArray())) {
+            if ($null -eq $candidate) { continue }
+            $candidatePath = ''
+            if ($candidate.PSObject.Properties['Path']) {
+                $candidatePath = [string]$candidate.Path
             }
+            if ($candidate.PSObject.Properties['path']) {
+                $candidatePath = [string]$candidate.path
+            }
+            if ([string]::IsNullOrWhiteSpace($candidatePath)) { continue }
+            if ($candidatePath.Equals($resolvedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $existing = $candidate
+                break
+            }
+        }
+
+        if ($null -eq $existing) {
+            $List.Add([pscustomobject]@{
+                Path = $resolvedPath
+                TargetFrameworks = @($frameworkList.ToArray())
+            }) | Out-Null
+            return
+        }
+
+        $existingFrameworks = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($framework in @($existing.TargetFrameworks)) {
+            if ([string]::IsNullOrWhiteSpace([string]$framework)) { continue }
+            if (-not $existingFrameworks.Contains([string]$framework)) {
+                $existingFrameworks.Add([string]$framework) | Out-Null
+            }
+        }
+        foreach ($framework in @($frameworkList.ToArray())) {
+            if (-not $existingFrameworks.Contains([string]$framework)) {
+                $existingFrameworks.Add([string]$framework) | Out-Null
+            }
+        }
+        $existing.TargetFrameworks = @($existingFrameworks.ToArray())
+    }
+
+    function Get-PreferredMauiProjectFromList {
+        param([object[]]$Projects)
+
+        foreach ($project in @($Projects)) {
+            if ($null -eq $project) { continue }
+            $frameworks = @()
+            if ($project.PSObject.Properties['TargetFrameworks']) {
+                $frameworks = @($project.TargetFrameworks)
+            }
+            foreach ($framework in @($frameworks)) {
+                if ([string]::IsNullOrWhiteSpace([string]$framework)) { continue }
+                if ([string]$framework -match '-windows') {
+                    return $project
+                }
+            }
+        }
+        return $(if (@($Projects).Count -gt 0) { @($Projects)[0] } else { $null })
+    }
+
+    if ($null -ne $platformProfile) {
+        foreach ($framework in @($platformProfile.target_frameworks)) {
+            Add-UniqueString -List $allFrameworks -Value ([string]$framework)
+        }
+        foreach ($projectPath in @($platformProfile.dotnet_project_paths)) {
+            Add-UniqueString -List $dotNetProjectPaths -Value ([string]$projectPath)
         }
         foreach ($project in @($platformProfile.maui_projects)) {
             if ($null -eq $project) { continue }
@@ -375,15 +459,18 @@ function Get-RaymanWorkspaceDependencyProfile {
             if ($project.PSObject.Properties['path']) {
                 $projectPath = [string]$project.path
             }
+            if ($project.PSObject.Properties['Path']) {
+                $projectPath = [string]$project.Path
+            }
             if ([string]::IsNullOrWhiteSpace($projectPath)) { continue }
             $frameworks = @()
             if ($project.PSObject.Properties['target_frameworks']) {
                 $frameworks = @($project.target_frameworks)
             }
-            $mauiProjects.Add([pscustomobject]@{
-                Path = $projectPath
-                TargetFrameworks = @($frameworks)
-            }) | Out-Null
+            if ($project.PSObject.Properties['TargetFrameworks']) {
+                $frameworks = @($project.TargetFrameworks)
+            }
+            Add-MauiProjectSignal -List $mauiProjects -Path $projectPath -Frameworks @($frameworks)
         }
     }
 
@@ -393,27 +480,25 @@ function Get-RaymanWorkspaceDependencyProfile {
                 if (-not $needsDotNet) {
                     $needsDotNet = $true
                 }
-                if (($null -eq $platformProfile) -and -not $dotNetProjectPaths.Contains($f.FullName)) {
-                    $dotNetProjectPaths.Add($f.FullName) | Out-Null
-                }
-                if (($null -eq $platformProfile) -and $f.Extension -eq '.csproj') {
+                Add-UniqueString -List $dotNetProjectPaths -Value $f.FullName
+                if ($f.Extension -eq '.csproj') {
                     try {
                         $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
                         $frameworks = @(Get-RaymanDotNetTargetFrameworksFromText -ProjectText $raw)
                         foreach ($framework in $frameworks) {
-                            if (-not $allFrameworks.Contains($framework)) {
-                                $allFrameworks.Add($framework) | Out-Null
-                            }
+                            Add-UniqueString -List $allFrameworks -Value $framework
                         }
                         $isMaui = $raw -match '<UseMaui>\s*true\s*</UseMaui>'
                         if ($raw -match '<UseWPF>\s*true\s*</UseWPF>' -or $raw -match '<UseWindowsForms>\s*true\s*</UseWindowsForms>') {
                             $needWindowsDesktop = $true
+                            $requiresWindowsHost = $true
+                            $autoEnableWindows = $true
                         }
                         if ($isMaui) {
-                            $mauiProjects.Add([pscustomobject]@{
-                                Path = $f.FullName
-                                TargetFrameworks = @($frameworks)
-                            }) | Out-Null
+                            $needWindowsDesktop = $true
+                            $requiresWindowsHost = $true
+                            $autoEnableWindows = $true
+                            Add-MauiProjectSignal -List $mauiProjects -Path $f.FullName -Frameworks @($frameworks)
                         }
                     } catch {}
                 }
@@ -432,10 +517,7 @@ function Get-RaymanWorkspaceDependencyProfile {
         $requiredSdkMajor = Get-RaymanDotNetSdkMajorFromFrameworks -Frameworks @($allFrameworks.ToArray())
     }
 
-    $preferredMauiProject = $null
-    if ($mauiProjects.Count -gt 0) {
-        $preferredMauiProject = $mauiProjects[0]
-    }
+    $preferredMauiProject = Get-PreferredMauiProjectFromList -Projects @($mauiProjects.ToArray())
 
     return [pscustomobject]@{
         WorkspaceRoot = $resolvedRoot

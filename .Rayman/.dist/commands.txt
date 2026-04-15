@@ -17,8 +17,6 @@ Platform tags:
 [Watchers]
 - `[ windows-only ]` `rayman.ps1 watch-auto`: Start background watchers (prompt-watch + attention-watch).
 - `[ windows-only ]` `rayman.ps1 watch-stop`: Stop background watchers and helper processes.
-- `[ windows-only ]` `rayman.ps1 alert-watch`: Start the foreground attention watcher.
-- `[ windows-only ]` `rayman.ps1 alert-stop`: Stop the background attention watcher.
 
 [Core]
 - `[ all ]` `rayman fast-init`: Generate missing requirements only (no installs).
@@ -30,8 +28,6 @@ Platform tags:
 [Diagnostics]
 - `[ all ]` `rayman doctor`: Run read-only health checks.
 - `[ all ]` `rayman copy-self-check`: Run copy-initialization smoke verification.
-- `[ pwsh-only ]` `rayman.ps1 self-check`: Alias of `copy-self-check`.
-- `[ pwsh-only ]` `rayman.ps1 copy-check`: Alias of `copy-self-check`.
 - `[ all ]` `rayman check`: Run the baseline check suite.
 
 [Automation]
@@ -45,10 +41,16 @@ Platform tags:
 - `[ all ]` `rayman dispatch`: Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`: Manage Rayman-scoped Codex accounts, switching, and CLI execution.
 - `[ windows-only ]` `rayman.ps1 worker`: Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
+- `[ windows-only ]` `rayman.ps1 workspace-install`: Install distributable .Rayman into a local workspace, run setup, and default self-check.
+- `[ windows-only ]` `rayman.ps1 workspace-register`: Register this RaymanAgent source workspace and install the rayman-here bootstrap launcher.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`: Sync or inspect Rayman-managed Codex capabilities.
+
+[Core]
+- `[ pwsh-only ]` `rayman.ps1 interaction-mode`: Show or change the workspace interaction mode for plan-first ambiguity handling.
 
 [Diagnostics]
 - `[ pwsh-only ]` `rayman.ps1 agent-contract`: Check agent assets, instructions, and generated-context contracts.
+- `[ windows-only ]` `rayman.ps1 sound-check`: Play manual and done reminder sounds and require explicit user confirmation.
 
 [Automation]
 - `[ pwsh-only ]` `rayman.ps1 review-loop`: Run the dispatch plus test-fix review loop.
@@ -66,7 +68,6 @@ Platform tags:
 - `[ pwsh-only ]` `rayman.ps1 version`: Show managed version state and consistency.
 - `[ pwsh-only ]` `rayman.ps1 newversion`: Set the managed Rayman version across governed files.
 - `[ pwsh-only ]` `rayman.ps1 package-dist`: Build the distributable .Rayman package.
-- `[ pwsh-only ]` `rayman.ps1 package`: Alias of `package-dist`.
 
 [Diagnostics]
 - `[ all ]` `rayman clean`: Clean runtime, temp, and copy-smoke artifacts.
@@ -83,14 +84,13 @@ Platform tags:
 
 [State]
 - `[ pwsh-only ]` `rayman.ps1 cache-clear`: Clear project caches and temporary outputs.
-- `[ pwsh-only ]` `rayman.ps1 state-save`: Save task state and stash changes.
-- `[ pwsh-only ]` `rayman.ps1 state-resume`: Resume task state and restore stashed changes.
+- `[ pwsh-only ]` `rayman.ps1 state-save`: Save a named task session and capture an exact stash snapshot.
+- `[ pwsh-only ]` `rayman.ps1 state-list`: List named task sessions available for resume.
+- `[ pwsh-only ]` `rayman.ps1 state-resume`: Resume a named task session without guessing the latest stash.
+- `[ pwsh-only ]` `rayman.ps1 worktree-create`: Create or reuse a named git worktree session for isolated parallel edits.
 
 [Automation]
 - `[ pwsh-only ]` `rayman.ps1 test-fix`: Run tests/builds and record repair diagnostics.
-
-[Project Gates]
-- `[ pwsh-only ]` `rayman.ps1 req-ts-backfill`: Backfill requirements timestamps.
 
 [Release]
 - `[ pwsh-only ]` `rayman.ps1 dist-sync`: Sync and validate the .Rayman/.dist mirror.
@@ -100,10 +100,7 @@ Platform tags:
 - `[ pwsh-only ]` `rayman.ps1 context-update`: Regenerate local context and auto-skill artifacts.
 - `[ pwsh-only ]` `rayman.ps1 health-check`: Run the daily health check once.
 - `[ pwsh-only ]` `rayman.ps1 one-click-health`: Force daily health check and refresh proxy health snapshot.
-- `[ pwsh-only ]` `rayman.ps1 health`: Alias of `one-click-health`.
-- `[ pwsh-only ]` `rayman.ps1 一键健康检查`: Alias of `one-click-health`.
 - `[ pwsh-only ]` `rayman.ps1 proxy-health`: Show the resolved proxy snapshot and sources.
-- `[ pwsh-only ]` `rayman.ps1 proxy-check`: Alias of `proxy-health`.
 
 [Core]
 - `[ pwsh-only ]` `rayman.ps1 ensure-wsl-deps`: Install or verify WSL-side dependencies.
@@ -117,7 +114,6 @@ Platform tags:
 
 [Core]
 - `[ pwsh-only ]` `rayman.ps1 menu`: Show the interactive command picker.
-- `[ pwsh-only ]` `rayman.ps1 interactive`: Alias of menu.
 
 [State]
 - `[ all ]` `rayman transfer-export`: [Agent/Handover] 导出当前工作区及系统状态信息。

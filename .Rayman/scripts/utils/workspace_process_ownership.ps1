@@ -321,21 +321,23 @@ function Get-RaymanWorkspaceProcessOwnerContext {
     }
 
     if ($ownerSource -eq 'workspace-root') {
-      $sessionOwnerPid = Resolve-RaymanOwnedSessionOwnerPid -WorkspaceRootPath $resolvedRoot
-      if ($sessionOwnerPid -gt 0) {
-        $ownerSource = 'VSCODE_PID'
-        $ownerToken = [string]$sessionOwnerPid
-        $ownerDisplay = ('VSCODE_PID#{0}' -f $sessionOwnerPid)
-      } elseif ($explicitOwnerPidValue -gt 0) {
+      if ($explicitOwnerPidValue -gt 0) {
         $ownerSource = 'VSCODE_PID'
         $ownerToken = [string]$explicitOwnerPidValue
         $ownerDisplay = ('VSCODE_PID#{0}' -f $explicitOwnerPidValue)
       } else {
-        $ownerPid = Resolve-RaymanOwnedProcessOwnerPid
-        if ($ownerPid -gt 0) {
+        $sessionOwnerPid = Resolve-RaymanOwnedSessionOwnerPid -WorkspaceRootPath $resolvedRoot
+        if ($sessionOwnerPid -gt 0) {
           $ownerSource = 'VSCODE_PID'
-          $ownerToken = [string]$ownerPid
-          $ownerDisplay = ('VSCODE_PID#{0}' -f $ownerPid)
+          $ownerToken = [string]$sessionOwnerPid
+          $ownerDisplay = ('VSCODE_PID#{0}' -f $sessionOwnerPid)
+        } else {
+          $ownerPid = Resolve-RaymanOwnedProcessOwnerPid
+          if ($ownerPid -gt 0) {
+            $ownerSource = 'VSCODE_PID'
+            $ownerToken = [string]$ownerPid
+            $ownerDisplay = ('VSCODE_PID#{0}' -f $ownerPid)
+          }
         }
       }
     }
@@ -480,6 +482,515 @@ Write-Result @{
   }
 
   return $result
+}
+
+function Get-RaymanWorkspaceProcessSnapshotKey {
+  param(
+    [object]$ProcessInfo
+  )
+
+  if ($null -eq $ProcessInfo) { return '' }
+  $pidValue = 0
+  try { $pidValue = [int]$ProcessInfo.pid } catch { $pidValue = 0 }
+  $startUtc = ''
+  if ($ProcessInfo.PSObject.Properties['start_utc']) {
+    $startUtc = [string]$ProcessInfo.start_utc
+  }
+  return ('{0}|{1}' -f $pidValue, $startUtc)
+}
+
+function Test-RaymanWorkspaceProcessPathMatch {
+  param(
+    [string]$PathValue,
+    [string]$WorkspaceRootPath
+  )
+
+  if ([string]::IsNullOrWhiteSpace($PathValue) -or [string]::IsNullOrWhiteSpace($WorkspaceRootPath)) {
+    return $false
+  }
+
+  $candidate = Get-RaymanOwnedProcessPathComparisonValue -PathValue $PathValue
+  if ([string]::IsNullOrWhiteSpace($candidate)) {
+    return $false
+  }
+
+  foreach ($variant in @(Get-RaymanPathComparisonVariants -PathValue $WorkspaceRootPath)) {
+    $rootValue = Get-RaymanOwnedProcessPathComparisonValue -PathValue $variant
+    if ([string]::IsNullOrWhiteSpace($rootValue)) { continue }
+    if ($candidate -eq $rootValue) {
+      return $true
+    }
+    if ($candidate.StartsWith($rootValue + '/')) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Resolve-RaymanWorkspaceOwnedProcessMatch {
+  param(
+    [object]$ProcessInfo,
+    [string[]]$WorkspaceRoots = @()
+  )
+
+  $commandLine = ''
+  if ($null -ne $ProcessInfo -and $ProcessInfo.PSObject.Properties['command_line']) {
+    $commandLine = [string]$ProcessInfo.command_line
+  }
+  $commandLower = $commandLine.ToLowerInvariant()
+
+  $executablePath = ''
+  if ($null -ne $ProcessInfo -and $ProcessInfo.PSObject.Properties['executable_path']) {
+    $executablePath = [string]$ProcessInfo.executable_path
+  }
+
+  foreach ($workspaceRoot in @($WorkspaceRoots | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)) {
+    $resolvedRoot = ''
+    try {
+      $resolvedRoot = (Resolve-Path -LiteralPath $workspaceRoot).Path
+    } catch {
+      $resolvedRoot = [string]$workspaceRoot
+    }
+
+    foreach ($token in @(Get-RaymanVsCodeWorkspaceTokens -WorkspaceRootPath $resolvedRoot)) {
+      if ([string]::IsNullOrWhiteSpace([string]$token)) { continue }
+      if ($commandLower.Contains(([string]$token).ToLowerInvariant())) {
+        return [pscustomobject]@{
+          matched = $true
+          workspace_root = $resolvedRoot
+          reason = 'command_line'
+        }
+      }
+    }
+
+    if (Test-RaymanWorkspaceProcessPathMatch -PathValue $executablePath -WorkspaceRootPath $resolvedRoot) {
+      return [pscustomobject]@{
+        matched = $true
+        workspace_root = $resolvedRoot
+        reason = 'executable_path'
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    matched = $false
+    workspace_root = ''
+    reason = 'no_workspace_token_match'
+  }
+}
+
+function Get-RaymanWorkspaceProcessSnapshot {
+  param(
+    [string]$WorkspaceRootPath
+  )
+
+  if (-not (Test-RaymanWindowsPlatform)) {
+    return @()
+  }
+
+  $processMap = @{}
+  foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+    if ($null -eq $proc) { continue }
+    $processMap[[int]$proc.Id] = $proc
+  }
+
+  $results = New-Object System.Collections.Generic.List[object]
+  foreach ($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    if ($null -eq $proc) { continue }
+    $pidValue = 0
+    try { $pidValue = [int]$proc.ProcessId } catch { $pidValue = 0 }
+    if ($pidValue -le 0) { continue }
+
+    $live = $null
+    if ($processMap.ContainsKey($pidValue)) {
+      $live = $processMap[$pidValue]
+    }
+
+    $startUtc = ''
+    $processName = [string]$proc.Name
+    if ($null -ne $live) {
+      try { $startUtc = $live.StartTime.ToUniversalTime().ToString('o') } catch {}
+      try { $processName = [string]$live.ProcessName } catch {}
+    }
+
+    $results.Add([pscustomobject]@{
+        pid = $pidValue
+        parent_pid = [int]$proc.ParentProcessId
+        process_name = $processName
+        start_utc = $startUtc
+        command_line = [string]$proc.CommandLine
+        executable_path = [string]$proc.ExecutablePath
+      }) | Out-Null
+  }
+
+  return @($results.ToArray() | Sort-Object pid, start_utc)
+}
+
+function Invoke-RaymanWorkspaceOwnedProcessCleanupFromBaseline {
+  param(
+    [string]$WorkspaceRootPath,
+    [object[]]$BaselineSnapshot = @(),
+    [object[]]$CurrentSnapshot = @(),
+    [datetime]$BaselineCapturedAtUtc = ([datetime]::MinValue),
+    [int]$LauncherProcessId = 0,
+    [string]$OwnedKind = 'project-gate',
+    [string]$OwnedLauncher = 'project-gate',
+    [string]$OwnedCommand = '',
+    [string]$CleanupReason = 'project-gate'
+  )
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRootPath).Path
+  if (-not (Test-RaymanWindowsPlatform)) {
+    return [pscustomobject]@{
+      workspace_root = $resolvedRoot
+      cleanup_required = $false
+      cleanup_succeeded = $true
+      cleanup_result = 'not_applicable'
+      cleanup_root_pids = @()
+      cleanup_pids = @()
+      launcher_tree_pids = @()
+      new_pids = @()
+      matched_pids = @()
+      root_pids = @()
+      workspace_match = @()
+      alive_pids = @()
+      cleanup_results = @()
+    }
+  }
+
+  $currentItems = @($CurrentSnapshot)
+  if ($currentItems.Count -eq 0) {
+    $currentItems = @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $resolvedRoot)
+  }
+  $baselineItems = @($BaselineSnapshot)
+
+  $baselineKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $baselineStartsByPid = @{}
+  foreach ($entry in $baselineItems) {
+    [void]$baselineKeys.Add((Get-RaymanWorkspaceProcessSnapshotKey -ProcessInfo $entry))
+    $baselinePid = 0
+    try { $baselinePid = [int]$entry.pid } catch { $baselinePid = 0 }
+    if ($baselinePid -le 0) { continue }
+    if (-not $baselineStartsByPid.ContainsKey($baselinePid)) {
+      $baselineStartsByPid[$baselinePid] = New-Object System.Collections.Generic.List[string]
+    }
+    $baselineStartUtc = ''
+    if ($entry.PSObject.Properties['start_utc']) {
+      $baselineStartUtc = [string]$entry.start_utc
+    }
+    $baselineStartsByPid[$baselinePid].Add($baselineStartUtc) | Out-Null
+  }
+
+  $baselineCutoffUtc = [datetime]::MinValue
+  try {
+    if ($BaselineCapturedAtUtc -ne [datetime]::MinValue) {
+      $baselineCutoffUtc = $BaselineCapturedAtUtc.ToUniversalTime()
+    }
+  } catch {
+    $baselineCutoffUtc = [datetime]::MinValue
+  }
+
+  function Test-RaymanProcessIsNewEnough([object]$ProcessInfo) {
+    if ($baselineCutoffUtc -eq [datetime]::MinValue -or $null -eq $ProcessInfo) {
+      return $true
+    }
+
+    $startUtcText = ''
+    if ($ProcessInfo.PSObject.Properties['start_utc']) {
+      $startUtcText = [string]$ProcessInfo.start_utc
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$startUtcText)) {
+      return $true
+    }
+
+    $startedAt = [datetimeoffset]::MinValue
+    if (-not [datetimeoffset]::TryParse($startUtcText, [ref]$startedAt)) {
+      return $true
+    }
+
+    return ($startedAt.UtcDateTime -ge $baselineCutoffUtc)
+  }
+
+  function Test-RaymanProcessWasInBaseline([object]$ProcessInfo) {
+    if ($null -eq $ProcessInfo) {
+      return $false
+    }
+
+    if ($baselineKeys.Contains((Get-RaymanWorkspaceProcessSnapshotKey -ProcessInfo $ProcessInfo))) {
+      return $true
+    }
+
+    $pidValue = 0
+    try { $pidValue = [int]$ProcessInfo.pid } catch { $pidValue = 0 }
+    if ($pidValue -le 0 -or -not $baselineStartsByPid.ContainsKey($pidValue)) {
+      return $false
+    }
+
+    $currentStartUtc = ''
+    if ($ProcessInfo.PSObject.Properties['start_utc']) {
+      $currentStartUtc = [string]$ProcessInfo.start_utc
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$currentStartUtc)) {
+      return $true
+    }
+
+    $baselineStarts = @($baselineStartsByPid[$pidValue].ToArray())
+    if (@($baselineStarts | Where-Object { [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) {
+      return $true
+    }
+
+    return ($baselineStarts -contains $currentStartUtc)
+  }
+
+  $newSnapshot = @($currentItems | Where-Object {
+    -not (Test-RaymanProcessWasInBaseline -ProcessInfo $_)
+  })
+
+  $launcherTreePids = @()
+  $launcherTreePidSet = New-Object 'System.Collections.Generic.HashSet[int]'
+  if ($LauncherProcessId -gt 0) {
+    $launcherTreePids = @(Get-RaymanWindowsProcessTreePids -WorkspaceRootPath $resolvedRoot -RootPid $LauncherProcessId -IncludeRoot)
+    if ($launcherTreePids.Count -eq 0) {
+      $launcherTreePids = @($LauncherProcessId)
+    }
+    foreach ($launcherTreePid in @($launcherTreePids | ForEach-Object { [int]$_ } | Where-Object { [int]$_ -gt 0 } | Select-Object -Unique)) {
+      [void]$launcherTreePidSet.Add([int]$launcherTreePid)
+    }
+  }
+
+  $currentByPid = @{}
+  foreach ($processInfo in @($currentItems)) {
+    if ($null -eq $processInfo) { continue }
+    $pidValue = 0
+    try { $pidValue = [int]$processInfo.pid } catch { $pidValue = 0 }
+    if ($pidValue -le 0) { continue }
+    $currentByPid[$pidValue] = $processInfo
+  }
+
+  function Test-RaymanProcessMatchesCleanupScope([object]$ProcessInfo) {
+    if ($LauncherProcessId -le 0) {
+      return $true
+    }
+    if ($null -eq $ProcessInfo) {
+      return $false
+    }
+
+    $pidValue = 0
+    try { $pidValue = [int]$ProcessInfo.pid } catch { $pidValue = 0 }
+    if ($pidValue -gt 0 -and $launcherTreePidSet.Contains($pidValue)) {
+      return $true
+    }
+
+    $visitedParents = New-Object 'System.Collections.Generic.HashSet[int]'
+    $parentPid = 0
+    if ($ProcessInfo.PSObject.Properties['parent_pid']) {
+      try { $parentPid = [int]$ProcessInfo.parent_pid } catch { $parentPid = 0 }
+    }
+
+    while ($parentPid -gt 0 -and $visitedParents.Add($parentPid)) {
+      if ($launcherTreePidSet.Contains($parentPid)) {
+        return $true
+      }
+      if (-not $currentByPid.ContainsKey($parentPid)) {
+        break
+      }
+
+      $parentProcess = $currentByPid[$parentPid]
+      if ($null -eq $parentProcess -or -not $parentProcess.PSObject.Properties['parent_pid']) {
+        break
+      }
+      try { $parentPid = [int]$parentProcess.parent_pid } catch { $parentPid = 0 }
+    }
+
+    return $false
+  }
+
+  $matchedByPid = @{}
+  $workspaceMatches = New-Object System.Collections.Generic.List[object]
+  foreach ($processInfo in $newSnapshot) {
+    $pidValue = 0
+    try { $pidValue = [int]$processInfo.pid } catch { $pidValue = 0 }
+    if ($pidValue -le 0) { continue }
+
+    $match = Resolve-RaymanWorkspaceOwnedProcessMatch -ProcessInfo $processInfo -WorkspaceRoots @($resolvedRoot)
+    $cleanupCandidate = (
+      [bool]$match.matched -and
+      (Test-RaymanProcessIsNewEnough -ProcessInfo $processInfo) -and
+      (Test-RaymanProcessMatchesCleanupScope -ProcessInfo $processInfo)
+    )
+    $workspaceMatches.Add([pscustomobject]@{
+        pid = $pidValue
+        matched = [bool]$match.matched
+        cleanup_candidate = [bool]$cleanupCandidate
+        workspace_root = [string]$match.workspace_root
+        reason = [string]$match.reason
+        process_name = [string]$processInfo.process_name
+        start_utc = [string]$processInfo.start_utc
+        command_line = [string]$processInfo.command_line
+        executable_path = [string]$processInfo.executable_path
+      }) | Out-Null
+    if ($cleanupCandidate) {
+      $matchedByPid[$pidValue] = [pscustomobject]@{
+        process = $processInfo
+        match = $match
+      }
+    }
+  }
+
+  function Get-RootProcessIdsFromMap([hashtable]$ProcessMap) {
+    $values = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($entry in @($ProcessMap.GetEnumerator() | Sort-Object Name)) {
+      $pidValue = 0
+      try { $pidValue = [int]$entry.Key } catch { $pidValue = 0 }
+      if ($pidValue -le 0) { continue }
+
+      $parentPid = 0
+      if ($entry.Value.process.PSObject.Properties['parent_pid']) {
+        try { $parentPid = [int]$entry.Value.process.parent_pid } catch { $parentPid = 0 }
+      }
+      if ($parentPid -gt 0 -and $ProcessMap.ContainsKey($parentPid)) {
+        continue
+      }
+
+      $values.Add($pidValue) | Out-Null
+    }
+    return @($values.ToArray() | Sort-Object -Unique)
+  }
+
+  function Get-NewMatchedProcessesFromSnapshot([object[]]$Snapshot) {
+    $items = @($Snapshot | Where-Object {
+        -not (Test-RaymanProcessWasInBaseline -ProcessInfo $_)
+      })
+    $map = @{}
+    foreach ($processInfo in $items) {
+      $pidValue = 0
+      try { $pidValue = [int]$processInfo.pid } catch { $pidValue = 0 }
+      if ($pidValue -le 0) { continue }
+      $match = Resolve-RaymanWorkspaceOwnedProcessMatch -ProcessInfo $processInfo -WorkspaceRoots @($resolvedRoot)
+      if ([bool]$match.matched -and (Test-RaymanProcessIsNewEnough -ProcessInfo $processInfo) -and (Test-RaymanProcessMatchesCleanupScope -ProcessInfo $processInfo)) {
+        $map[$pidValue] = [pscustomobject]@{
+          process = $processInfo
+          match = $match
+        }
+      }
+    }
+    return $map
+  }
+
+  $rootPids = New-Object 'System.Collections.Generic.List[int]'
+  foreach ($pidValue in @(Get-RootProcessIdsFromMap -ProcessMap $matchedByPid)) {
+    $rootPids.Add([int]$pidValue) | Out-Null
+  }
+
+  $cleanupRootSet = New-Object 'System.Collections.Generic.HashSet[int]'
+  if ($LauncherProcessId -gt 0 -and $launcherTreePids.Count -gt 0) {
+    [void]$cleanupRootSet.Add([int]$LauncherProcessId)
+  }
+  foreach ($rootPid in @($rootPids.ToArray())) {
+    if ([int]$rootPid -gt 0) {
+      [void]$cleanupRootSet.Add([int]$rootPid)
+    }
+  }
+
+  $ownerContext = $null
+  if ($cleanupRootSet.Count -gt 0) {
+    $ownerContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $resolvedRoot
+  }
+
+  $cleanupResults = New-Object System.Collections.Generic.List[object]
+  function Invoke-CleanupPass([int[]]$RootPidsToCleanup) {
+    foreach ($cleanupRootPid in @($RootPidsToCleanup | ForEach-Object { [int]$_ } | Sort-Object -Unique)) {
+      if ($cleanupRootPid -le 0) { continue }
+
+      $commandText = [string]$OwnedCommand
+      if ($matchedByPid.ContainsKey($cleanupRootPid)) {
+        $matchedProcess = $matchedByPid[$cleanupRootPid].process
+        if ($matchedProcess.PSObject.Properties['command_line'] -and -not [string]::IsNullOrWhiteSpace([string]$matchedProcess.command_line)) {
+          $commandText = [string]$matchedProcess.command_line
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($commandText) -and $cleanupRootPid -eq $LauncherProcessId) {
+        $commandText = [string]$OwnedCommand
+      }
+
+      $record = Register-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $resolvedRoot -OwnerContext $ownerContext -Kind $OwnedKind -Launcher $OwnedLauncher -RootPid $cleanupRootPid -Command $commandText
+      if ($null -eq $record) {
+        $record = [pscustomobject]@{
+          workspace_root = $resolvedRoot
+          owner_key = if ($null -ne $ownerContext -and $ownerContext.PSObject.Properties['owner_key']) { [string]$ownerContext.owner_key } else { '' }
+          owner_display = if ($null -ne $ownerContext -and $ownerContext.PSObject.Properties['owner_display']) { [string]$ownerContext.owner_display } else { '' }
+          kind = $OwnedKind
+          launcher = $OwnedLauncher
+          root_pid = $cleanupRootPid
+          command = $commandText
+        }
+      }
+
+      $cleanup = Stop-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $resolvedRoot -Record $record -Reason $CleanupReason
+      if ($null -ne $cleanup) {
+        $cleanupResults.Add($cleanup) | Out-Null
+      }
+    }
+  }
+
+  Invoke-CleanupPass -RootPidsToCleanup @($cleanupRootSet | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+
+  $postSnapshot = @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $resolvedRoot)
+  Start-Sleep -Milliseconds 400
+  $postSnapshot = @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $resolvedRoot)
+  $aliveMatchedMap = Get-NewMatchedProcessesFromSnapshot -Snapshot $postSnapshot
+  $aliveMatchedPids = New-Object System.Collections.Generic.List[int]
+  foreach ($pidValue in @($aliveMatchedMap.Keys | ForEach-Object { [int]$_ } | Sort-Object -Unique)) {
+    $aliveMatchedPids.Add([int]$pidValue) | Out-Null
+  }
+
+  if ($aliveMatchedPids.Count -gt 0) {
+    $retryTargets = @($aliveMatchedPids.ToArray() | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    foreach ($retryTarget in $retryTargets) {
+      [void]$cleanupRootSet.Add([int]$retryTarget)
+    }
+    Invoke-CleanupPass -RootPidsToCleanup $retryTargets
+    Start-Sleep -Milliseconds 400
+    $postSnapshot = @(Get-RaymanWorkspaceProcessSnapshot -WorkspaceRootPath $resolvedRoot)
+    $aliveMatchedMap = Get-NewMatchedProcessesFromSnapshot -Snapshot $postSnapshot
+    $aliveMatchedPids = New-Object System.Collections.Generic.List[int]
+    foreach ($pidValue in @($aliveMatchedMap.Keys | ForEach-Object { [int]$_ } | Sort-Object -Unique)) {
+      $aliveMatchedPids.Add([int]$pidValue) | Out-Null
+    }
+  }
+
+  $cleanupRequired = ($cleanupRootSet.Count -gt 0)
+  $cleanupSucceeded = ($cleanupRequired -and $aliveMatchedPids.Count -eq 0) -or (-not $cleanupRequired)
+  $cleanupPids = @($cleanupResults | ForEach-Object {
+      if ($_.PSObject.Properties['cleanup_pids']) {
+        @($_.cleanup_pids | ForEach-Object { [int]$_ })
+      }
+    } | Select-Object -Unique | Sort-Object)
+
+  $cleanupResult = if (-not $cleanupRequired) {
+    'not_needed'
+  } elseif ($cleanupSucceeded) {
+    'cleaned'
+  } else {
+    'cleanup_failed'
+  }
+
+  return [pscustomobject]@{
+    workspace_root = $resolvedRoot
+    cleanup_required = [bool]$cleanupRequired
+    cleanup_succeeded = [bool]$cleanupSucceeded
+    cleanup_result = $cleanupResult
+    cleanup_root_pids = @($cleanupRootSet | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    cleanup_pids = @($cleanupPids)
+    launcher_tree_pids = @($launcherTreePids | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    new_pids = @($newSnapshot | ForEach-Object { [int]$_.pid } | Sort-Object -Unique)
+    matched_pids = @($matchedByPid.Keys | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    root_pids = @($rootPids.ToArray() | Sort-Object -Unique)
+    workspace_match = @($workspaceMatches.ToArray())
+    alive_pids = @($aliveMatchedPids.ToArray() | Sort-Object -Unique)
+    cleanup_results = @($cleanupResults.ToArray())
+  }
 }
 
 function ConvertTo-RaymanOwnedProcessStartInstant {

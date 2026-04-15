@@ -8,6 +8,10 @@ $commandCatalogScript = Join-Path $PSScriptRoot 'scripts\utils\command_catalog.p
 if (Test-Path -LiteralPath $commandCatalogScript -PathType Leaf) {
   . $commandCatalogScript
 }
+$postCommandHygieneScript = Join-Path $PSScriptRoot 'scripts\utils\post_command_hygiene.ps1'
+if (Test-Path -LiteralPath $postCommandHygieneScript -PathType Leaf) {
+  . $postCommandHygieneScript -NoMain
+}
 
 $stateScript = Join-Path $PSScriptRoot 'lib\state.ps1'
 if (Test-Path -LiteralPath $stateScript -PathType Leaf) {
@@ -94,7 +98,7 @@ function Get-RaymanInteractiveMenuEntries {
   $displayIndex = 0
   foreach ($entry in @(Import-RaymanCommandCatalog -WorkspaceRoot $WorkspaceRoot)) {
     $name = [string]$entry.name
-    if ($name -in @('help', 'menu', 'interactive', 'self-check', 'copy-check', 'package', 'health', '一键健康检查', 'proxy-check')) {
+    if ($name -in @('help', 'menu')) {
       continue
     }
 
@@ -320,7 +324,7 @@ function Show-Help {
   if (Get-Command Format-RaymanHelpText -ErrorAction SilentlyContinue) {
     $helpText = (Format-RaymanHelpText -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Surface pwsh)
   } else {
-    $helpVersion = 'v161'
+    $helpVersion = 'v165'
     if (Get-Command Get-RaymanCatalogVersionToken -ErrorAction SilentlyContinue) {
       $helpVersion = Get-RaymanCatalogVersionToken -WorkspaceRoot $script:RaymanCliWorkspaceRoot
     }
@@ -364,14 +368,232 @@ function Test-RaymanShouldEnterCodexMenu {
   return (Test-RaymanInteractiveConsoleAvailable)
 }
 
-if ((-not $commandProvided) -and $cmd -ne 'menu' -and $cmd -ne 'interactive') {
+function Get-RaymanInteractionModeChoices {
+  return @(
+    [pscustomobject]@{
+      Value = 'detailed'
+      Label = '详细'
+      Summary = '尽可能多先给 plan 和选项说明，再收集你的选择。'
+    },
+    [pscustomobject]@{
+      Value = 'general'
+      Label = '一般'
+      Summary = '只在会明显改变结果或返工成本的歧义上先停下来确认。'
+    },
+    [pscustomobject]@{
+      Value = 'simple'
+      Label = '简单'
+      Summary = '只在高风险或明显可能走错方向时先确认，其余快速继续。'
+    }
+  )
+}
+
+function Get-RaymanInteractionModeChoice {
+  param([string]$Mode)
+
+  $normalized = if (Get-Command Normalize-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+    Normalize-RaymanInteractionMode -Mode $Mode -Default 'detailed'
+  } else {
+    'detailed'
+  }
+  return @(Get-RaymanInteractionModeChoices | Where-Object { [string]$_.Value -eq $normalized } | Select-Object -First 1)[0]
+}
+
+function Write-RaymanInteractionModeStatus {
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  $mode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+    Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
+  } else {
+    'detailed'
+  }
+  $choice = Get-RaymanInteractionModeChoice -Mode $mode
+  $description = if (Get-Command Get-RaymanInteractionModeDescription -ErrorAction SilentlyContinue) {
+    Get-RaymanInteractionModeDescription -Mode $mode
+  } else {
+    ''
+  }
+  $example = if (Get-Command Get-RaymanInteractionModeExamples -ErrorAction SilentlyContinue) {
+    Get-RaymanInteractionModeExamples -Mode $mode
+  } else {
+    ''
+  }
+
+  Write-Host ("[interaction-mode] workspace={0}" -f $WorkspaceRoot) -ForegroundColor DarkCyan
+  Write-Host ("[interaction-mode] current={0} ({1})" -f [string]$choice.Value, [string]$choice.Label) -ForegroundColor Cyan
+  if (-not [string]::IsNullOrWhiteSpace($description)) {
+    Write-Host ("[interaction-mode] rule={0}" -f $description) -ForegroundColor Gray
+  }
+  if (-not [string]::IsNullOrWhiteSpace($example)) {
+    Write-Host ("[interaction-mode] note={0}" -f $example) -ForegroundColor DarkGray
+  }
+}
+
+function Read-RaymanInteractionModeSelection {
+  param([string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot)
+
+  $currentMode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+    Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
+  } else {
+    'detailed'
+  }
+  $choices = @(Get-RaymanInteractionModeChoices)
+
+  Write-Host '=======================================================' -ForegroundColor Cyan
+  Write-Host 'Rayman 交互模式' -ForegroundColor Cyan
+  Write-Host '=======================================================' -ForegroundColor Cyan
+  for ($i = 0; $i -lt $choices.Count; $i++) {
+    $choice = $choices[$i]
+    $marker = if ([string]$choice.Value -eq [string]$currentMode) { '★' } else { ' ' }
+    Write-Host ("{0} {1}) {2,-8} {3}" -f $marker, ($i + 1), ([string]$choice.Label + ' / ' + [string]$choice.Value), [string]$choice.Summary)
+  }
+  Write-Host ''
+  Write-Host '说明：跨工作区 target 选择、policy block、release gate、危险操作等硬门禁仍然会停下。' -ForegroundColor DarkYellow
+  Write-Host '可输入：编号、模式名（detailed/general/simple）、回车保留当前值、q 取消。' -ForegroundColor DarkGray
+
+  $currentChoice = Get-RaymanInteractionModeChoice -Mode $currentMode
+  $selection = Read-Host ("请选择交互模式（默认 {0}）" -f [string]$currentChoice.Value)
+  if ([string]::IsNullOrWhiteSpace([string]$selection)) {
+    return $currentMode
+  }
+
+  $token = ([string]$selection).Trim().ToLowerInvariant()
+  if ($token -match '^(q|quit|exit|cancel)$') {
+    return ''
+  }
+
+  $parsedIndex = 0
+  if ([int]::TryParse($token, [ref]$parsedIndex) -and $parsedIndex -ge 1 -and $parsedIndex -le $choices.Count) {
+    return [string]$choices[$parsedIndex - 1].Value
+  }
+
+  if (Get-Command Normalize-RaymanInteractionMode -ErrorAction SilentlyContinue) {
+    $normalized = Normalize-RaymanInteractionMode -Mode $token -Default ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$normalized)) {
+      return $normalized
+    }
+  }
+
+  throw ("invalid interaction mode selection: {0}" -f $selection)
+}
+
+function Set-RaymanInteractionModePreference {
+  param(
+    [string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot,
+    [string]$Mode
+  )
+
+  if (-not (Get-Command Normalize-RaymanInteractionMode -ErrorAction SilentlyContinue)) {
+    throw 'interaction mode helpers are unavailable.'
+  }
+  $normalized = Normalize-RaymanInteractionMode -Mode $Mode -Default ''
+  if ([string]::IsNullOrWhiteSpace([string]$normalized)) {
+    throw ("invalid interaction mode: {0}" -f $Mode)
+  }
+
+  $result = Set-RaymanWorkspaceEnvValue `
+    -WorkspaceRoot $WorkspaceRoot `
+    -Name 'RAYMAN_INTERACTION_MODE' `
+    -Value $normalized `
+    -AddIfMissing `
+    -ManagedBlockId 'RAYMAN:INTERACTION:MODE' `
+    -ManagedBy 'Rayman interaction-mode'
+  if (-not [bool]$result.Ok) {
+    throw ("failed to persist interaction mode: {0}" -f [string]$result.Reason)
+  }
+
+  $refreshFailures = New-Object System.Collections.Generic.List[string]
+  $refreshScripts = @(
+    [pscustomobject]@{
+      Path = (Join-Path $WorkspaceRoot '.Rayman\scripts\skills\inject_codex_fix_prompt.ps1')
+      Parameters = @{}
+      Label = '.Rayman/codex_fix_prompt.txt'
+    },
+    [pscustomobject]@{
+      Path = (Join-Path $WorkspaceRoot '.Rayman\scripts\utils\generate_context.ps1')
+      Parameters = @{ WorkspaceRoot = $WorkspaceRoot }
+      Label = '.Rayman/CONTEXT.md'
+    }
+  )
+  foreach ($script in $refreshScripts) {
+    if (-not (Test-Path -LiteralPath ([string]$script.Path) -PathType Leaf)) {
+      $refreshFailures.Add(("missing refresh script for {0}: {1}" -f [string]$script.Label, [string]$script.Path)) | Out-Null
+      continue
+    }
+
+    try {
+      $scriptParams = @{}
+      foreach ($entry in @($script.Parameters.GetEnumerator())) {
+        $scriptParams[[string]$entry.Key] = $entry.Value
+      }
+      if (Test-Path variable:LASTEXITCODE) {
+        $global:LASTEXITCODE = 0
+      }
+      & ([string]$script.Path) @scriptParams | Out-Null
+      if (-not $?) {
+        $refreshFailures.Add(("refresh failed for {0}" -f [string]$script.Label)) | Out-Null
+      }
+    } catch {
+      $refreshFailures.Add(("refresh failed for {0}: {1}" -f [string]$script.Label, $_.Exception.Message)) | Out-Null
+    }
+  }
+  if ($refreshFailures.Count -gt 0) {
+    throw ("interaction mode saved but refresh failed: {0}" -f (($refreshFailures | Select-Object -Unique) -join '; '))
+  }
+
+  $choice = Get-RaymanInteractionModeChoice -Mode $normalized
+  Write-Host ("[interaction-mode] saved={0} ({1}) path={2}" -f [string]$choice.Value, [string]$choice.Label, [string]$result.Path) -ForegroundColor Green
+  Write-Host ("[interaction-mode] rule={0}" -f (Get-RaymanInteractionModeDescription -Mode $normalized)) -ForegroundColor Gray
+  return $result
+}
+
+function Invoke-RaymanInteractionModeCommand {
+  param(
+    [string]$WorkspaceRoot = $script:RaymanCliWorkspaceRoot,
+    [string[]]$InputArgs = @()
+  )
+
+  $showRequested = Test-RaymanCliFlagPresent -InputArgs $InputArgs -Names @('show')
+  $setValue = [string](Get-RaymanCliOptionValue -InputArgs $InputArgs -Names @('set') -Default '')
+  if ([string]::IsNullOrWhiteSpace([string]$setValue)) {
+    foreach ($token in @($InputArgs)) {
+      $candidate = [string]$token
+      if ([string]::IsNullOrWhiteSpace([string]$candidate) -or $candidate.StartsWith('-')) { continue }
+      $normalized = Normalize-RaymanInteractionMode -Mode $candidate -Default ''
+      if (-not [string]::IsNullOrWhiteSpace([string]$normalized)) {
+        $setValue = $normalized
+        break
+      }
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$setValue)) {
+    Set-RaymanInteractionModePreference -WorkspaceRoot $WorkspaceRoot -Mode $setValue | Out-Null
+    return
+  }
+
+  if ($showRequested -or -not (Test-RaymanInteractiveConsoleAvailable)) {
+    Write-RaymanInteractionModeStatus -WorkspaceRoot $WorkspaceRoot
+    return
+  }
+
+  $selection = Read-RaymanInteractionModeSelection -WorkspaceRoot $WorkspaceRoot
+  if ([string]::IsNullOrWhiteSpace([string]$selection)) {
+    Write-Host '[interaction-mode] cancelled.' -ForegroundColor Yellow
+    return
+  }
+
+  Set-RaymanInteractionModePreference -WorkspaceRoot $WorkspaceRoot -Mode $selection | Out-Null
+}
+
+if ((-not $commandProvided) -and $cmd -ne 'menu') {
   Show-Help
   Write-Host ''
   Write-Host '提示：如需交互式菜单，请显式运行：.\.Rayman\rayman.cmd menu' -ForegroundColor Cyan
   exit 0
 }
 
-if ($cmd -eq 'menu' -or $cmd -eq 'interactive') {
+if ($cmd -eq 'menu') {
   $picked = Resolve-RaymanInteractiveMenuSelection -Selection (Show-RaymanInteractiveMenu -WorkspaceRoot $script:RaymanCliWorkspaceRoot)
   if ($null -eq $picked) { exit 0 }
   $script:RaymanCliInvokedFromMenu = $true
@@ -523,10 +745,8 @@ function Test-RaymanCliDoneAlertSuppressed {
   switch ($CommandName.Trim().ToLowerInvariant()) {
     'help' { return $true }
     'menu' { return $true }
-    'interactive' { return $true }
     'copy-self-check' { return $true }
-    'self-check' { return $true }
-    'copy-check' { return $true }
+    'codex' { return $true }
   }
 
   if (Convert-RaymanStringToBool -Value ([Environment]::GetEnvironmentVariable('CI')) -Default $false) {
@@ -571,12 +791,67 @@ function Invoke-RaymanCliDoneAlert {
   } catch {}
 }
 
+function Test-RaymanCliPostCommandQuietMode {
+  param(
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if (Convert-RaymanStringToBool -Value ([Environment]::GetEnvironmentVariable('CI')) -Default $false) {
+    return $true
+  }
+
+  try {
+    if ([Console]::IsOutputRedirected -or [Console]::IsErrorRedirected) {
+      return $true
+    }
+  } catch {}
+
+  foreach ($arg in @($InputArgs)) {
+    $token = Get-RaymanCliTokenName -Token ([string]$arg)
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    switch ($token.ToLowerInvariant()) {
+      'json' { return $true }
+      'as-json' { return $true }
+      'asjson' { return $true }
+    }
+  }
+
+  return $false
+}
+
+function Invoke-RaymanCliPostCommandHygiene {
+  param(
+    [int]$ExitCode,
+    [string]$CommandName,
+    [string[]]$InputArgs = @()
+  )
+
+  if (-not (Get-Command Invoke-RaymanPostCommandHygiene -ErrorAction SilentlyContinue)) {
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$CommandName)) {
+    return
+  }
+  switch ($CommandName.Trim().ToLowerInvariant()) {
+    'help' { return }
+    'menu' { return }
+  }
+
+  $quietMode = Test-RaymanCliPostCommandQuietMode -CommandName $CommandName -InputArgs $InputArgs
+  try {
+    Invoke-RaymanPostCommandHygiene -WorkspaceRoot $script:RaymanCliWorkspaceRoot -CommandName $CommandName -InputArgs $InputArgs -ExitCode $ExitCode -Quiet:$quietMode | Out-Null
+  } catch {}
+}
+
 function Exit-RaymanCli {
   param(
     [int]$ExitCode,
     [string]$CommandName,
     [string[]]$InputArgs = @()
   )
+
+  Invoke-RaymanCliPostCommandHygiene -ExitCode $ExitCode -CommandName $CommandName -InputArgs $InputArgs
 
   if ($ExitCode -eq 0) {
     Invoke-RaymanCliDoneAlert -CommandName $CommandName -InputArgs $InputArgs
@@ -733,33 +1008,6 @@ switch ($cmd) {
     & "$PSScriptRoot\scripts\watch\stop_background_watchers.ps1" @stopParams
     break
   }
-  "alert-watch" {
-    & "$PSScriptRoot\scripts\alerts\attention_watch.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    break
-  }
-  "alert-stop" {
-    $rootPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-    $pidFile = Join-Path $rootPath ".Rayman\runtime\attention_watch.pid"
-    if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
-      $raw = (Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue).Trim()
-      $pidVal = 0
-      if ([int]::TryParse($raw, [ref]$pidVal) -and $pidVal -gt 0) {
-        $p = Get-Process -Id $pidVal -ErrorAction SilentlyContinue
-        if ($p) {
-          try { Stop-Process -Id $pidVal -Force -ErrorAction Stop } catch {}
-        }
-      }
-      try { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue } catch {}
-      if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
-        Write-Host "[alert-watch] stop requested, but pid file still exists (可能权限受限)。"
-      } else {
-        Write-Host "[alert-watch] stopped"
-      }
-    } else {
-      Write-Host "[alert-watch] pid file not found; watcher may not be running."
-    }
-    break
-  }
   "fast-init" {
     # Prefer WSL fast-init if repo is on a Windows drive (most common)
     $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
@@ -849,12 +1097,6 @@ switch ($cmd) {
     break
   }
   "copy-self-check" {
-    Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
-  }
-  "self-check" {
-    Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
-  }
-  "copy-check" {
     Invoke-RaymanDoctorCopySmoke -InputArgs $CliArgs -CommandName $cmd
   }
   "check" { & "$PSScriptRoot\win-check.ps1"; break }
@@ -1189,11 +1431,13 @@ switch ($cmd) {
       break
     }
   "state-save" { & "$PSScriptRoot\scripts\state\save_state.ps1" @CliArgs; break }
+  "state-list" { & "$PSScriptRoot\scripts\state\list_state.ps1" @CliArgs; break }
   "state-resume" { & "$PSScriptRoot\scripts\state\resume_state.ps1" @CliArgs; break }
+  "worktree-create" { & "$PSScriptRoot\scripts\state\worktree_create.ps1" @CliArgs; break }
   "test-fix" { & "$PSScriptRoot\scripts\repair\run_tests_and_fix.ps1" @CliArgs; break }
-  "req-ts-backfill" { & "$PSScriptRoot\scripts\requirements\backfill_requirements_timestamps.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "dist-sync" { & "$PSScriptRoot\scripts\release\sync_dist_from_src.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Validate; break }
   "diagnostics-residual" { & "$PSScriptRoot\scripts\utils\diagnose_residual_diagnostics.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "sound-check" { & "$PSScriptRoot\scripts\utils\sound_check.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "release-gate" {
     $releaseParams = @{ WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
     for ($i = 0; $i -lt $CliArgs.Count; $i++) {
@@ -1268,7 +1512,6 @@ switch ($cmd) {
     Exit-RaymanCli -ExitCode (Resolve-RaymanCommandExitCode -Default 0) -CommandName $cmd -InputArgs $newVersionArgs
   }
   "package-dist" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
-  "package" { & "$PSScriptRoot\scripts\release\package_distributable.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "context-update" { & "$PSScriptRoot\scripts\utils\generate_context.ps1" @CliArgs; break }
   "agent-contract" {
     if (Test-Path variable:LASTEXITCODE) {
@@ -1312,8 +1555,14 @@ switch ($cmd) {
     }
     Exit-RaymanCli -ExitCode $(if ($?) { 0 } else { 1 }) -CommandName $cmd -InputArgs $CliArgs
   }
+  "interaction-mode" {
+    Invoke-RaymanInteractionModeCommand -WorkspaceRoot $script:RaymanCliWorkspaceRoot -InputArgs $CliArgs
+    Exit-RaymanCli -ExitCode 0 -CommandName $cmd -InputArgs $CliArgs
+  }
   "codex" { & "$PSScriptRoot\scripts\codex\manage_accounts.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "worker" { & "$PSScriptRoot\scripts\worker\manage_workers.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
+  "workspace-install" { & "$PSScriptRoot\scripts\workspace\install_workspace.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action install @CliArgs; break }
+  "workspace-register" { & "$PSScriptRoot\scripts\workspace\register_workspace.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs; break }
   "health-check" { & "$PSScriptRoot\scripts\watch\daily_health_check.ps1" @CliArgs; break }
   "one-click-health" {
     $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
@@ -1328,22 +1577,7 @@ switch ($cmd) {
     & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot $workspaceArg -Refresh:$true -AsJson:$jsonArg
     break
   }
-  "health" {
-    & $PSCommandPath one-click-health @CliArgs
-    break
-  }
-  "一键健康检查" {
-    & $PSCommandPath one-click-health @CliArgs
-    break
-  }
   "proxy-health" {
-    $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
-    $refreshArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Refresh', 'refresh')
-    $jsonArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Json', 'json', 'AsJson', 'as-json', 'asjson')
-    & "$PSScriptRoot\scripts\proxy\proxy_health_check.ps1" -WorkspaceRoot $workspaceArg -Refresh:$refreshArg -AsJson:$jsonArg
-    break
-  }
-  "proxy-check" {
     $workspaceArg = [string](Get-RaymanCliOptionValue -InputArgs $CliArgs -Names @('WorkspaceRoot', 'workspace-root') -Default $script:RaymanCliWorkspaceRoot)
     $refreshArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Refresh', 'refresh')
     $jsonArg = Test-RaymanCliFlagPresent -InputArgs $CliArgs -Names @('Json', 'json', 'AsJson', 'as-json', 'asjson')

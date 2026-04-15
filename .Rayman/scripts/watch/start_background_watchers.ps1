@@ -1,6 +1,7 @@
 param(
   [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
   [switch]$FromVscodeAuto,
+  [switch]$FromCodexDesktopAuto,
   [string]$VscodeOwnerPid = ''
 )
 
@@ -64,9 +65,18 @@ function Remove-StaleVsCodeSessions {
 }
 
 function Resolve-StartPowerShellHost {
+  if ($isWindowsHost) {
+    foreach ($candidate in @('powershell.exe', 'powershell', 'pwsh.exe', 'pwsh')) {
+      $resolved = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($null -ne $resolved -and -not [string]::IsNullOrWhiteSpace([string]$resolved.Source)) {
+        return [string]$resolved.Source
+      }
+    }
+  }
+
   $hostCmd = Resolve-RaymanPowerShellHost
-  if (-not [string]::IsNullOrWhiteSpace($hostCmd)) {
-    return $hostCmd
+  if (-not [string]::IsNullOrWhiteSpace([string]$hostCmd)) {
+    return [string]$hostCmd
   }
 
   try {
@@ -133,6 +143,76 @@ function Resolve-RaymanBackgroundCommandText([string]$ScriptPath, [string[]]$Scr
     }
   }
   return (($parts.ToArray()) -join ' ')
+}
+
+function Test-RaymanBackgroundProcessMatches {
+  param(
+    [int]$ProcessId,
+    [string]$ScriptPath,
+    [string]$WorkspaceRootPath
+  )
+
+  if ($ProcessId -le 0) { return $false }
+  if (-not $isWindowsHost) {
+    return (Test-RaymanTrackedProcessAlive -ProcessId $ProcessId)
+  }
+  if ([string]::IsNullOrWhiteSpace($ScriptPath) -or [string]::IsNullOrWhiteSpace($WorkspaceRootPath)) {
+    return $false
+  }
+
+  $scriptNeedle = Normalize-RaymanWatchPathForMatch -PathValue $ScriptPath
+  $workspaceNeedle = Normalize-RaymanWatchPathForMatch -PathValue (Join-Path $WorkspaceRootPath '.Rayman')
+  if ([string]::IsNullOrWhiteSpace($scriptNeedle) -or [string]::IsNullOrWhiteSpace($workspaceNeedle)) {
+    return $false
+  }
+
+  $proc = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+  if ($null -eq $proc) {
+    return $false
+  }
+
+  if ($proc.Name -notin @('pwsh.exe', 'powershell.exe')) {
+    return $false
+  }
+
+  $cmd = ([string]$proc.CommandLine).ToLowerInvariant().Replace('/', '\')
+  return ($cmd.Contains($scriptNeedle) -and $cmd.Contains($workspaceNeedle))
+}
+
+function Remove-StaleRaymanBackgroundProcessRecords {
+  param(
+    [string]$Launcher,
+    [string]$Kind,
+    [string]$ScriptPath
+  )
+
+  if (-not (Get-Command Get-RaymanWorkspaceOwnedProcessRecords -ErrorAction SilentlyContinue)) {
+    return
+  }
+  if (-not (Get-Command Remove-RaymanWorkspaceOwnedProcess -ErrorAction SilentlyContinue)) {
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Launcher) -or [string]::IsNullOrWhiteSpace([string]$Kind)) {
+    return
+  }
+
+  $records = @(Get-RaymanWorkspaceOwnedProcessRecords -WorkspaceRootPath $WorkspaceRoot | Where-Object {
+      [string]$_.launcher -eq $Launcher -and [string]$_.kind -eq $Kind
+    })
+  foreach ($record in $records) {
+    if ($null -eq $record) { continue }
+    $rootPid = 0
+    try { $rootPid = [int]$record.root_pid } catch { $rootPid = 0 }
+    if ($rootPid -le 0) {
+      Remove-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $WorkspaceRoot -RootPid $rootPid
+      continue
+    }
+    if (Test-RaymanBackgroundProcessMatches -ProcessId $rootPid -ScriptPath $ScriptPath -WorkspaceRootPath $WorkspaceRoot) {
+      continue
+    }
+    Write-Info ("[watch-auto] removing stale owned process record ({0}, PID={1})." -f $Launcher, $rootPid)
+    Remove-RaymanWorkspaceOwnedProcess -WorkspaceRootPath $WorkspaceRoot -RootPid $rootPid
+  }
 }
 
 function Resolve-McpRootPid([string]$PidFile, [int[]]$FallbackPids = @()) {
@@ -284,6 +364,8 @@ function Start-RaymanDetachedWatcher {
     Write-Warn ("[watch-auto] {0} script not found: {1}" -f $Name, $ScriptPath)
     return
   }
+
+  Remove-StaleRaymanBackgroundProcessRecords -Launcher $Launcher -Kind $Kind -ScriptPath $ScriptPath
 
   $existingPid = Find-ExistingPowerShellProcess -ScriptPath $ScriptPath -WorkspaceRootPath $WorkspaceRoot
   if ($existingPid -gt 0) {
@@ -440,11 +522,36 @@ try {
       }
     }
   }
+  elseif ($FromCodexDesktopAuto) {
+    Write-Info "[watch-auto] trigger=codex-desktop-auto"
+  }
 
-  $embeddedAttentionEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' -Default $false
-  $embeddedAutoSaveEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' -Default $false
-  $promptWatchEnabled = Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' -Default $true
-  $startSharedWatch = ($promptWatchEnabled -or $embeddedAttentionEnabled -or $embeddedAutoSaveEnabled)
+  $embeddedAttentionEnabled = if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' -Default $false
+  } else {
+    Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED' -Default $false
+  }
+  $embeddedAutoSaveEnabled = if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' -Default $false
+  } else {
+    Get-RaymanEnvBool -Name 'RAYMAN_AUTO_SAVE_WATCH_ENABLED' -Default $false
+  }
+  $embeddedNetworkResumeEnabled = if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' -Default $true
+  } else {
+    Get-RaymanEnvBool -Name 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' -Default $true
+  }
+  $workerAutoSyncEnabled = if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_WORKER_AUTO_SYNC_ENABLED' -Default $false
+  } else {
+    Get-RaymanEnvBool -Name 'RAYMAN_WORKER_AUTO_SYNC_ENABLED' -Default $false
+  }
+  $promptWatchEnabled = if (Get-Command Get-RaymanWorkspaceEnvBool -ErrorAction SilentlyContinue) {
+    Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' -Default $true
+  } else {
+    Get-RaymanEnvBool -Name 'RAYMAN_AUTO_START_PROMPT_WATCH_ENABLED' -Default $true
+  }
+  $startSharedWatch = ($promptWatchEnabled -or $embeddedAttentionEnabled -or $embeddedAutoSaveEnabled -or $embeddedNetworkResumeEnabled)
 
   if ($startSharedWatch) {
     $watchScript = Join-Path $raymanDir 'win-watch.ps1'
@@ -455,6 +562,12 @@ try {
     }
     if ($embeddedAutoSaveEnabled) {
       $watchArgs += '-EnableEmbeddedAutoSave'
+    }
+    if ($embeddedNetworkResumeEnabled) {
+      $watchArgs += '-EnableEmbeddedNetworkResume'
+    }
+    if ($FromCodexDesktopAuto) {
+      $watchArgs += '-DisablePromptSync'
     }
 
     Start-RaymanDetachedWatcher `
@@ -471,6 +584,20 @@ try {
   } else {
     Write-Info '[watch-auto] shared win-watch disabled (no prompt/attention/auto-save feature enabled).'
   }
+
+  $workerAutoSyncScript = Join-Path $raymanDir 'scripts\watch\worker_auto_sync.ps1'
+  $workerAutoSyncPidFile = Join-Path $runtimeDir 'worker_auto_sync.pid'
+  Start-RaymanDetachedWatcher `
+    -Name 'worker-auto-sync' `
+    -ScriptPath $workerAutoSyncScript `
+    -ScriptArgs @('-WorkspaceRoot', $WorkspaceRoot, '-PidFile', $workerAutoSyncPidFile) `
+    -PidFile $workerAutoSyncPidFile `
+    -EnableEnvName 'RAYMAN_WORKER_AUTO_SYNC_ENABLED' `
+    -DefaultEnabled $false `
+    -EnabledOverride $workerAutoSyncEnabled `
+    -OwnerContext $sharedOwnerContext `
+    -Kind 'watcher' `
+    -Launcher 'watch-auto-worker-sync'
 
   # 启动 MCP 服务器
   $mcpScript = Join-Path $raymanDir 'scripts\mcp\manage_mcp.ps1'

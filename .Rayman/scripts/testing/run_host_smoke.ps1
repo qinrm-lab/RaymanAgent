@@ -154,21 +154,22 @@ function Resolve-RaymanHostSmokeWorkerFixture {
 
   $projectRelative = '.Rayman\scripts\testing\fixtures\worker_smoke_app\WorkerSmokeApp.csproj'
   $projectPath = Join-Path $WorkspaceRoot $projectRelative
-  $outputDir = Join-Path $WorkspaceRoot '.Rayman\runtime\test_fixtures\worker_smoke_app'
-  $intermediateDir = Join-Path $outputDir 'obj'
+  $fixtureBuildRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_host_smoke_fixture_' + [Guid]::NewGuid().ToString('N'))
+  $stageArtifactRelativeDir = '.Rayman/runtime/test_fixtures/worker_smoke_app/build'
+  $stageSourceRoot = Join-Path $fixtureBuildRoot 'source'
+  $outputDir = Join-Path $fixtureBuildRoot 'build'
+  $intermediateDir = Join-Path $fixtureBuildRoot 'obj'
   $programPath = Join-Path $outputDir 'WorkerSmokeApp.dll'
-  $programRelative = ''
-  try {
-    $programRelative = [System.IO.Path]::GetRelativePath($WorkspaceRoot, $programPath).Replace('\', '/')
-  } catch {
-    $programRelative = '.Rayman/runtime/test_fixtures/worker_smoke_app/WorkerSmokeApp.dll'
-  }
+  $programRelative = ($stageArtifactRelativeDir.TrimEnd('/') + '/WorkerSmokeApp.dll')
 
   $result = [ordered]@{
     ready = $false
     detail = ''
     project_path = $projectPath
     project_relative = $projectRelative
+    staged_project_path = ''
+    stage_root = $stageSourceRoot
+    temp_root = $fixtureBuildRoot
     output_dir = $outputDir
     program_path = $programPath
     program_relative = $programRelative
@@ -186,11 +187,28 @@ function Resolve-RaymanHostSmokeWorkerFixture {
     return [pscustomobject]$result
   }
 
-  if (-not (Test-Path -LiteralPath $outputDir -PathType Container)) {
-    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+  if (Test-Path -LiteralPath $outputDir) {
+    Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
   }
-  if (-not (Test-Path -LiteralPath $intermediateDir -PathType Container)) {
-    New-Item -ItemType Directory -Force -Path $intermediateDir | Out-Null
+  if (Test-Path -LiteralPath $intermediateDir) {
+    Remove-Item -LiteralPath $intermediateDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if (-not (Test-Path -LiteralPath $fixtureBuildRoot -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $fixtureBuildRoot | Out-Null
+  }
+
+  $buildProjectPath = $projectPath
+  if (Get-Command Initialize-RaymanHostSmokeStagedProject -ErrorAction SilentlyContinue) {
+    try {
+      $stagedProject = Initialize-RaymanHostSmokeStagedProject -SourceProjectPath $projectPath -StageRoot $stageSourceRoot
+      if ($null -ne $stagedProject -and -not [string]::IsNullOrWhiteSpace([string]$stagedProject.staged_project_path)) {
+        $buildProjectPath = [string]$stagedProject.staged_project_path
+        $result.staged_project_path = $buildProjectPath
+      }
+    } catch {
+      $result.detail = ("worker fixture staging failed: {0}" -f $_.Exception.Message)
+      return [pscustomobject]$result
+    }
   }
 
   $intermediateDirArg = $intermediateDir
@@ -200,7 +218,7 @@ function Resolve-RaymanHostSmokeWorkerFixture {
 
   $buildStep = Invoke-RaymanHostSmokeStep -Name 'worker_loopback_fixture_build' -LogDir $LogDir -FilePath $dotnetCmd -ArgumentList @(
     'build',
-    $projectPath,
+    $buildProjectPath,
     '-c',
     'Debug',
     '-nologo',
@@ -523,7 +541,8 @@ if (-not (Test-RaymanWindowsPlatform)) {
     'RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS',
     'RAYMAN_WORKER_VSDBG_PATH',
     'RAYMAN_WORKER_LAN_ENABLED',
-    'RAYMAN_WORKER_AUTH_TOKEN'
+    'RAYMAN_WORKER_AUTH_TOKEN',
+    'RAYMAN_WORKER_ALLOW_PROTECTED_LOCAL'
   )
   $workerEnvBackup = @{}
   foreach ($name in $workerEnvNames) {
@@ -533,14 +552,21 @@ if (-not (Test-RaymanWindowsPlatform)) {
   $workerHostProcess = $null
   $workerHostStdoutLog = Join-Path $logDir 'worker_loopback_host.stdout.log'
   $workerHostStderrLog = Join-Path $logDir 'worker_loopback_host.stderr.log'
+  $workerHostStatusPath = Join-Path $WorkspaceRoot '.Rayman\runtime\worker\host.status.json'
+  $workerHostBeaconPath = Join-Path $WorkspaceRoot '.Rayman\runtime\worker\beacon.last.json'
+  $workerHostReadyTimeoutSeconds = Get-EnvIntCompat -Name 'RAYMAN_HOST_SMOKE_WORKER_READY_TIMEOUT_SECONDS' -Default 45 -Min 20 -Max 180
   $workerOk = $true
   try {
+    $workerHostStatusBaselineUtc = if (Test-Path -LiteralPath $workerHostStatusPath -PathType Leaf) { (Get-Item -LiteralPath $workerHostStatusPath).LastWriteTimeUtc } else { [datetime]::MinValue }
+    $workerHostBeaconBaselineUtc = if (Test-Path -LiteralPath $workerHostBeaconPath -PathType Leaf) { (Get-Item -LiteralPath $workerHostBeaconPath).LastWriteTimeUtc } else { [datetime]::MinValue }
+
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_PORT', [string](Get-RaymanHostSmokeFreeUdpPort))
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_CONTROL_PORT', [string](Get-RaymanHostSmokeFreeTcpPort))
-    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS', '5')
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_DISCOVERY_LISTEN_SECONDS', '8')
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_VSDBG_PATH', $pwshCmd)
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED', '0')
     [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $null)
+    [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_ALLOW_PROTECTED_LOCAL', '1')
 
     $workerHostProcess = Start-Process -FilePath $pwshCmd -ArgumentList @(
       '-NoProfile',
@@ -552,19 +578,60 @@ if (-not (Test-RaymanWindowsPlatform)) {
       $WorkspaceRoot
     ) -WorkingDirectory $WorkspaceRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $workerHostStdoutLog -RedirectStandardError $workerHostStderrLog
 
-    Start-Sleep -Seconds 1
+    $workerHostReady = $false
+    $workerHostReadyDetail = ''
+    $workerHostReadyDeadline = (Get-Date).AddSeconds($workerHostReadyTimeoutSeconds)
+    while ((Get-Date) -lt $workerHostReadyDeadline) {
+      if ($workerHostProcess.HasExited) {
+        $workerHostReadyDetail = ("worker host exited early (exit={0})" -f $workerHostProcess.ExitCode)
+        break
+      }
 
-    $discoverStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_discover' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('discover', '--json')
-    $discoverJson = if ($discoverStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $discoverStep.output } else { $null }
-    if ($discoverStep.exit_code -ne 0 -or $null -eq $discoverJson -or @($discoverJson.workers).Count -lt 1) {
-      Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'FAIL' -Detail ("discover failed (exit={0})" -f $discoverStep.exit_code) -LogPath $discoverStep.log_path
+      $statusFresh = (Test-Path -LiteralPath $workerHostStatusPath -PathType Leaf) -and ((Get-Item -LiteralPath $workerHostStatusPath).LastWriteTimeUtc -gt $workerHostStatusBaselineUtc)
+      $beaconFresh = (Test-Path -LiteralPath $workerHostBeaconPath -PathType Leaf) -and ((Get-Item -LiteralPath $workerHostBeaconPath).LastWriteTimeUtc -gt $workerHostBeaconBaselineUtc)
+      if ($statusFresh -and $beaconFresh) {
+        $workerHostReady = $true
+        break
+      }
+
+      Start-Sleep -Milliseconds 250
+    }
+
+    if (-not $workerHostReady) {
+      if ([string]::IsNullOrWhiteSpace($workerHostReadyDetail)) {
+        $workerHostReadyDetail = ("worker host did not refresh host.status/beacon within {0} seconds" -f $workerHostReadyTimeoutSeconds)
+      }
+      Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'FAIL' -Detail $workerHostReadyDetail -LogPath $workerHostStderrLog
       $overall = 'FAIL'
       $workerOk = $false
     } else {
-      Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'PASS' -Detail ("workers={0}" -f @($discoverJson.workers).Count) -LogPath $discoverStep.log_path
+      $discoverStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_discover' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('discover', '--json')
+      $discoverJson = if ($discoverStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $discoverStep.output } else { $null }
+      if ($discoverStep.exit_code -ne 0 -or $null -eq $discoverJson -or @($discoverJson.workers).Count -lt 1) {
+        Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'FAIL' -Detail ("discover failed (exit={0})" -f $discoverStep.exit_code) -LogPath $discoverStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_discover' -Status 'PASS' -Detail ("workers={0}" -f @($discoverJson.workers).Count) -LogPath $discoverStep.log_path
+      }
     }
 
-    $workerId = if ($workerOk) { [string]@($discoverJson.workers)[0].worker_id } else { '' }
+    $selectedWorker = $null
+    if ($workerOk) {
+      $expectedControlPort = 0
+      $expectedControlPortRaw = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_CONTROL_PORT')
+      if (-not [int]::TryParse([string]$expectedControlPortRaw, [ref]$expectedControlPort)) {
+        $expectedControlPort = 0
+      }
+      $selectedWorker = Select-RaymanHostSmokeLoopbackWorker -Workers @($discoverJson.workers) -ExpectedControlPort $expectedControlPort
+      if ($null -eq $selectedWorker) {
+        Add-Step -Steps $steps -Name 'worker_loopback_select' -Status 'FAIL' -Detail ("discover did not surface the loopback worker (expected_control_port={0})" -f $expectedControlPort) -LogPath $discoverStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      }
+    }
+
+    $workerId = if ($workerOk -and $null -ne $selectedWorker -and $selectedWorker.PSObject.Properties['worker_id']) { [string]$selectedWorker.worker_id } else { '' }
     if ($workerOk) {
       $useStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_use' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('use', '--id', $workerId, '--json')
       $useJson = if ($useStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $useStep.output } else { $null }
@@ -701,6 +768,9 @@ if (-not (Test-RaymanWindowsPlatform)) {
       if (-not [bool]$workerRuntimeDirExists[$dir] -and (Test-Path -LiteralPath $dir -PathType Container)) {
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
       }
+    }
+    if ($null -ne $workerFixture -and $workerFixture.PSObject.Properties['temp_root'] -and -not [string]::IsNullOrWhiteSpace([string]$workerFixture.temp_root)) {
+      Remove-Item -LiteralPath ([string]$workerFixture.temp_root) -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
   }

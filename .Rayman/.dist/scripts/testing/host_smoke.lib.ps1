@@ -85,6 +85,65 @@ function Convert-RaymanHostSmokeToBashSingleQuotedLiteral([string]$Value) {
   return ("'" + ([string]$Value).Replace("'", "'""'""'") + "'")
 }
 
+function Copy-RaymanHostSmokeDirectoryContentsFiltered {
+  param(
+    [string]$SourceRoot,
+    [string]$DestinationRoot,
+    [string[]]$ExcludeTopLevelNames = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$SourceRoot) -or -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+    throw ("source directory not found: {0}" -f $SourceRoot)
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$DestinationRoot)) {
+    throw 'destination directory is required'
+  }
+
+  if (Test-Path -LiteralPath $DestinationRoot -PathType Container) {
+    Remove-Item -LiteralPath $DestinationRoot -Recurse -Force -ErrorAction Stop
+  }
+  New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
+
+  $exclude = @($ExcludeTopLevelNames | ForEach-Object {
+      if ([string]::IsNullOrWhiteSpace([string]$_)) { return $null }
+      return ([string]$_).ToLowerInvariant()
+    } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+
+  foreach ($child in @(Get-ChildItem -LiteralPath $SourceRoot -Force -ErrorAction Stop)) {
+    $nameLower = ([string]$child.Name).ToLowerInvariant()
+    if ($exclude -contains $nameLower) {
+      continue
+    }
+    Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $DestinationRoot $child.Name) -Recurse -Force
+  }
+}
+
+function Initialize-RaymanHostSmokeStagedProject {
+  param(
+    [string]$SourceProjectPath,
+    [string]$StageRoot
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$SourceProjectPath) -or -not (Test-Path -LiteralPath $SourceProjectPath -PathType Leaf)) {
+    throw ("source project not found: {0}" -f $SourceProjectPath)
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$StageRoot)) {
+    throw 'stage root is required'
+  }
+
+  $resolvedProjectPath = (Resolve-Path -LiteralPath $SourceProjectPath).Path
+  $sourceRoot = Split-Path -Parent $resolvedProjectPath
+
+  Copy-RaymanHostSmokeDirectoryContentsFiltered -SourceRoot $sourceRoot -DestinationRoot $StageRoot -ExcludeTopLevelNames @('bin', 'obj')
+
+  return [pscustomobject]@{
+    source_project_path = $resolvedProjectPath
+    source_root = $sourceRoot
+    stage_root = $StageRoot
+    staged_project_path = (Join-Path $StageRoot (Split-Path -Leaf $resolvedProjectPath))
+  }
+}
+
 function New-RaymanHostSmokeBashInvocation {
   param(
     [string]$WorkspaceRoot,
@@ -375,4 +434,28 @@ function Resolve-RaymanHostSmokePythonCommand {
     output = ''
     attempts = @($attempts.ToArray())
   }
+}
+
+function Select-RaymanHostSmokeLoopbackWorker {
+  param(
+    [object[]]$Workers = @(),
+    [int]$ExpectedControlPort = 0
+  )
+
+  $matches = @(
+    $Workers | Where-Object {
+      $candidateAddress = if ($_.PSObject.Properties['address']) { [string]$_.address } else { '' }
+      $candidateControlUrl = if ($_.PSObject.Properties['control_url']) { [string]$_.control_url } else { '' }
+      $candidateControlPort = if ($_.PSObject.Properties['control_port']) { [int]$_.control_port } else { 0 }
+      ($ExpectedControlPort -gt 0 -and $candidateControlPort -eq $ExpectedControlPort) -or
+      ($candidateAddress -match '^(?i:127\.0\.0\.1|localhost)$') -or
+      ($candidateControlUrl -match '^http://127\.0\.0\.1:')
+    }
+  )
+
+  if ($matches.Count -lt 1) {
+    return $null
+  }
+
+  return $matches[0]
 }

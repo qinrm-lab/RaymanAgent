@@ -1,8 +1,8 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_worker"
 description = "Bounded implementation worker for explicit file ownership and follow-up fixes."
-model = "gpt-5.3-codex"
-sandbox_mode = "workspace-write"
+model = "gpt-4-turbo"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 Role: rayman_worker

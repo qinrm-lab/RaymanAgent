@@ -6,6 +6,21 @@ setup_file() {
   mkdir -p "${BATS_TMP_MNT_PARENT}"
 }
 
+setup() {
+  export RAYMAN_BATS_CREATED_PATHS=""
+}
+
+track_cleanup_path() {
+  local path="${1:-}"
+  if [[ -z "${path}" ]]; then
+    return 0
+  fi
+  if [[ -n "${RAYMAN_BATS_CREATED_PATHS}" ]]; then
+    RAYMAN_BATS_CREATED_PATHS+=$'\n'
+  fi
+  RAYMAN_BATS_CREATED_PATHS+="${path}"
+}
+
 write_maui_fixture() {
   local root="$1"
   mkdir -p "${root}/DeleteDir" "${root}/.Rayman/scripts/utils"
@@ -102,15 +117,30 @@ make_tmp_workspace() {
 }
 
 teardown() {
+  if [[ -n "${RAYMAN_BATS_CREATED_PATHS:-}" ]]; then
+    while IFS= read -r path; do
+      if [[ -n "${path}" && -e "${path}" ]]; then
+        rm -rf "${path}"
+      fi
+    done <<< "${RAYMAN_BATS_CREATED_PATHS}"
+  fi
   if [[ -n "${BATS_TEST_TMPDIR:-}" && -d "${BATS_TEST_TMPDIR}" ]]; then
     rm -rf "${BATS_TEST_TMPDIR}"
+  fi
+}
+
+teardown_file() {
+  if [[ -n "${BATS_TMP_MNT_PARENT:-}" && -d "${BATS_TMP_MNT_PARENT}" ]]; then
+    rmdir "${BATS_TMP_MNT_PARENT}" 2>/dev/null || true
   fi
 }
 
 @test "MAUI dependency ensure prefers Windows bridge for workload restore on WSL" {
   local fixture stub_root
   fixture="$(make_mnt_workspace)"
+  track_cleanup_path "${fixture}"
   stub_root="$(mktemp -d "${BATS_TMP_MNT_PARENT}/stub_bridge_XXXXXX")"
+  track_cleanup_path "${stub_root}"
   write_stub_bin "${stub_root}" bridge
 
   export DOTNET_STUB_LOG="${stub_root}/dotnet.log"
@@ -131,7 +161,9 @@ teardown() {
 @test "MAUI dependency ensure falls back to local workload restore when bridge is unavailable" {
   local fixture stub_root
   fixture="$(make_tmp_workspace)"
+  track_cleanup_path "${fixture}"
   stub_root="$(mktemp -d)"
+  track_cleanup_path "${stub_root}"
   write_stub_bin "${stub_root}" local
 
   export DOTNET_STUB_LOG="${stub_root}/dotnet.log"

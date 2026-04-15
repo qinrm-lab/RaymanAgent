@@ -127,30 +127,85 @@ Describe 'host smoke worker loopback coverage' {
     $raw | Should -Match 'generated_at'
   }
 
-  It 'builds the worker smoke fixture project from source when dotnet is available' {
+  It 'stages the worker smoke fixture before building so source bin and obj are ignored' {
     $dotnet = Get-Command dotnet.exe, dotnet -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $dotnet -or [string]::IsNullOrWhiteSpace([string]$dotnet.Source)) {
       Set-ItResult -Skipped -Because 'dotnet not found'
       return
     }
 
-    $projectPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\fixtures\worker_smoke_app\WorkerSmokeApp.csproj'
-    $outputDir = Join-Path $script:WorkspaceRoot '.Rayman\runtime\test_fixtures\worker_smoke_app_pester'
-    $intermediateDir = Join-Path $outputDir 'obj'
-    $fixtureRoot = Split-Path -Parent $projectPath
+    $sourceFixtureRoot = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\fixtures\worker_smoke_app'
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_fixture_stage_' + [Guid]::NewGuid().ToString('N'))
+    $fixtureRoot = Join-Path $tempRoot 'worker_smoke_app'
+    $projectPath = Join-Path $fixtureRoot 'WorkerSmokeApp.csproj'
+    $fixtureRuntimeRoot = Join-Path $tempRoot 'runtime'
+    $stageRoot = Join-Path $fixtureRuntimeRoot 'source'
+    $outputDir = Join-Path $fixtureRuntimeRoot 'build'
+    $intermediateDir = Join-Path $fixtureRuntimeRoot 'obj'
+    $fixtureBin = Join-Path $fixtureRoot 'bin'
+    $fixtureObj = Join-Path $fixtureRoot 'obj'
     try {
-      if (Test-Path -LiteralPath $outputDir -PathType Container) {
-        Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+      New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
+      foreach ($child in @(Get-ChildItem -LiteralPath $sourceFixtureRoot -Force -ErrorAction Stop)) {
+        Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $fixtureRoot $child.Name) -Recurse -Force
       }
+      New-Item -ItemType Directory -Force -Path $fixtureBin | Out-Null
+      New-Item -ItemType Directory -Force -Path $fixtureObj | Out-Null
+      Set-Content -LiteralPath (Join-Path $fixtureBin 'stale.txt') -Encoding UTF8 -Value 'bin-stale'
+      Set-Content -LiteralPath (Join-Path $fixtureObj 'stale.txt') -Encoding UTF8 -Value 'obj-stale'
 
-      & $dotnet.Source build $projectPath -c Debug -nologo -o $outputDir "-p:MSBuildProjectExtensionsPath=$intermediateDir\\" "-p:BaseIntermediateOutputPath=$intermediateDir\\" | Out-Null
+      $staged = Initialize-RaymanHostSmokeStagedProject -SourceProjectPath $projectPath -StageRoot $stageRoot
+
+      & $dotnet.Source build $staged.staged_project_path -c Debug -nologo -o $outputDir "-p:MSBuildProjectExtensionsPath=$intermediateDir\\" "-p:BaseIntermediateOutputPath=$intermediateDir\\" | Out-Null
 
       $LASTEXITCODE | Should -Be 0
+      $staged.staged_project_path | Should -Not -Be $projectPath
       (Test-Path -LiteralPath (Join-Path $outputDir 'WorkerSmokeApp.dll') -PathType Leaf) | Should -Be $true
-      (Test-Path -LiteralPath (Join-Path $fixtureRoot 'obj') -PathType Container) | Should -Be $false
-      (Test-Path -LiteralPath (Join-Path $fixtureRoot 'bin') -PathType Container) | Should -Be $false
+      (Test-Path -LiteralPath (Join-Path $stageRoot 'bin') -PathType Container) | Should -Be $false
+      (Test-Path -LiteralPath (Join-Path $stageRoot 'obj') -PathType Container) | Should -Be $false
+      (Test-Path -LiteralPath (Join-Path $fixtureBin 'stale.txt') -PathType Leaf) | Should -Be $true
+      (Test-Path -LiteralPath (Join-Path $fixtureObj 'stale.txt') -PathType Leaf) | Should -Be $true
     } finally {
-      Remove-Item -LiteralPath $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+  }
+}
+
+Describe 'host smoke worker selection' {
+  It 'selects the expected loopback worker without returning an empty array placeholder' {
+    $workers = @(
+      [pscustomobject]@{
+        worker_id = 'remote-worker'
+        address = '192.168.2.107'
+        control_port = 47632
+        control_url = 'http://192.168.2.107:47632/'
+      }
+      [pscustomobject]@{
+        worker_id = 'loopback-worker'
+        address = '127.0.0.1'
+        control_port = 52585
+        control_url = 'http://127.0.0.1:52585/'
+      }
+    )
+
+    $selected = Select-RaymanHostSmokeLoopbackWorker -Workers $workers -ExpectedControlPort 52585
+
+    $selected | Should -Not -BeNullOrEmpty
+    [string]$selected.worker_id | Should -Be 'loopback-worker'
+  }
+
+  It 'returns null when discover output does not contain a loopback worker' {
+    $workers = @(
+      [pscustomobject]@{
+        worker_id = 'remote-worker'
+        address = '192.168.2.107'
+        control_port = 47632
+        control_url = 'http://192.168.2.107:47632/'
+      }
+    )
+
+    $selected = Select-RaymanHostSmokeLoopbackWorker -Workers $workers -ExpectedControlPort 52585
+
+    $selected | Should -Be $null
   }
 }

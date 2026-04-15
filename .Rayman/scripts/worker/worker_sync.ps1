@@ -162,6 +162,68 @@ function Copy-RaymanWorkerSyncFile {
   [System.IO.File]::Copy($Source, $Destination, $true)
 }
 
+function Get-RaymanWorkerSyncIncludedFiles {
+  param([string]$WorkspaceRoot)
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $noiseRules = @(Get-RaymanWorkerSyncNoiseRules -WorkspaceRoot $resolvedRoot)
+  $files = @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
+  $candidates = New-Object System.Collections.Generic.List[object]
+  foreach ($file in $files) {
+    if (Test-RaymanWorkerSyncExcluded -Root $resolvedRoot -Path $file.FullName -NoiseRules $noiseRules) { continue }
+    $relative = (Get-RaymanWorkerSyncRelativePath -Root $resolvedRoot -Path $file.FullName).Replace('\', '/')
+    $candidates.Add([pscustomobject]@{
+        source = [string]$file.FullName
+        relative = $relative
+        length = [int64]$file.Length
+        last_write_utc_ticks = [int64]$file.LastWriteTimeUtc.Ticks
+      }) | Out-Null
+  }
+
+  $ignoredLookup = Get-RaymanWorkerSyncIgnoredPathLookup -WorkspaceRoot $resolvedRoot -RelativePaths @($candidates | ForEach-Object { [string]$_.relative })
+  return @(
+    $candidates.ToArray() |
+      Where-Object { -not $ignoredLookup.ContainsKey([string]$_.relative) } |
+      Sort-Object relative
+  )
+}
+
+function Get-RaymanWorkerSyncFingerprintInfo {
+  param(
+    [string]$WorkspaceRoot,
+    [object[]]$IncludedFiles = @()
+  )
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $entries = if ($IncludedFiles.Count -gt 0) {
+    @($IncludedFiles | Sort-Object relative)
+  } else {
+    @(Get-RaymanWorkerSyncIncludedFiles -WorkspaceRoot $resolvedRoot)
+  }
+
+  $tokens = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in @($entries)) {
+    $tokens.Add(("{0}|{1}|{2}" -f [string]$entry.relative, [int64]$entry.length, [int64]$entry.last_write_utc_ticks)) | Out-Null
+  }
+
+  $payload = [System.Text.Encoding]::UTF8.GetBytes((@($tokens.ToArray()) -join "`n"))
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hashBytes = $sha.ComputeHash($payload)
+  } finally {
+    $sha.Dispose()
+  }
+
+  return [pscustomobject]@{
+    schema = 'rayman.worker.sync_fingerprint.v1'
+    generated_at = (Get-Date).ToString('o')
+    workspace_root = $resolvedRoot
+    file_count = $entries.Count
+    fingerprint = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+    entries = @($entries)
+  }
+}
+
 function New-RaymanWorkerSyncBundle {
   param(
     [string]$WorkspaceRoot,
@@ -175,27 +237,15 @@ function New-RaymanWorkerSyncBundle {
   $payloadRoot = Join-Path $stageRoot 'payload'
   Ensure-RaymanWorkerDirectory -Path $payloadRoot
 
-  $noiseRules = @(Get-RaymanWorkerSyncNoiseRules -WorkspaceRoot $resolvedRoot)
-  $files = @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
-  $candidates = New-Object System.Collections.Generic.List[object]
+  $includedEntries = @(Get-RaymanWorkerSyncIncludedFiles -WorkspaceRoot $resolvedRoot)
   $included = New-Object System.Collections.Generic.List[string]
-  foreach ($file in $files) {
-    if (Test-RaymanWorkerSyncExcluded -Root $resolvedRoot -Path $file.FullName -NoiseRules $noiseRules) { continue }
-    $relative = Get-RaymanWorkerSyncRelativePath -Root $resolvedRoot -Path $file.FullName
-    $candidates.Add([pscustomobject]@{
-        source = [string]$file.FullName
-        relative = $relative.Replace('\', '/')
-      }) | Out-Null
-  }
-
-  $ignoredLookup = Get-RaymanWorkerSyncIgnoredPathLookup -WorkspaceRoot $resolvedRoot -RelativePaths @($candidates | ForEach-Object { [string]$_.relative })
-  foreach ($candidate in @($candidates.ToArray())) {
+  foreach ($candidate in @($includedEntries)) {
     $relative = [string]$candidate.relative
-    if ($ignoredLookup.ContainsKey($relative)) { continue }
     $destination = Join-Path $payloadRoot ($relative -replace '/', '\')
     Copy-RaymanWorkerSyncFile -Source ([string]$candidate.source) -Destination $destination
     $included.Add($relative) | Out-Null
   }
+  $fingerprintInfo = Get-RaymanWorkerSyncFingerprintInfo -WorkspaceRoot $resolvedRoot -IncludedFiles $includedEntries
 
   $manifest = [pscustomobject]@{
     schema = 'rayman.worker.sync_bundle.v1'
@@ -203,6 +253,7 @@ function New-RaymanWorkerSyncBundle {
     bundle_id = $bundleId
     source_workspace_root = $resolvedRoot
     file_count = $included.Count
+    fingerprint = [string]$fingerprintInfo.fingerprint
     files = @($included.ToArray())
     git = (Get-RaymanWorkerGitSnapshot -WorkspaceRoot $resolvedRoot)
   }

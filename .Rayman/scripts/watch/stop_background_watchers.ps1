@@ -3,6 +3,7 @@ param(
   [switch]$IncludeResidualCleanup,
   [string]$OwnerPid = '',
   [switch]$OnOwnerExit,
+  [switch]$SharedOnly,
   [switch]$NoMain
 )
 
@@ -140,7 +141,8 @@ function Stop-ProcessByPidFile {
 function Stop-ResidualRaymanStartupProcesses {
   param(
     [bool]$StopSharedServices,
-    [int]$CurrentOwnerPid = 0
+    [int]$CurrentOwnerPid = 0,
+    [switch]$SkipExitWatchResiduals
   )
 
   $workspaceNeedle = Normalize-RaymanWatchPathForMatch -PathValue $script:RaymanStopWorkspaceRoot
@@ -148,20 +150,22 @@ function Stop-ResidualRaymanStartupProcesses {
 
   $scriptNeedles = if ($StopSharedServices) {
     @(
-      '.rayman\win-exitwatch.ps1'
+      $(if (-not $SkipExitWatchResiduals) { '.rayman\win-exitwatch.ps1' })
       '.rayman\win-watch.ps1'
       '.rayman\scripts\alerts\attention_watch.ps1'
       '.rayman\scripts\state\auto_save_watch.ps1'
+      '.rayman\scripts\watch\worker_auto_sync.ps1'
       '.rayman\scripts\mcp\manage_mcp.ps1'
       '.rayman\scripts\watch\start_background_watchers.ps1'
       '.rayman\scripts\watch\vscode_folder_open_bootstrap.ps1'
       '.rayman\scripts\utils\ensure_win_deps.ps1'
       '.rayman\scripts\state\check_pending_task.ps1'
       '.rayman\scripts\watch\daily_health_check.ps1'
-    )
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
   } else {
-    @('.rayman\win-exitwatch.ps1')
+    @($(if (-not $SkipExitWatchResiduals) { '.rayman\win-exitwatch.ps1' })) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
   }
+  if ($scriptNeedles.Count -eq 0) { return }
 
   $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
     -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
@@ -244,7 +248,8 @@ function Invoke-RaymanStopBackgroundWatchers {
     [string]$WorkspaceRootPath,
     [switch]$DoResidualCleanup,
     [string]$ExplicitOwnerPid = '',
-    [switch]$OwnerExit
+    [switch]$OwnerExit,
+    [switch]$SharedOnly
   )
 
   Write-Info '[watch-stop] stopping Rayman background services...'
@@ -255,7 +260,10 @@ function Invoke-RaymanStopBackgroundWatchers {
   $script:RaymanStopRuntimeDir = Join-Path $resolvedRoot '.Rayman\runtime'
   $script:RaymanStopSessionDir = Join-Path $script:RaymanStopRuntimeDir 'vscode_sessions'
 
-  $ownerContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $resolvedRoot -ExplicitOwnerPid $ExplicitOwnerPid
+  $ownerContext = $null
+  if (-not $SharedOnly) {
+    $ownerContext = Get-RaymanWorkspaceProcessOwnerContext -WorkspaceRootPath $resolvedRoot -ExplicitOwnerPid $ExplicitOwnerPid
+  }
   $sharedOwnerContext = Get-RaymanWorkspaceSharedProcessOwnerContext -WorkspaceRootPath $resolvedRoot
 
   $sharedServicesStillNeeded = $false
@@ -268,12 +276,16 @@ function Invoke-RaymanStopBackgroundWatchers {
     }
   }
 
-  $ownerCleanupRecords = @(Get-RaymanOwnedRecordsForOwner -OwnerContext $ownerContext -Kinds @('watcher', 'dotnet', 'vscode'))
-  $ownerCleanupResults = @(Invoke-OwnedProcessCleanup -Records $ownerCleanupRecords -Reason (Get-RaymanWatchCleanupReason -OwnerExit:$OwnerExit) -SkipCurrentProcessRoot:$OwnerExit)
-  if ($ownerCleanupResults.Count -eq 0) {
-    Write-Info ("[watch-stop] no owner-scoped watcher/dotnet/vscode processes for {0}." -f [string]$ownerContext.owner_display)
+  if ($SharedOnly) {
+    Write-Info '[watch-stop] shared-only cleanup requested; skip owner-scoped watcher/dotnet/vscode cleanup.'
   } else {
-    Write-OwnedCleanupResults -CleanupResults $ownerCleanupResults
+    $ownerCleanupRecords = @(Get-RaymanOwnedRecordsForOwner -OwnerContext $ownerContext -Kinds @('watcher', 'dotnet', 'vscode'))
+    $ownerCleanupResults = @(Invoke-OwnedProcessCleanup -Records $ownerCleanupRecords -Reason (Get-RaymanWatchCleanupReason -OwnerExit:$OwnerExit) -SkipCurrentProcessRoot:$OwnerExit)
+    if ($ownerCleanupResults.Count -eq 0) {
+      Write-Info ("[watch-stop] no owner-scoped watcher/dotnet/vscode processes for {0}." -f [string]$ownerContext.owner_display)
+    } else {
+      Write-OwnedCleanupResults -CleanupResults $ownerCleanupResults
+    }
   }
 
   if (-not $OwnerExit -or -not $sharedServicesStillNeeded) {
@@ -287,13 +299,17 @@ function Invoke-RaymanStopBackgroundWatchers {
     Stop-ProcessByPidFile -Name 'prompt-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'win_watch.pid') -Reason $sharedReason
     Stop-ProcessByPidFile -Name 'attention-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'attention_watch.pid') -Reason $sharedReason
     Stop-ProcessByPidFile -Name 'auto-save-watch' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'auto_save_watch.pid') -Reason $sharedReason
+    Stop-ProcessByPidFile -Name 'worker-auto-sync' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'worker_auto_sync.pid') -Reason $sharedReason
     Stop-ProcessByPidFile -Name 'mcp-sqlite' -PidFile (Join-Path $script:RaymanStopRuntimeDir 'mcp\sqlite.pid') -Reason $sharedReason
   } else {
     Write-Info '[watch-stop] shared watcher/mcp services remain running for other VS Code sessions.'
   }
 
   if ($DoResidualCleanup -or $OwnerExit) {
-    Stop-ResidualRaymanStartupProcesses -StopSharedServices:(-not $OwnerExit -or -not $sharedServicesStillNeeded) -CurrentOwnerPid $currentOwnerPid
+    Stop-ResidualRaymanStartupProcesses `
+      -StopSharedServices:(-not $OwnerExit -or -not $sharedServicesStillNeeded) `
+      -CurrentOwnerPid $currentOwnerPid `
+      -SkipExitWatchResiduals:$SharedOnly
   }
 
   if ($DoResidualCleanup -and -not $OwnerExit) {
@@ -310,5 +326,6 @@ if (-not $NoMain) {
     -WorkspaceRootPath $WorkspaceRoot `
     -DoResidualCleanup:$IncludeResidualCleanup `
     -ExplicitOwnerPid $OwnerPid `
-    -OwnerExit:$OnOwnerExit
+    -OwnerExit:$OnOwnerExit `
+    -SharedOnly:$SharedOnly
 }
