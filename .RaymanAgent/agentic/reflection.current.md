@@ -1,11 +1,11 @@
 # Rayman Reflection
 
-- generated_at: 2026-03-25T19:03:32.6355851+08:00
-- plan_id: 1245769107cd4cc58946b5ba98cf1175
+- generated_at: 2026-04-16T14:19:09.0540953-10:00
+- plan_id: d365ca70704246afb3007815c88c346b
 - round: 1
 - max_rounds: 1
 - outcome: done
-- reason: non_polluting_regression_passed
+- reason: tests_passed_and_docs_closed
 - test_exit: 0
 - error_kind: ok
 
@@ -14,13 +14,10 @@
 - acceptance_closed: true
 - doc_gate_pass: true
 - policy_ok: true
-- evidence:
-  - targeted_pester: pass
-  - assert_dist_sync: pass
-  - full_gate: pass
-  - copy_smoke_strict_host: pass
-  - no_additional_workspace_pollution: pass
 
 ## Selected Tools
 
+- `openai_docs_mcp`
+- `rayman_docs_researcher`
+- `rayman_reviewer`
 - `local_shell`

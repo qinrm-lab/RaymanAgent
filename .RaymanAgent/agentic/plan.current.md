@@ -1,14 +1,14 @@
 # Rayman Agentic Plan
 
-- plan_id: cc7b44b235b44b70b3d7a1f40c7dc239
-- generated_at: 2026-04-15T11:43:36.6115942+08:00
-- task_kind: -Prompt
-- prompt_key: 
+- plan_id: d365ca70704246afb3007815c88c346b
+- generated_at: 2026-04-16T14:19:07.3363813-10:00
+- task_kind: review
+- prompt_key: review.initial.prompt.md
 - pipeline: planner_v1
 
 ## Goal
 
-- 你好
+- OpenAI docs review
 
 ## Constraints
 
@@ -22,12 +22,16 @@
 
 ## Acceptance Criteria
 
-- Task goal remains: 你好
-- Selected tool policy must be written before execution.
-- Doc gate must pass for the active pipeline stage.
+- Task goal remains: OpenAI docs review
+- Reflection outcome must be `done` before the run is treated as successful.
+- Doc gate must pass with current plan/tool-policy/reflection artifacts.
+- Review-loop success still requires `test-fix` to pass.
 
 ## Selected Tools
 
+- `openai_docs_mcp` score=95 reason=Official OpenAI docs are the primary source for platform-specific guidance.
+- `rayman_docs_researcher` score=55 reason=Multi-agent registry marks this role as relevant for the task shape.
+- `rayman_reviewer` score=55 reason=Multi-agent registry marks this role as relevant for the task shape.
 - `local_shell` score=25 reason=Local shell remains the universal fallback and evidence collector.
 
 ## Required Docs

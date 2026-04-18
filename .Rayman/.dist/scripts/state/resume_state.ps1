@@ -59,6 +59,10 @@ $memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
 if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
     . $memoryHelperPath
 }
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+    . $eventHooksPath -NoMain
+}
 
 if ([string]::IsNullOrWhiteSpace($Name)) {
     $records = @(Get-RaymanSessionRecords -WorkspaceRoot $ResolvedWorkspaceRoot)
@@ -152,6 +156,9 @@ $updatedManifest = New-RaymanSessionManifest `
     -Existing $manifest
 Save-RaymanSessionManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest | Out-Null
 Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -OwnerContext $runtimeContext.owner_context
+if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
+    Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -HandoverPath $handoverPath -PatchPath $patchPath -MetaPath $metaPath | Out-Null
+}
 
 if ($resumeIsolation -eq 'worktree') {
     & "$PSScriptRoot\..\utils\request_attention.ps1" -WorkspaceRoot $ResolvedWorkspaceRoot -Message ("命名会话已恢复，请在 worktree 中继续：{0}" -f $sessionName)
@@ -169,6 +176,18 @@ if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
         session_name = $sessionName
         session_slug = $slug
     } | Out-Null
+}
+if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+    Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'session.restore' -Category 'state' -Payload ([ordered]@{
+            session_name = $sessionName
+            session_slug = $slug
+            session_kind = if ($updatedManifest.PSObject.Properties['session_kind']) { [string]$updatedManifest.session_kind } else { 'manual' }
+            isolation = [string]$updatedManifest.isolation
+            backend = [string]$runtimeContext.backend
+            account_alias = [string]$runtimeContext.account_alias
+            restored_patch = [bool]$patchResult.applied
+            stash_result = [string]$stashResult.reason
+        }) | Out-Null
 }
 
 if ($Json) {

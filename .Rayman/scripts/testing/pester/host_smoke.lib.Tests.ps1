@@ -109,6 +109,82 @@ exit 0
   }
 }
 
+Describe 'host smoke mutex helpers' {
+  It 'builds a stable workspace-scoped mutex name' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_host_smoke_mutex_' + [Guid]::NewGuid().ToString('N'))
+    $mutexA = $null
+    $mutexB = $null
+    try {
+      $mutexA = New-RaymanHostSmokeRunMutex -WorkspaceRootPath $root
+      $mutexB = New-RaymanHostSmokeRunMutex -WorkspaceRootPath $root
+
+      $mutexA | Should -Not -BeNullOrEmpty
+      $mutexB | Should -Not -BeNullOrEmpty
+      $mutexA.GetType().FullName | Should -Be 'System.Threading.Mutex'
+      $mutexB.GetType().FullName | Should -Be 'System.Threading.Mutex'
+    } finally {
+      if ($null -ne $mutexA) { try { $mutexA.Dispose() } catch {} }
+      if ($null -ne $mutexB) { try { $mutexB.Dispose() } catch {} }
+    }
+  }
+
+  It 'serializes concurrent host smoke callers for the same workspace' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_host_smoke_mutex_' + [Guid]::NewGuid().ToString('N'))
+    $mutex = $null
+    $lockTaken = $false
+    $job = $null
+    try {
+      $mutex = New-RaymanHostSmokeRunMutex -WorkspaceRootPath $root
+      $mutex | Should -Not -BeNullOrEmpty
+      try {
+        $lockTaken = $mutex.WaitOne(0)
+      } catch [System.Threading.AbandonedMutexException] {
+        $lockTaken = $true
+      }
+      $lockTaken | Should -Be $true
+
+      $job = Start-Job -ScriptBlock {
+        param($RepoRoot, $WorkspaceRoot)
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        . (Join-Path $RepoRoot '.Rayman\common.ps1')
+        . (Join-Path $RepoRoot '.Rayman\scripts\testing\host_smoke.lib.ps1')
+        $mutex = New-RaymanHostSmokeRunMutex -WorkspaceRootPath $WorkspaceRoot
+        $taken = $false
+        try {
+          try {
+            $taken = $mutex.WaitOne(0)
+          } catch [System.Threading.AbandonedMutexException] {
+            $taken = $true
+          }
+          return [bool]$taken
+        } finally {
+          if ($taken -and $null -ne $mutex) {
+            try { $mutex.ReleaseMutex() } catch {}
+          }
+          if ($null -ne $mutex) {
+            try { $mutex.Dispose() } catch {}
+          }
+        }
+      } -ArgumentList @($script:WorkspaceRoot, $root)
+
+      Wait-Job -Job $job -Timeout 30 | Out-Null
+      $otherTaken = Receive-Job -Job $job -ErrorAction Stop
+      $otherTaken | Should -Be $false
+    } finally {
+      if ($null -ne $job) {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+      }
+      if ($lockTaken -and $null -ne $mutex) {
+        try { $mutex.ReleaseMutex() } catch {}
+      }
+      if ($null -ne $mutex) {
+        try { $mutex.Dispose() } catch {}
+      }
+    }
+  }
+}
+
 Describe 'host smoke worker loopback coverage' {
   It 'keeps worker loopback steps in the host smoke lane' {
     $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\run_host_smoke.ps1'
@@ -118,9 +194,9 @@ Describe 'host smoke worker loopback coverage' {
     $raw | Should -Match 'worker_loopback_discover'
     $raw | Should -Match 'worker_loopback_use'
     $raw | Should -Match 'worker_loopback_status'
-    $raw | Should -Match 'worker_loopback_exec'
     $raw | Should -Match 'worker_loopback_sync_attached'
     $raw | Should -Match 'worker_loopback_sync_staged'
+    $raw | Should -Match 'worker_loopback_exec'
     $raw | Should -Match 'worker_loopback_fixture_stage'
     $raw | Should -Match 'worker_loopback_debug_prepare'
     $raw | Should -Match 'worker_loopback_clear'

@@ -8,6 +8,7 @@ $RulesFile = Join-Path $Root ".Rayman\skills\rules.json"
 $OutMd     = Join-Path $Root ".Rayman\context\skills.auto.md"
 $OutEnv    = Join-Path $Root ".Rayman\runtime\skills.env.ps1"
 $CapReport = Join-Path $Root ".Rayman\runtime\agent_capabilities.report.json"
+$ManageSkillsScript = Join-Path $Root ".Rayman\scripts\skills\manage_skills.ps1"
 
 New-Item -ItemType Directory -Force -Path (Split-Path $OutMd)  | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path $OutEnv) | Out-Null
@@ -29,10 +30,39 @@ if (!(Test-Path $RulesFile)) {
   throw "[skills] rules not found: $RulesFile"
 }
 
+if (Test-Path -LiteralPath $ManageSkillsScript -PathType Leaf) {
+  . $ManageSkillsScript -NoMain
+}
+
 $rules = Get-Content $RulesFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $skills = $rules.skills
 $defaults = @()
 if ($rules.defaults) { $defaults = @($rules.defaults) }
+$skillsAudit = $null
+$skillsAuditUsable = $false
+$skillsAuditError = ''
+if (Get-Command Invoke-RaymanSkillsAudit -ErrorAction SilentlyContinue) {
+  try {
+    $skillsAudit = Invoke-RaymanSkillsAudit -WorkspaceRoot $Root
+    if ($null -ne $skillsAudit -and $skillsAudit.PSObject.Properties['registry_valid'] -and $skillsAudit.PSObject.Properties['success']) {
+      $skillsAuditUsable = ([bool]$skillsAudit.registry_valid -and [bool]$skillsAudit.success)
+      if ($skillsAudit.PSObject.Properties['registry_error'] -and -not [string]::IsNullOrWhiteSpace([string]$skillsAudit.registry_error)) {
+        $skillsAuditError = [string]$skillsAudit.registry_error
+      }
+      if ($skillsAuditUsable -and -not $skillsAudit.PSObject.Properties['selected_skills']) {
+        $skillsAuditUsable = $false
+        if ([string]::IsNullOrWhiteSpace($skillsAuditError)) {
+          $skillsAuditError = 'skills audit did not return selected_skills'
+        }
+      }
+    } else {
+      $skillsAuditError = 'skills audit did not report a valid successful registry state'
+    }
+  } catch {
+    $skillsAuditError = $_.Exception.Message
+    $skillsAudit = $null
+  }
+}
 
 # Collect filenames (avoid huge dirs)
 $excludeDirs = @(
@@ -147,6 +177,38 @@ $lines.Add("## 覆盖/关闭")
 $lines.Add("")
 $lines.Add('- 关闭自动：`RAYMAN_SKILLS_OFF=1`')
 $lines.Add('- 强制指定：`RAYMAN_SKILLS_FORCE=pdfs,docs,spreadsheets`')
+$lines.Add("")
+
+$lines.Add("## Trusted Skill Manifests")
+$lines.Add("")
+if (-not $skillsAuditUsable) {
+  if ($null -eq $skillsAudit) {
+    if ([string]::IsNullOrWhiteSpace($skillsAuditError)) {
+      $lines.Add("- 当前未启用额外的受信任 skill manifests；默认只允许 Rayman 管理的内置 roots。")
+    } else {
+      $lines.Add("- Skills audit failed; trusted skill manifests are suppressed.")
+      $lines.Add(('- audit_error: `{0}`' -f $skillsAuditError))
+    }
+  } else {
+    $lines.Add("- Skills registry is invalid; trusted skill manifests are suppressed until `rayman skills audit` passes.")
+    if (-not [string]::IsNullOrWhiteSpace($skillsAuditError)) {
+      $lines.Add(('- registry_error: `{0}`' -f $skillsAuditError))
+    }
+  }
+} elseif (@($skillsAudit.selected_skills).Count -eq 0) {
+  $lines.Add("- 当前未启用额外的受信任 skill manifests；默认只允许 Rayman 管理的内置 roots。")
+} else {
+  foreach ($skill in @($skillsAudit.selected_skills | Sort-Object skill_id, relative_path)) {
+    $sourceKind = if ($skill.PSObject.Properties['source_kind']) { [string]$skill.source_kind } else { 'bundled' }
+    $trust = if ($skill.PSObject.Properties['trust']) { [string]$skill.trust } else { 'managed' }
+    $relativePath = if ($skill.PSObject.Properties['relative_path']) { [string]$skill.relative_path } else { [string]$skill.path }
+    $lines.Add(('- **{0}**：source=`{1}` trust=`{2}` path=`{3}`' -f [string]$skill.skill_id, $sourceKind, $trust, $relativePath))
+  }
+}
+if ($null -ne $skillsAudit -and $skillsAudit.PSObject.Properties['artifacts']) {
+  $lines.Add("")
+  $lines.Add(('> skills audit：`{0}`' -f [string]$skillsAudit.artifacts.json_path))
+}
 $lines.Add("")
 
 $capSummary = '(report unavailable)'

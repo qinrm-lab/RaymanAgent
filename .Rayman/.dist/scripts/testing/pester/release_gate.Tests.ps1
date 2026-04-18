@@ -211,11 +211,14 @@ exit 0
 
 function script:Set-FakeHostSmokeScript {
   param(
-    [string]$WorkspaceRoot
+    [string]$WorkspaceRoot,
+    [switch]$UseWorkspaceMutex,
+    [int]$HoldSeconds = 0,
+    [string]$StartMarkerName = ''
   )
 
   $scriptPath = Join-Path $WorkspaceRoot '.Rayman\scripts\testing\run_host_smoke.ps1'
-  Set-Content -LiteralPath $scriptPath -Encoding UTF8 -Value @'
+  $body = @'
 param(
   [string]$WorkspaceRoot = (Get-Location).Path
 )
@@ -231,6 +234,59 @@ $payload = [ordered]@{
 Set-Content -LiteralPath $reportPath -Encoding UTF8 -Value (($payload | ConvertTo-Json -Depth 8).TrimEnd() + "`n")
 exit 0
 '@
+  if ($UseWorkspaceMutex) {
+    $holdSecondsClamped = [Math]::Max(0, [int]$HoldSeconds)
+    $escapedStartMarkerName = ([string]$StartMarkerName).Replace("'", "''")
+    Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\testing\host_smoke.lib.ps1') -Destination (Join-Path $WorkspaceRoot '.Rayman\scripts\testing\host_smoke.lib.ps1') -Force
+    $body = @"
+param(
+  [string]`$WorkspaceRoot = (Get-Location).Path
+)
+. (Join-Path `$PSScriptRoot 'host_smoke.lib.ps1')
+`$reportPath = Join-Path `$WorkspaceRoot '.Rayman\runtime\test_lanes\host_smoke.report.json'
+`$runtimeDir = Split-Path -Parent `$reportPath
+New-Item -ItemType Directory -Force -Path `$runtimeDir | Out-Null
+`$mutex = New-RaymanHostSmokeRunMutex -WorkspaceRootPath `$WorkspaceRoot
+if (`$null -eq `$mutex) {
+  throw 'expected host smoke mutex'
+}
+`$waitSeconds = Get-RaymanHostSmokeMutexWaitSeconds
+`$hasHandle = `$false
+try {
+  `$hasHandle = `$mutex.WaitOne([TimeSpan]::FromSeconds(`$waitSeconds))
+  if (-not `$hasHandle) {
+    throw ("timed out waiting for host smoke mutex after {0}s" -f `$waitSeconds)
+  }
+
+  `$startMarkerName = '$escapedStartMarkerName'
+  if (-not [string]::IsNullOrWhiteSpace(`$startMarkerName)) {
+    `$startMarkerPath = Join-Path `$runtimeDir `$startMarkerName
+    Set-Content -LiteralPath `$startMarkerPath -Encoding UTF8 -Value 'started'
+  }
+
+  if ($holdSecondsClamped -gt 0) {
+    Start-Sleep -Seconds $holdSecondsClamped
+  }
+
+  `$payload = [ordered]@{
+    schema = 'rayman.testing.host_smoke.v1'
+    generated_at = (Get-Date).ToString('o')
+    workspace_root = `$WorkspaceRoot
+    overall = 'PASS'
+    steps = @()
+  }
+  Set-Content -LiteralPath `$reportPath -Encoding UTF8 -Value ((`$payload | ConvertTo-Json -Depth 8).TrimEnd() + "``n")
+  exit 0
+} finally {
+  if (`$hasHandle) {
+    `$mutex.ReleaseMutex()
+  }
+  `$mutex.Dispose()
+}
+"@
+  }
+
+  Set-Content -LiteralPath $scriptPath -Encoding UTF8 -Value $body
 
   return $scriptPath
 }
@@ -351,6 +407,111 @@ Describe 'release_gate project mode' {
       [string]$laneCheck.status | Should -Be 'PASS'
       [string]$laneCheck.detail | Should -Match 'auto_refresh=refreshed_and_passed'
     } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'serializes concurrent host smoke auto-refreshes across project-mode release gates' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_release_gate_project_host_concurrent_' + [Guid]::NewGuid().ToString('N'))
+    $proc1 = $null
+    $proc2 = $null
+    try {
+      Initialize-ReleaseGateWorkspace -Root $root
+      Set-FakeHostSmokeScript -WorkspaceRoot $root -UseWorkspaceMutex -HoldSeconds 3 -StartMarkerName 'host_smoke.started' | Out-Null
+
+      $hostSmokePath = Join-Path $root '.Rayman\runtime\test_lanes\host_smoke.report.json'
+      $hostSmokePayload = [ordered]@{
+        schema = 'rayman.testing.host_smoke.v1'
+        generated_at = ([datetime]::UtcNow.AddMinutes(-10).ToString('o'))
+        workspace_root = $root
+        overall = 'FAIL'
+        steps = @()
+      }
+      Set-Content -LiteralPath $hostSmokePath -Encoding UTF8 -Value (($hostSmokePayload | ConvertTo-Json -Depth 8).TrimEnd() + "`n")
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\scripts\testing\host_smoke_input.txt') -Encoding UTF8 -Value 'fresh host smoke input'
+
+      $stateDir = Join-Path $root '.Rayman\state'
+      New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+      $markerPath = Join-Path $root '.Rayman\runtime\test_lanes\host_smoke.started'
+      $reportPath1 = Join-Path $stateDir 'release_gate_concurrent_1.md'
+      $reportPath2 = Join-Path $stateDir 'release_gate_concurrent_2.md'
+      $stdoutPath1 = Join-Path $stateDir 'release_gate_concurrent_1.stdout.log'
+      $stdoutPath2 = Join-Path $stateDir 'release_gate_concurrent_2.stdout.log'
+      $stderrPath1 = Join-Path $stateDir 'release_gate_concurrent_1.stderr.log'
+      $stderrPath2 = Join-Path $stateDir 'release_gate_concurrent_2.stderr.log'
+
+      $proc1 = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $script:ReleaseGateScript,
+        '-WorkspaceRoot', $root,
+        '-Mode', 'project',
+        '-SkipAutoDistSync',
+        '-Json',
+        '-ReportPath', $reportPath1
+      ) -WorkingDirectory $root -PassThru -RedirectStandardOutput $stdoutPath1 -RedirectStandardError $stderrPath1
+
+      $markerDeadline = [datetime]::UtcNow.AddSeconds(15)
+      while ([datetime]::UtcNow -lt $markerDeadline -and -not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        Start-Sleep -Milliseconds 100
+      }
+
+      (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
+
+      $proc2 = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $script:ReleaseGateScript,
+        '-WorkspaceRoot', $root,
+        '-Mode', 'project',
+        '-SkipAutoDistSync',
+        '-Json',
+        '-ReportPath', $reportPath2
+      ) -WorkingDirectory $root -PassThru -RedirectStandardOutput $stdoutPath2 -RedirectStandardError $stderrPath2
+
+      $proc1.WaitForExit(60000) | Should -Be $true
+      $proc2.WaitForExit(60000) | Should -Be $true
+
+      $stdoutText1 = if (Test-Path -LiteralPath $stdoutPath1 -PathType Leaf) { Get-Content -LiteralPath $stdoutPath1 -Raw -Encoding UTF8 } else { '' }
+      $stdoutText2 = if (Test-Path -LiteralPath $stdoutPath2 -PathType Leaf) { Get-Content -LiteralPath $stdoutPath2 -Raw -Encoding UTF8 } else { '' }
+      $stderrText1 = if (Test-Path -LiteralPath $stderrPath1 -PathType Leaf) { Get-Content -LiteralPath $stderrPath1 -Raw -Encoding UTF8 } else { '' }
+      $stderrText2 = if (Test-Path -LiteralPath $stderrPath2 -PathType Leaf) { Get-Content -LiteralPath $stderrPath2 -Raw -Encoding UTF8 } else { '' }
+      $proc1ExitCode = -999
+      $proc2ExitCode = -999
+      if ($null -ne $proc1) {
+        $proc1.Refresh()
+        $proc1ExitCode = [int]$proc1.ExitCode
+      }
+      if ($null -ne $proc2) {
+        $proc2.Refresh()
+        $proc2ExitCode = [int]$proc2.ExitCode
+      }
+
+      if ($proc1ExitCode -ne 0) {
+        throw ("first concurrent release_gate exited {0}; stdout={1}`nstderr={2}" -f $proc1ExitCode, ([string]$stdoutText1).Trim(), ([string]$stderrText1).Trim())
+      }
+      if ($proc2ExitCode -ne 0) {
+        throw ("second concurrent release_gate exited {0}; stdout={1}`nstderr={2}" -f $proc2ExitCode, ([string]$stdoutText2).Trim(), ([string]$stderrText2).Trim())
+      }
+
+      $report1 = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($reportPath1, '.json')) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      $report2 = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($reportPath2, '.json')) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      $laneCheck1 = @($report1.checks | Where-Object { [string]$_.name -eq '宿主环境冒烟' } | Select-Object -First 1)[0]
+      $laneCheck2 = @($report2.checks | Where-Object { [string]$_.name -eq '宿主环境冒烟' } | Select-Object -First 1)[0]
+
+      [string]$laneCheck1.status | Should -Be 'PASS'
+      [string]$laneCheck2.status | Should -Be 'PASS'
+      [string]$laneCheck1.detail | Should -Match 'auto_refresh=refreshed_and_passed'
+      [string]$laneCheck2.detail | Should -Match 'auto_refresh=refreshed_and_passed'
+    } finally {
+      if ($null -ne $proc1 -and -not $proc1.HasExited) {
+        $proc1.Kill()
+        $proc1.WaitForExit()
+      }
+      if ($null -ne $proc2 -and -not $proc2.HasExited) {
+        $proc2.Kill()
+        $proc2.WaitForExit()
+      }
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

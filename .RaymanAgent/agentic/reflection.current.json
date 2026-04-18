@@ -1,15 +1,15 @@
 {
   "schema": "rayman.agentic.reflection.v1",
-  "generated_at": "2026-03-25T19:03:32.6355851+08:00",
+  "generated_at": "2026-04-16T14:19:09.0540953-10:00",
   "workspace_root": "E:\\rayman\\software\\RaymanAgent",
   "stage": "review_loop",
-  "task_kind": "maintenance",
-  "task": "消除 `.Rayman/CONTEXT.md` 与 `.Rayman/codex_fix_prompt.txt` 的非幂等污染；让 `generate_context` / `inject_codex_fix_prompt` 在完整回归后不再把 source workspace 写脏",
-  "plan_id": "1245769107cd4cc58946b5ba98cf1175",
+  "task_kind": "review",
+  "task": "OpenAI docs review",
+  "plan_id": "d365ca70704246afb3007815c88c346b",
   "round": 1,
   "max_rounds": 1,
   "outcome": "done",
-  "reason": "non_polluting_regression_passed",
+  "reason": "tests_passed_and_docs_closed",
   "acceptance_closed": true,
   "policy_ok": true,
   "doc_gate_pass": true,
@@ -20,21 +20,68 @@
     "disabled_reason": "",
     "pass": true,
     "requirements_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
-    "required_docs": [],
+    "required_docs": [
+      {
+        "name": "plan.current.md",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\plan.current.md",
+        "relative_path": ".RaymanAgent/agentic/plan.current.md"
+      },
+      {
+        "name": "plan.current.json",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\plan.current.json",
+        "relative_path": ".RaymanAgent/agentic/plan.current.json"
+      },
+      {
+        "name": "tool-policy.md",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\tool-policy.md",
+        "relative_path": ".RaymanAgent/agentic/tool-policy.md"
+      },
+      {
+        "name": "tool-policy.json",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\tool-policy.json",
+        "relative_path": ".RaymanAgent/agentic/tool-policy.json"
+      },
+      {
+        "name": "reflection.current.md",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\reflection.current.md",
+        "relative_path": ".RaymanAgent/agentic/reflection.current.md"
+      },
+      {
+        "name": "reflection.current.json",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\reflection.current.json",
+        "relative_path": ".RaymanAgent/agentic/reflection.current.json"
+      },
+      {
+        "name": "evals.md",
+        "full_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\agentic\\evals.md",
+        "relative_path": ".RaymanAgent/agentic/evals.md"
+      }
+    ],
     "missing_docs": [],
     "stale_docs": [],
     "missing_links": [],
-    "linked_docs": []
+    "linked_docs": [
+      ".RaymanAgent/agentic/plan.current.md",
+      ".RaymanAgent/agentic/plan.current.json",
+      ".RaymanAgent/agentic/tool-policy.md",
+      ".RaymanAgent/agentic/tool-policy.json",
+      ".RaymanAgent/agentic/reflection.current.md",
+      ".RaymanAgent/agentic/reflection.current.json",
+      ".RaymanAgent/agentic/evals.md"
+    ]
   },
   "selected_tools": [
+    "openai_docs_mcp",
+    "rayman_docs_researcher",
+    "rayman_reviewer",
     "local_shell"
   ],
-  "fallback_count": 0,
+  "fallback_count": 2,
   "replan_count": 0,
   "test_exit": 0,
   "error_kind": "ok",
   "diff_summary": {
-    "touched_files_count": 15,
-    "net_line_delta": 291
+    "touched_files_count": 0,
+    "net_line_delta": 0
   }
 }

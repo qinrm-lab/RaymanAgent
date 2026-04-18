@@ -11,8 +11,11 @@
     "kind",
     "tags",
     "memory_hints",
+    "session_recalls",
+    "recall_results",
     "recent_task_summaries",
     "search_backend",
+    "session_search_backend",
     "embedding_model",
     "fallback_reason"
   ],
@@ -32,6 +35,7 @@
         "type": "object",
         "required": [
           "id",
+          "source_kind",
           "kind",
           "scope",
           "task_kind",
@@ -46,6 +50,7 @@
         ],
         "properties": {
           "id": { "type": "integer", "minimum": 0 },
+          "source_kind": { "type": "string", "minLength": 1 },
           "kind": { "type": "string" },
           "scope": { "type": "string" },
           "task_kind": { "type": "string" },
@@ -57,6 +62,88 @@
           "semantic_score": { "type": "number" },
           "source_task_key": { "type": "string" },
           "readonly": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "session_recalls": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source_kind",
+          "kind",
+          "scope",
+          "task_kind",
+          "content",
+          "summary_text",
+          "session_slug",
+          "session_name",
+          "session_kind",
+          "status",
+          "backend",
+          "account_alias",
+          "owner_display",
+          "files_touched",
+          "artifact_paths",
+          "updated_at",
+          "score",
+          "lexical_score",
+          "semantic_score"
+        ],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0 },
+          "source_kind": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string" },
+          "scope": { "type": "string" },
+          "task_kind": { "type": "string" },
+          "content": { "type": "string" },
+          "summary_text": { "type": "string" },
+          "session_slug": { "type": "string", "minLength": 1 },
+          "session_name": { "type": "string", "minLength": 1 },
+          "session_kind": { "type": "string", "minLength": 1 },
+          "status": { "type": "string" },
+          "backend": { "type": "string" },
+          "account_alias": { "type": "string" },
+          "owner_display": { "type": "string" },
+          "task_description": { "type": "string" },
+          "files_touched": { "type": "array", "items": { "type": "string" } },
+          "artifact_paths": { "type": "array", "items": { "type": "string" } },
+          "updated_at": { "type": "string" },
+          "score": { "type": "number" },
+          "lexical_score": { "type": "number" },
+          "semantic_score": { "type": "number" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "recall_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source_kind",
+          "kind",
+          "scope",
+          "task_kind",
+          "content",
+          "score",
+          "lexical_score",
+          "semantic_score"
+        ],
+        "properties": {
+          "id": { "type": "integer", "minimum": 0 },
+          "source_kind": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string" },
+          "scope": { "type": "string" },
+          "task_kind": { "type": "string" },
+          "content": { "type": "string" },
+          "score": { "type": "number" },
+          "lexical_score": { "type": "number" },
+          "semantic_score": { "type": "number" }
         },
         "additionalProperties": true
       }
@@ -74,7 +161,8 @@
           "summary_text",
           "files_touched",
           "lessons",
-          "updated_at"
+          "updated_at",
+          "source_kind"
         ],
         "properties": {
           "task_key": { "type": "string" },
@@ -84,12 +172,14 @@
           "summary_text": { "type": "string" },
           "files_touched": { "type": "array" },
           "lessons": { "type": "array" },
-          "updated_at": { "type": "string" }
+          "updated_at": { "type": "string" },
+          "source_kind": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": true
       }
     },
     "search_backend": { "type": "string", "enum": ["embedding", "lexical"] },
+    "session_search_backend": { "type": "string", "enum": ["fts5", "lexical"] },
     "embedding_model": { "type": "string" },
     "fallback_reason": { "type": "string" }
   },

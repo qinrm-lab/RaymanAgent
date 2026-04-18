@@ -54,6 +54,14 @@ Describe 'vscode folder open bootstrap fingerprinting' {
     $raw | Should -Not -Match 'ensure_attention_watch\.ps1'
   }
 
+  It 're-applies the bound Codex alias during folder-open bootstrap' {
+    $raw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\scripts\watch\vscode_folder_open_bootstrap.ps1') -Raw -Encoding UTF8
+
+    $raw | Should -Match 'manage_accounts\.ps1'
+    $raw | Should -Match 'codex-binding-auto-apply'
+    $raw | Should -Match 'Invoke-RaymanCodexWorkspaceBindingAutoApply'
+  }
+
   It 'skips folder-open work while an auto-upgrade lock is active' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_bootstrap_lock_' + [Guid]::NewGuid().ToString('N'))
     try {

@@ -300,8 +300,9 @@ function Add-BootstrapWarning([string]$message) {
   $null = $script:BootstrapWarnings.Add($message)
 }
 
-function Test-WebEndpoint([string]$Url, [int]$TimeoutMs = 12000) {
+function Test-WebEndpoint([string]$Url, [int]$TimeoutMs = 2000) {
   [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+  # 注：Sandbox 中快速超时（2000ms默认）以加快反馈速度；网络通常不可达
   $req = [System.Net.WebRequest]::Create($Url)
   $req.Timeout = $TimeoutMs
   $req.ReadWriteTimeout = $TimeoutMs
@@ -318,6 +319,17 @@ function Test-WebEndpoint([string]$Url, [int]$TimeoutMs = 12000) {
 
 function Invoke-NetworkPreflight {
   $script:NetworkPreflight.checked = $true
+  # 检查是否禁用网络预检（在 Sandbox 中网络通常不可达，跳过浪费时间）
+  $skipNetworkPreflight = Get-EnvBool -Name 'RAYMAN_SANDBOX_SKIP_NETWORK_PREFLIGHT' -Default $true
+  if ($skipNetworkPreflight) {
+    Write-Host '[sandbox] network preflight skipped (RAYMAN_SANDBOX_SKIP_NETWORK_PREFLIGHT=true; use true for offline-first mode).'
+    $script:NetworkPreflight.npm = $false
+    $script:NetworkPreflight.nuget = $false
+    $script:NetworkPreflight.detail = 'skipped'
+    Add-BootstrapWarning 'network preflight skipped; proceeding with offline-first installation.'
+    return
+  }
+  
   Write-Status $false 'network-check' 'checking npm/nuget connectivity'
   Write-Host '[sandbox] checking network endpoints (npm + nuget)...'
 
@@ -327,7 +339,7 @@ function Invoke-NetworkPreflight {
 
   try {
     $npmOk = [bool](Invoke-WithProxyPreference 'network preflight npm registry' {
-      Test-WebEndpoint -Url 'https://registry.npmjs.org/-/ping' -TimeoutMs 10000
+      Test-WebEndpoint -Url 'https://registry.npmjs.org/-/ping' -TimeoutMs 2000
     })
   } catch {
     $detail += (' npm=' + $_.Exception.Message)
@@ -335,7 +347,7 @@ function Invoke-NetworkPreflight {
 
   try {
     $nugetOk = [bool](Invoke-WithProxyPreference 'network preflight nuget' {
-      Test-WebEndpoint -Url 'https://api.nuget.org/v3/index.json' -TimeoutMs 10000
+      Test-WebEndpoint -Url 'https://api.nuget.org/v3/index.json' -TimeoutMs 2000
     })
   } catch {
     $detail += (' nuget=' + $_.Exception.Message)

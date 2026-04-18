@@ -34,12 +34,13 @@ if ([string]::IsNullOrWhiteSpace([string]$debuggerPath)) {
 }
 $debuggerArgs = if ($PipeArguments.Count -gt 1) { @($PipeArguments | Select-Object -Skip 1) } else { @() }
 $workingDirectory = if ($manifest.PSObject.Properties['cwd']) { [string]$manifest.cwd } else { [string]$manifest.execution_root }
+$clientContext = if ($context.active.PSObject.Properties['client_context']) { $context.active.client_context } else { (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot) }
 
 $tunnel = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/debug/tunnel' -Body ([pscustomobject]@{
     debugger_path = $debuggerPath
     debugger_arguments = @($debuggerArgs)
     working_directory = $workingDirectory
-  }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
+  }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
 
 $client = New-Object System.Net.Sockets.TcpClient
 $client.Connect([string]$tunnel.address, [int]$tunnel.port)

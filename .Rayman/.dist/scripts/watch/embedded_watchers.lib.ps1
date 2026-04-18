@@ -2046,14 +2046,22 @@ function Invoke-RaymanAutoSaveCycle {
       [string]$State.MetaFile
     }
 
-    $status = @(git status --porcelain)
+    $pathspec = if (Get-Command Get-RaymanGitContentPathspec -ErrorAction SilentlyContinue) {
+      @(Get-RaymanGitContentPathspec -ExcludeManaged)
+    } else {
+      @('.')
+    }
+    $statusArgs = @('status', '--porcelain', '--untracked-files=all', '--') + $pathspec
+    $status = @(git @statusArgs)
     if ($status.Count -gt 0) {
-      git add -N . | Out-Null
+      $addArgs = @('add', '-N', '--') + $pathspec
+      git @addArgs | Out-Null
       $patchDir = Split-Path -Parent $patchPath
       if (-not [string]::IsNullOrWhiteSpace($patchDir) -and -not (Test-Path -LiteralPath $patchDir -PathType Container)) {
         New-Item -ItemType Directory -Force -Path $patchDir | Out-Null
       }
-      $patchContent = @(git diff) -join [Environment]::NewLine
+      $diffArgs = @('diff', '--') + $pathspec
+      $patchContent = @(git @diffArgs) -join [Environment]::NewLine
       if (Get-Command Write-RaymanSessionTextFile -ErrorAction SilentlyContinue) {
         Write-RaymanSessionTextFile -Path $patchPath -Content (($patchContent.TrimEnd()) + [Environment]::NewLine)
       } else {

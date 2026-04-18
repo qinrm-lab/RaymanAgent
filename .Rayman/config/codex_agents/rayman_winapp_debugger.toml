@@ -1,8 +1,9 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_winapp_debugger"
 description = "Windows desktop UI debugger for WinForms, MAUI(Windows), dialogs, and UIA flows."
-model = "gpt-4o"
-sandbox_mode = "danger-full-access"
+# Model intentionally omitted so this agent inherits the parent session model.
+# Rayman policy: prefer the parent session's current OpenAI GPT-5 model unless a task explicitly overrides it.
+sandbox_mode = "workspace-write"
 model_reasoning_effort = "high"
 developer_instructions = '''
 Role: rayman_winapp_debugger

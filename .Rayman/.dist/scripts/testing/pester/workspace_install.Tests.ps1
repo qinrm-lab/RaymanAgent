@@ -470,12 +470,9 @@ Describe 'workspace install' {
       New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot '.Rayman') | Out-Null
       Set-Content -LiteralPath (Join-Path $targetRoot '.Rayman\old.txt') -Encoding UTF8 -Value 'old'
 
-      Mock Move-Item {
-        if ([string]$LiteralPath -like '*.Rayman.__rayman_workspace_install_new_*') {
-          throw 'simulated move failure'
-        }
-        Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
-      }
+      Mock Copy-Item {
+        throw 'simulated move failure'
+      } -ParameterFilter { ([string]$Destination -Match 'consumer-workspace' -or [string]$Path -Match 'consumer-workspace') -and ([string]$LiteralPath -Match 'setup\.ps1' -or [string]$Path -Match 'setup\.ps1') }
 
       $result = Invoke-RaymanWorkspaceInstall -WorkspaceRoot $sourceRoot -TargetPath $targetRoot
 

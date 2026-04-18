@@ -162,6 +162,74 @@ function Get-RaymanWorkerCurrentSyncManifest {
   return (Read-RaymanWorkerJsonFile -Path (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot))
 }
 
+function Resolve-RaymanWorkerRequestClientContext {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Body = $null,
+    [object]$QueryString = $null
+  )
+
+  $bodyContext = $null
+  if ($null -ne $Body -and $Body.PSObject.Properties['client_context']) {
+    $bodyContext = $Body.client_context
+  }
+  $clientId = ''
+  if ($null -ne $QueryString) {
+    try {
+      $clientId = [string]$QueryString['client_id']
+    } catch {
+      $clientId = ''
+    }
+  }
+  return (Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $bodyContext -ClientId $clientId)
+}
+
+function Get-RaymanWorkerRequestSyncManifest {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [object]$Body = $null
+  )
+
+  if ($null -ne $Body -and $Body.PSObject.Properties['sync_manifest'] -and $null -ne $Body.sync_manifest) {
+    return $Body.sync_manifest
+  }
+
+  if ($null -ne $ClientContext) {
+    $manifest = Get-RaymanWorkerClientSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $ClientContext
+    if ($null -ne $manifest) {
+      return $manifest
+    }
+  }
+
+  return (Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $WorkspaceRoot)
+}
+
+function Assert-RaymanWorkerSharedModeSupported {
+  param(
+    [string]$RequestedMode,
+    [string]$Operation
+  )
+
+  $mode = ([string]$RequestedMode).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($mode)) {
+    $mode = 'attached'
+  }
+  if ($mode -ne 'staged') {
+    throw ("shared worker only supports staged mode for {0}; requested mode: {1}" -f $Operation, $mode)
+  }
+}
+
+function Get-RaymanWorkerRequestedMode {
+  param([object]$SyncManifest)
+
+  if ($null -ne $SyncManifest -and $SyncManifest.PSObject.Properties['mode']) {
+    return [string]$SyncManifest.mode
+  }
+
+  return ''
+}
+
 function Set-RaymanWorkerAttachedSyncManifest {
   param([string]$WorkspaceRoot)
 
@@ -366,12 +434,16 @@ function Invoke-RaymanWorkerRequest {
     $relativePath = '/'
   }
   $method = [string]$request.HttpMethod
-  $currentSync = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $WorkspaceRoot
   Assert-RaymanWorkerAuthorized -WorkspaceRoot $WorkspaceRoot -Headers $request.Headers
 
   switch ("{0} {1}" -f $method.ToUpperInvariant(), $relativePath.ToLowerInvariant()) {
     'GET /status' {
-      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -SyncManifest $currentSync -ProcessId $PID -HostStartTime $HostStartTime
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -QueryString $request.QueryString
+      $currentSync = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
+      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -SyncManifest $currentSync -ProcessId $PID -HostStartTime $HostStartTime -ClientContext $clientContext
+      if ($null -ne $clientContext) {
+        Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerClientStatusPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$clientContext.client_id)) -Value $status
+      }
       Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerHostStatusPath -WorkspaceRoot $WorkspaceRoot) -Value $status
       return $status
     }
@@ -380,8 +452,11 @@ function Invoke-RaymanWorkerRequest {
       if ($null -eq $body -or [string]::IsNullOrWhiteSpace([string]$body.command)) {
         throw 'exec command is required'
       }
-      $syncManifest = if ($null -ne $body.PSObject.Properties['sync_manifest'] -and $null -ne $body.sync_manifest) { $body.sync_manifest } else { $currentSync }
-      $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $WorkspaceRoot -SyncManifest $syncManifest
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $request.QueryString
+      $syncManifest = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -Body $body
+      $requestedMode = Get-RaymanWorkerRequestedMode -SyncManifest $syncManifest
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $requestedMode -Operation 'exec'
+      $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $WorkspaceRoot -SyncManifest $syncManifest -ClientContext $clientContext
       $timeoutSeconds = if ($null -ne $body.PSObject.Properties['timeout_seconds']) { [int]$body.timeout_seconds } else { (Get-RaymanWorkerExecutionTimeoutSeconds) }
       $result = Invoke-RaymanWorkerLocalCommand -WorkspaceRoot $WorkspaceRoot -ExecutionRoot $executionRoot -CommandText ([string]$body.command) -TimeoutSeconds $timeoutSeconds
       return [pscustomobject]@{
@@ -392,7 +467,7 @@ function Invoke-RaymanWorkerRequest {
         error_message = [string]$result.error_message
         output_lines = @($result.output_lines)
         execution_root = [string]$result.execution_root
-        workspace_mode = if ($null -ne $syncManifest -and $syncManifest.PSObject.Properties['mode']) { [string]$syncManifest.mode } else { 'attached' }
+        workspace_mode = $requestedMode
       }
     }
     'PUT /sync/upload' {
@@ -411,40 +486,52 @@ function Invoke-RaymanWorkerRequest {
     }
     'POST /sync' {
       $body = Read-RaymanWorkerRequestJson -Request $request
-      $mode = if ($null -ne $body -and $body.PSObject.Properties['mode']) { [string]$body.mode } else { 'attached' }
-      if ($mode -eq 'staged') {
-        $bundlePath = ''
-        if ($null -ne $body -and $body.PSObject.Properties['bundle_base64'] -and -not [string]::IsNullOrWhiteSpace([string]$body.bundle_base64)) {
-          $token = [Guid]::NewGuid().ToString('n')
-          $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
-          [System.IO.File]::WriteAllBytes($bundlePath, [Convert]::FromBase64String([string]$body.bundle_base64))
-        } else {
-          $token = [string]$body.upload_token
-          if ([string]::IsNullOrWhiteSpace([string]$token)) {
-            throw 'staged sync requires upload_token or bundle_base64'
-          }
-          $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
-        }
-        if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
-          throw ("sync bundle not found: {0}" -f $bundlePath)
-        }
-        return (Expand-RaymanWorkerSyncBundle -WorkspaceRoot $WorkspaceRoot -BundlePath $bundlePath)
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $request.QueryString
+      if ($null -eq $clientContext) {
+        throw 'client_context is required for shared worker sync'
       }
-      return (Set-RaymanWorkerAttachedSyncManifest -WorkspaceRoot $WorkspaceRoot)
+      $mode = if ($null -ne $body -and $body.PSObject.Properties['mode']) { [string]$body.mode } else { 'attached' }
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $mode -Operation 'sync'
+      $bundlePath = ''
+      if ($null -ne $body -and $body.PSObject.Properties['bundle_base64'] -and -not [string]::IsNullOrWhiteSpace([string]$body.bundle_base64)) {
+        $token = [Guid]::NewGuid().ToString('n')
+        $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
+        [System.IO.File]::WriteAllBytes($bundlePath, [Convert]::FromBase64String([string]$body.bundle_base64))
+      } else {
+        $token = [string]$body.upload_token
+        if ([string]::IsNullOrWhiteSpace([string]$token)) {
+          throw 'staged sync requires upload_token or bundle_base64'
+        }
+        $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
+      }
+      if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+        throw ("sync bundle not found: {0}" -f $bundlePath)
+      }
+      return (Expand-RaymanWorkerSyncBundle -WorkspaceRoot $WorkspaceRoot -BundlePath $bundlePath -ClientContext $clientContext)
     }
     'POST /debug' {
       $body = Read-RaymanWorkerRequestJson -Request $request
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $request.QueryString
       $mode = if ($null -ne $body -and $body.PSObject.Properties['mode']) { [string]$body.mode } else { 'launch' }
       $program = if ($null -ne $body -and $body.PSObject.Properties['program']) { [string]$body.program } else { '' }
       $processId = if ($null -ne $body -and $body.PSObject.Properties['process_id']) { [int]$body.process_id } else { 0 }
-      $syncManifest = if ($null -ne $body -and $body.PSObject.Properties['sync_manifest'] -and $null -ne $body.sync_manifest) { $body.sync_manifest } else { $currentSync }
+      $syncManifest = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -Body $body
+      $requestedMode = Get-RaymanWorkerRequestedMode -SyncManifest $syncManifest
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $requestedMode -Operation 'debug'
       $manifest = New-RaymanWorkerDebugManifest -WorkspaceRoot $WorkspaceRoot -Mode $mode -SyncManifest $syncManifest -Program $program -ProcessId $processId
-      Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) -Value $manifest
+      if ($null -ne $clientContext) {
+        $manifest | Add-Member -MemberType NoteProperty -Name client_id -Value ([string]$clientContext.client_id) -Force
+        $manifest | Add-Member -MemberType NoteProperty -Name client_context -Value $clientContext -Force
+        Set-RaymanWorkerClientDebugSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -DebugSession $manifest | Out-Null
+      } else {
+        Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) -Value $manifest
+      }
       return $manifest
     }
     'POST /debug/tunnel' {
       $body = Read-RaymanWorkerRequestJson -Request $request
-      $session = Read-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot)
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $request.QueryString
+      $session = if ($null -ne $clientContext) { Get-RaymanWorkerClientDebugSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext } else { Read-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) }
       $tunnelSpec = Resolve-RaymanWorkerDebugTunnelSpec -WorkspaceRoot $WorkspaceRoot -Body $body -Session $session
       $port = Start-RaymanWorkerTunnelProcess -WorkspaceRoot $WorkspaceRoot -VsdbgPath ([string]$tunnelSpec.debugger_path) -VsdbgArguments @($tunnelSpec.debugger_arguments) -WorkingDirectory ([string]$tunnelSpec.working_directory)
       return [pscustomobject]@{
@@ -453,6 +540,11 @@ function Invoke-RaymanWorkerRequest {
         address = (Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $WorkspaceRoot)
         port = $port
       }
+    }
+    'POST /client/clear' {
+      $body = Read-RaymanWorkerRequestJson -Request $request
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $request.QueryString
+      return (Clear-RaymanWorkerClientSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext)
     }
     'PUT /upgrade/upload' {
       $token = [string]$request.QueryString['token']
@@ -747,20 +839,27 @@ function Invoke-RaymanWorkerRequestData {
 
   $relativePath = [string]$RequestData.path
   $method = [string]$RequestData.method
-  $currentSync = Get-RaymanWorkerCurrentSyncManifest -WorkspaceRoot $WorkspaceRoot
   $body = $RequestData.body_json
   Assert-RaymanWorkerAuthorized -WorkspaceRoot $WorkspaceRoot -Headers $RequestData.headers
 
   switch ("{0} {1}" -f $method.ToUpperInvariant(), $relativePath.ToLowerInvariant()) {
     'GET /status' {
-      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -SyncManifest $currentSync -ProcessId $PID -HostStartTime $HostStartTime
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -QueryString $RequestData.query_string
+      $currentSync = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
+      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -SyncManifest $currentSync -ProcessId $PID -HostStartTime $HostStartTime -ClientContext $clientContext
+      if ($null -ne $clientContext) {
+        Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerClientStatusPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$clientContext.client_id)) -Value $status
+      }
       Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerHostStatusPath -WorkspaceRoot $WorkspaceRoot) -Value $status
       return $status
     }
     'POST /exec' {
       if ($null -eq $body -or [string]::IsNullOrWhiteSpace([string]$body.command)) { throw 'exec command is required' }
-      $syncManifest = if ($null -ne $body.PSObject.Properties['sync_manifest'] -and $null -ne $body.sync_manifest) { $body.sync_manifest } else { $currentSync }
-      $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $WorkspaceRoot -SyncManifest $syncManifest
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $RequestData.query_string
+      $syncManifest = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -Body $body
+      $requestedMode = Get-RaymanWorkerRequestedMode -SyncManifest $syncManifest
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $requestedMode -Operation 'exec'
+      $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $WorkspaceRoot -SyncManifest $syncManifest -ClientContext $clientContext
       $timeoutSeconds = if ($null -ne $body.PSObject.Properties['timeout_seconds']) { [int]$body.timeout_seconds } else { (Get-RaymanWorkerExecutionTimeoutSeconds) }
       $result = Invoke-RaymanWorkerLocalCommand -WorkspaceRoot $WorkspaceRoot -ExecutionRoot $executionRoot -CommandText ([string]$body.command) -TimeoutSeconds $timeoutSeconds
       return [pscustomobject]@{
@@ -771,7 +870,7 @@ function Invoke-RaymanWorkerRequestData {
         error_message = [string]$result.error_message
         output_lines = @($result.output_lines)
         execution_root = [string]$result.execution_root
-        workspace_mode = if ($null -ne $syncManifest -and $syncManifest.PSObject.Properties['mode']) { [string]$syncManifest.mode } else { 'attached' }
+        workspace_mode = $requestedMode
       }
     }
     'PUT /sync/upload' {
@@ -787,34 +886,44 @@ function Invoke-RaymanWorkerRequestData {
       }
     }
     'POST /sync' {
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $RequestData.query_string
+      if ($null -eq $clientContext) { throw 'client_context is required for shared worker sync' }
       $mode = if ($null -ne $body -and $body.PSObject.Properties['mode']) { [string]$body.mode } else { 'attached' }
-      if ($mode -eq 'staged') {
-        $bundlePath = ''
-        if ($null -ne $body -and $body.PSObject.Properties['bundle_base64'] -and -not [string]::IsNullOrWhiteSpace([string]$body.bundle_base64)) {
-          $token = [Guid]::NewGuid().ToString('n')
-          $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
-          [System.IO.File]::WriteAllBytes($bundlePath, [Convert]::FromBase64String([string]$body.bundle_base64))
-        } else {
-          $token = [string]$body.upload_token
-          if ([string]::IsNullOrWhiteSpace([string]$token)) { throw 'staged sync requires upload_token or bundle_base64' }
-          $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
-        }
-        if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) { throw ("sync bundle not found: {0}" -f $bundlePath) }
-        return (Expand-RaymanWorkerSyncBundle -WorkspaceRoot $WorkspaceRoot -BundlePath $bundlePath)
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $mode -Operation 'sync'
+      $bundlePath = ''
+      if ($null -ne $body -and $body.PSObject.Properties['bundle_base64'] -and -not [string]::IsNullOrWhiteSpace([string]$body.bundle_base64)) {
+        $token = [Guid]::NewGuid().ToString('n')
+        $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
+        [System.IO.File]::WriteAllBytes($bundlePath, [Convert]::FromBase64String([string]$body.bundle_base64))
+      } else {
+        $token = [string]$body.upload_token
+        if ([string]::IsNullOrWhiteSpace([string]$token)) { throw 'staged sync requires upload_token or bundle_base64' }
+        $bundlePath = Join-Path (Get-RaymanWorkerUploadRoot -WorkspaceRoot $WorkspaceRoot) ("sync-{0}.zip" -f $token)
       }
-      return (Set-RaymanWorkerAttachedSyncManifest -WorkspaceRoot $WorkspaceRoot)
+      if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) { throw ("sync bundle not found: {0}" -f $bundlePath) }
+      return (Expand-RaymanWorkerSyncBundle -WorkspaceRoot $WorkspaceRoot -BundlePath $bundlePath -ClientContext $clientContext)
     }
     'POST /debug' {
       $mode = if ($null -ne $body -and $body.PSObject.Properties['mode']) { [string]$body.mode } else { 'launch' }
       $program = if ($null -ne $body -and $body.PSObject.Properties['program']) { [string]$body.program } else { '' }
       $processId = if ($null -ne $body -and $body.PSObject.Properties['process_id']) { [int]$body.process_id } else { 0 }
-      $syncManifest = if ($null -ne $body -and $body.PSObject.Properties['sync_manifest'] -and $null -ne $body.sync_manifest) { $body.sync_manifest } else { $currentSync }
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $RequestData.query_string
+      $syncManifest = Get-RaymanWorkerRequestSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -Body $body
+      $requestedMode = Get-RaymanWorkerRequestedMode -SyncManifest $syncManifest
+      Assert-RaymanWorkerSharedModeSupported -RequestedMode $requestedMode -Operation 'debug'
       $manifest = New-RaymanWorkerDebugManifest -WorkspaceRoot $WorkspaceRoot -Mode $mode -SyncManifest $syncManifest -Program $program -ProcessId $processId
-      Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) -Value $manifest
+      if ($null -ne $clientContext) {
+        $manifest | Add-Member -MemberType NoteProperty -Name client_id -Value ([string]$clientContext.client_id) -Force
+        $manifest | Add-Member -MemberType NoteProperty -Name client_context -Value $clientContext -Force
+        Set-RaymanWorkerClientDebugSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext -DebugSession $manifest | Out-Null
+      } else {
+        Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) -Value $manifest
+      }
       return $manifest
     }
     'POST /debug/tunnel' {
-      $session = Read-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot)
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $RequestData.query_string
+      $session = if ($null -ne $clientContext) { Get-RaymanWorkerClientDebugSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext } else { Read-RaymanWorkerJsonFile -Path (Get-RaymanWorkerDebugSessionPath -WorkspaceRoot $WorkspaceRoot) }
       $tunnelSpec = Resolve-RaymanWorkerDebugTunnelSpec -WorkspaceRoot $WorkspaceRoot -Body $body -Session $session
       $port = Start-RaymanWorkerTunnelProcess -WorkspaceRoot $WorkspaceRoot -VsdbgPath ([string]$tunnelSpec.debugger_path) -VsdbgArguments @($tunnelSpec.debugger_arguments) -WorkingDirectory ([string]$tunnelSpec.working_directory)
       return [pscustomobject]@{
@@ -823,6 +932,10 @@ function Invoke-RaymanWorkerRequestData {
         address = (Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $WorkspaceRoot)
         port = $port
       }
+    }
+    'POST /client/clear' {
+      $clientContext = Resolve-RaymanWorkerRequestClientContext -WorkspaceRoot $WorkspaceRoot -Body $body -QueryString $RequestData.query_string
+      return (Clear-RaymanWorkerClientSession -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext)
     }
     'PUT /upgrade/upload' {
       $token = [string]$RequestData.query_string['token']

@@ -109,10 +109,17 @@ function Test-RaymanMemoryDeps {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Test-RaymanMemoryEmbeddingsEnabled {
+    $raw = [string]$env:RAYMAN_MEMORY_ENABLE_EMBEDDINGS
+    return ($raw.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on'))
+}
+
 function Invoke-RaymanMemoryBootstrap {
     [CmdletBinding()]
     param(
         [string]$WorkspaceRoot,
+        [string]$ScriptRoot = '',
+        [switch]$SkipStatusProbe,
         [switch]$EnsureDeps,
         [switch]$NoInstallDeps,
         [switch]$Prewarm,
@@ -139,9 +146,14 @@ function Invoke-RaymanMemoryBootstrap {
     }
 
     $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $resolvedScriptRoot = if (-not [string]::IsNullOrWhiteSpace($ScriptRoot)) {
+        (Resolve-Path -LiteralPath $ScriptRoot).Path
+    } else {
+        $resolvedRoot
+    }
     $result.WorkspaceRoot = $resolvedRoot
-    $result.RequirementsPath = Get-RaymanMemoryRequirementsPath -Root $resolvedRoot
-    $result.BackendPath = Get-RaymanMemoryBackendPath -Root $resolvedRoot
+    $result.RequirementsPath = Get-RaymanMemoryRequirementsPath -Root $resolvedScriptRoot
+    $result.BackendPath = Get-RaymanMemoryBackendPath -Root $resolvedScriptRoot
 
     if (-not (Test-Path -LiteralPath $result.BackendPath -PathType Leaf)) {
         $result.Message = ("manage_memory.py 缺失: {0}" -f $result.BackendPath)
@@ -171,7 +183,12 @@ function Invoke-RaymanMemoryBootstrap {
     $result.PythonArgs = @([string[]]$runtime.Parameters)
     $result.PythonLabel = [string]$runtime.Label
     $result.PythonInvocation = if ($result.PythonArgs.Count -gt 0) { "$($result.PythonExe) $($result.PythonArgs -join ' ')" } else { $result.PythonExe }
-    $result.DepsReady = Test-RaymanMemoryDeps -Runtime $runtime
+    $embeddingsEnabled = Test-RaymanMemoryEmbeddingsEnabled
+    $result.DepsReady = if ($embeddingsEnabled -or $EnsureDeps -or $Prewarm) {
+        Test-RaymanMemoryDeps -Runtime $runtime
+    } else {
+        $false
+    }
 
     if (-not $result.DepsReady -and $EnsureDeps -and -not $NoInstallDeps -and (Test-Path -LiteralPath $result.RequirementsPath -PathType Leaf)) {
         Write-MemoryBootstrapInfo ("正在安装 Agent Memory 依赖（{0}）..." -f $result.PythonLabel)
@@ -180,6 +197,14 @@ function Invoke-RaymanMemoryBootstrap {
             $result.InstalledDeps = $true
             $result.DepsReady = Test-RaymanMemoryDeps -Runtime $runtime
         }
+    }
+
+    if ($SkipStatusProbe) {
+        $result.Success = $true
+        $result.SearchBackend = if ($result.DepsReady) { 'embedding' } else { 'lexical' }
+        $result.FallbackReason = if ($result.DepsReady) { 'ready' } elseif ($embeddingsEnabled) { 'embedding_deps_unavailable' } else { 'embedding_disabled' }
+        $result.Message = if ($result.DepsReady) { 'Agent Memory Python runtime ready' } else { 'Agent Memory Python runtime ready (lexical fallback)' }
+        return $result
     }
 
     $statusArgs = @(

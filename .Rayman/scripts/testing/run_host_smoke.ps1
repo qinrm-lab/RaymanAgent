@@ -37,6 +37,25 @@ if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 }
 
+$hostSmokeMutex = $null
+$hostSmokeLockTaken = $false
+$hostSmokeExitCode = 0
+$hostSmokeMutexWaitSeconds = Get-RaymanHostSmokeMutexWaitSeconds
+
+try {
+  # Prevent concurrent host smoke runs from clobbering shared worker/runtime state.
+  $hostSmokeMutex = New-RaymanHostSmokeRunMutex -WorkspaceRootPath $WorkspaceRoot
+  if ($null -ne $hostSmokeMutex) {
+    try {
+      $hostSmokeLockTaken = $hostSmokeMutex.WaitOne(([int]$hostSmokeMutexWaitSeconds * 1000))
+    } catch [System.Threading.AbandonedMutexException] {
+      $hostSmokeLockTaken = $true
+    }
+    if (-not $hostSmokeLockTaken) {
+      throw ("host smoke is already running for this workspace; waited {0} seconds for the workspace mutex." -f $hostSmokeMutexWaitSeconds)
+    }
+  }
+
 function Add-Step {
   param(
     [System.Collections.Generic.List[object]]$Steps,
@@ -647,7 +666,15 @@ if (-not (Test-RaymanWindowsPlatform)) {
     if ($workerOk) {
       $statusStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_status' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('status', '--json')
       $statusJson = if ($statusStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $statusStep.output } else { $null }
-      if ($statusStep.exit_code -ne 0 -or $null -eq $statusJson -or [string]$statusJson.schema -ne 'rayman.worker.status.v1' -or -not [bool]$statusJson.debugger_ready -or [string]$statusJson.address -ne '127.0.0.1' -or [string]$statusJson.control.base_url -notmatch '^http://127\.0\.0\.1:') {
+      if ($statusStep.exit_code -ne 0 -or
+          $null -eq $statusJson -or
+          [string]$statusJson.schema -ne 'rayman.worker.status.v1' -or
+          -not [bool]$statusJson.debugger_ready -or
+          [string]$statusJson.address -ne '127.0.0.1' -or
+          [string]$statusJson.control.base_url -notmatch '^http://127\.0\.0\.1:' -or
+          -not [bool]$statusJson.shared_worker -or
+          [string]$statusJson.session_isolation -ne 'multi_client_staged_only' -or
+          (@($statusJson.supported_sync_modes) -notcontains 'staged')) {
         Add-Step -Steps $steps -Name 'worker_loopback_status' -Status 'FAIL' -Detail ("status failed (exit={0})" -f $statusStep.exit_code) -LogPath $statusStep.log_path
         $overall = 'FAIL'
         $workerOk = $false
@@ -657,26 +684,17 @@ if (-not (Test-RaymanWindowsPlatform)) {
     }
 
     if ($workerOk) {
-      $execStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_exec' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('exec', '--json', 'Write-Output', 'worker-smoke-ok')
-      $execJson = if ($execStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $execStep.output } else { $null }
-      if ($execStep.exit_code -ne 0 -or $null -eq $execJson -or -not [bool]$execJson.success -or ($execJson.output_lines -notcontains 'worker-smoke-ok')) {
-        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'FAIL' -Detail ("exec failed (exit={0})" -f $execStep.exit_code) -LogPath $execStep.log_path
-        $overall = 'FAIL'
-        $workerOk = $false
-      } else {
-        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'PASS' -Detail 'remote exec succeeded' -LogPath $execStep.log_path
-      }
-    }
-
-    if ($workerOk) {
       $syncAttachedStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_sync_attached' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('sync', '--mode', 'attached', '--json')
-      $syncAttachedJson = if ($syncAttachedStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $syncAttachedStep.output } else { $null }
-      if ($syncAttachedStep.exit_code -ne 0 -or $null -eq $syncAttachedJson -or [string]$syncAttachedJson.mode -ne 'attached') {
-        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'FAIL' -Detail ("attached sync failed (exit={0})" -f $syncAttachedStep.exit_code) -LogPath $syncAttachedStep.log_path
+      $syncAttachedJson = Convert-JsonFromCommandOutput -OutputText $syncAttachedStep.output
+      $attachedRejected = ($syncAttachedStep.exit_code -ne 0) -and
+        $null -ne $syncAttachedJson -and
+        [string]$syncAttachedJson.schema -eq 'rayman.worker.cli_error.v1' -and
+        [string]$syncAttachedJson.error -match 'staged sync only|shared worker only supports staged mode'
+      if (-not $attachedRejected) {
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'FAIL' -Detail ("attached sync should fail-fast on shared workers (exit={0})" -f $syncAttachedStep.exit_code) -LogPath $syncAttachedStep.log_path
         $overall = 'FAIL'
-        $workerOk = $false
       } else {
-        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'PASS' -Detail 'attached sync succeeded' -LogPath $syncAttachedStep.log_path
+        Add-Step -Steps $steps -Name 'worker_loopback_sync_attached' -Status 'PASS' -Detail 'attached sync correctly rejected for shared staged-only worker' -LogPath $syncAttachedStep.log_path
       }
     }
 
@@ -689,6 +707,22 @@ if (-not (Test-RaymanWindowsPlatform)) {
         $workerOk = $false
       } else {
         Add-Step -Steps $steps -Name 'worker_loopback_sync_staged' -Status 'PASS' -Detail 'staged sync succeeded' -LogPath $syncStagedStep.log_path
+      }
+    }
+
+    if ($workerOk) {
+      $execStep = Invoke-RaymanHostSmokeWorkerCli -Name 'worker_loopback_exec' -PowerShellPath $pwshCmd -WorkspaceRoot $WorkspaceRoot -LogDir $logDir -WorkerArgs @('exec', '--json', 'Write-Output', 'worker-smoke-ok')
+      $execJson = if ($execStep.exit_code -eq 0) { Convert-JsonFromCommandOutput -OutputText $execStep.output } else { $null }
+      if ($execStep.exit_code -ne 0 -or
+          $null -eq $execJson -or
+          -not [bool]$execJson.success -or
+          [string]$execJson.workspace_mode -ne 'staged' -or
+          ($execJson.output_lines -notcontains 'worker-smoke-ok')) {
+        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'FAIL' -Detail ("exec failed (exit={0})" -f $execStep.exit_code) -LogPath $execStep.log_path
+        $overall = 'FAIL'
+        $workerOk = $false
+      } else {
+        Add-Step -Steps $steps -Name 'worker_loopback_exec' -Status 'PASS' -Detail 'remote exec succeeded from staged client session' -LogPath $execStep.log_path
       }
     }
 
@@ -818,5 +852,15 @@ $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encodi
 $report | ConvertTo-Json -Depth 8
 
 if ($overall -eq 'FAIL') {
-  exit 1
+  $hostSmokeExitCode = 1
 }
+} finally {
+  if ($hostSmokeLockTaken -and $null -ne $hostSmokeMutex) {
+    try { $hostSmokeMutex.ReleaseMutex() } catch {}
+  }
+  if ($null -ne $hostSmokeMutex) {
+    try { $hostSmokeMutex.Dispose() } catch {}
+  }
+}
+
+exit $hostSmokeExitCode

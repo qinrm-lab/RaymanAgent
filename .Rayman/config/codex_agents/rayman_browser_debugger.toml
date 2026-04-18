@@ -1,8 +1,9 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_browser_debugger"
 description = "Browser debugger that uses Playwright-first evidence before changing application code."
-model = "gpt-4o"
-sandbox_mode = "danger-full-access"
+# Model intentionally omitted so this agent inherits the parent session model.
+# Rayman policy: prefer the parent session's current OpenAI GPT-5 model unless a task explicitly overrides it.
+sandbox_mode = "workspace-write"
 model_reasoning_effort = "high"
 developer_instructions = '''
 Role: rayman_browser_debugger

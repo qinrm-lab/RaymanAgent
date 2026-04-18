@@ -16,6 +16,10 @@ $memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
 if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
     . $memoryHelperPath
 }
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+    . $eventHooksPath -NoMain
+}
 
 $sessionName = Resolve-RaymanSessionDisplayName -Name $Name
 $slug = ConvertTo-RaymanSessionSlug -Name $sessionName
@@ -65,6 +69,9 @@ $manifest = New-RaymanSessionManifest `
     -Existing $existing
 Save-RaymanSessionManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest | Out-Null
 Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -OwnerContext $runtimeContext.owner_context
+if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
+    Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -HandoverPath $paths.handover_path -PatchPath $paths.auto_save_patch_path -MetaPath $paths.auto_save_meta_path | Out-Null
+}
 
 $legacy = Get-RaymanLegacyStatePaths -WorkspaceRoot $ResolvedWorkspaceRoot
 if (Test-Path -LiteralPath $legacy.pending_path -PathType Leaf) {
@@ -95,6 +102,15 @@ if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyContinue) {
         session_slug = $slug
         stash_oid = [string]$manifest.stash_oid
     } | Out-Null
+}
+if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+    Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'session.save' -Category 'state' -Payload ([ordered]@{
+            session_name = $sessionName
+            session_slug = $slug
+            session_kind = 'manual'
+            backend = [string]$runtimeContext.backend
+            account_alias = [string]$runtimeContext.account_alias
+        }) | Out-Null
 }
 
 & "$PSScriptRoot\..\utils\request_attention.ps1" -WorkspaceRoot $ResolvedWorkspaceRoot -Message ("状态已保存到命名会话：{0}" -f $sessionName)

@@ -31,6 +31,71 @@ function Ensure-RaymanMemoryDir([string]$Path) {
     }
 }
 
+function Get-RaymanMemoryObjectValue {
+    param(
+        [object]$Object,
+        [string]$Key,
+        [object]$Default = ''
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Key)) {
+        return $Default
+    }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Key)) {
+            return $Object[$Key]
+        }
+        foreach ($candidate in @($Object.Keys)) {
+            if ([string]$candidate -ieq $Key) {
+                return $Object[$candidate]
+            }
+        }
+        return $Default
+    }
+
+    if ($Object.PSObject -and $Object.PSObject.Properties[$Key]) {
+        return $Object.$Key
+    }
+    foreach ($property in @($Object.PSObject.Properties)) {
+        if ([string]$property.Name -ieq $Key) {
+            return $property.Value
+        }
+    }
+
+    return $Default
+}
+
+function Resolve-RaymanMemoryManageScriptPath {
+    param(
+        [object]$Paths,
+        [string]$WorkspaceRoot = ''
+    )
+
+    if ($null -ne $Paths -and $Paths.PSObject.Properties['ManageScript']) {
+        $candidate = [string]$Paths.ManageScript
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $candidate
+        }
+    }
+
+    $localCandidate = Join-Path $PSScriptRoot 'manage_memory.ps1'
+    if (Test-Path -LiteralPath $localCandidate -PathType Leaf) {
+        return $localCandidate
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+        $resolvedRoot = if (Get-Command Resolve-RaymanWorkspaceRoot -ErrorAction SilentlyContinue) {
+            Resolve-RaymanWorkspaceRoot -StartPath $WorkspaceRoot
+        } else {
+            (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+        }
+        return (Join-Path $resolvedRoot '.Rayman\scripts\memory\manage_memory.ps1')
+    }
+
+    return ''
+}
+
 function Get-RaymanMemoryStableHash {
     param([string]$Value)
 
@@ -73,7 +138,7 @@ function Invoke-RaymanMemoryAction {
     [CmdletBinding()]
     param(
         [string]$WorkspaceRoot,
-        [ValidateSet('status', 'record', 'summarize', 'search', 'prune')][string]$Action,
+        [ValidateSet('status', 'record', 'summarize', 'search', 'prune', 'session-refresh')][string]$Action,
         [string]$InputJsonFile = '',
         [string]$Query = '',
         [string]$TaskKey = '',
@@ -91,7 +156,8 @@ function Invoke-RaymanMemoryAction {
     )
 
     $paths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
-    if (-not (Test-Path -LiteralPath $paths.ManageScript -PathType Leaf)) {
+    $manageScriptPath = Resolve-RaymanMemoryManageScriptPath -Paths $paths -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace($manageScriptPath) -or -not (Test-Path -LiteralPath $manageScriptPath -PathType Leaf)) {
         return $null
     }
 
@@ -115,7 +181,7 @@ function Invoke-RaymanMemoryAction {
     if ($DrainPending) { $args['DrainPending'] = $true }
     if ($Prewarm) { $args['Prewarm'] = $true }
 
-    $raw = & $paths.ManageScript @args 2>$null
+    $raw = & $manageScriptPath @args 2>$null
     if ($LASTEXITCODE -ne 0) {
         return $null
     }
@@ -127,6 +193,71 @@ function Invoke-RaymanMemoryAction {
         return ($text | ConvertFrom-Json -ErrorAction Stop)
     } catch {
         return $null
+    }
+}
+
+function Write-RaymanSessionRecall {
+    [CmdletBinding()]
+    param(
+        [string]$WorkspaceRoot,
+        [object]$Manifest,
+        [string]$HandoverPath = '',
+        [string]$PatchPath = '',
+        [string]$MetaPath = ''
+    )
+
+    if ($null -eq $Manifest) {
+        return $null
+    }
+
+    $paths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
+    $manageScriptPath = Resolve-RaymanMemoryManageScriptPath -Paths $paths -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace($manageScriptPath) -or -not (Test-Path -LiteralPath $manageScriptPath -PathType Leaf)) {
+        return $null
+    }
+
+    Ensure-RaymanMemoryDir -Path $paths.RuntimeRoot
+    $tmpDir = Join-Path $paths.RuntimeRoot 'tmp'
+    Ensure-RaymanMemoryDir -Path $tmpDir
+    $payloadPath = Join-Path $tmpDir ("session.{0}.json" -f ([Guid]::NewGuid().ToString('n')))
+
+    $summaryText = ''
+    if (-not [string]::IsNullOrWhiteSpace($HandoverPath) -and (Test-Path -LiteralPath $HandoverPath -PathType Leaf)) {
+        try {
+            $summaryText = (Get-Content -LiteralPath $HandoverPath -Raw -Encoding UTF8 -ErrorAction Stop).Trim()
+        } catch {
+            $summaryText = ''
+        }
+    }
+
+    $payload = [ordered]@{
+        session_slug = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'slug' -Default '')
+        session_name = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'name' -Default '')
+        session_kind = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'session_kind' -Default 'manual')
+        status = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'status' -Default 'paused')
+        backend = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'backend' -Default '')
+        account_alias = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'account_alias' -Default '')
+        owner_display = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'owner_display' -Default '')
+        owner_key = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'owner_key' -Default '')
+        task_description = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'task_description' -Default '')
+        summary_text = $summaryText
+        handover_path = $HandoverPath
+        patch_path = $PatchPath
+        meta_path = $MetaPath
+        stash_oid = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'stash_oid' -Default '')
+        worktree_path = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'worktree_path' -Default '')
+        branch = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'branch' -Default '')
+        created_at = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'created_at' -Default '')
+        updated_at = [string](Get-RaymanMemoryObjectValue -Object $Manifest -Key 'updated_at' -Default '')
+    }
+
+    try {
+        $payload | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $payloadPath -Encoding UTF8
+        return Invoke-RaymanMemoryAction -WorkspaceRoot $paths.WorkspaceRoot -Action 'session-refresh' -InputJsonFile $payloadPath -Quiet
+    } finally {
+        if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
+            Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -150,7 +281,8 @@ function Write-RaymanEpisodeMemory {
     )
 
     $paths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
-    if (-not (Test-Path -LiteralPath $paths.ManageScript -PathType Leaf)) {
+    $manageScriptPath = Resolve-RaymanMemoryManageScriptPath -Paths $paths -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace($manageScriptPath) -or -not (Test-Path -LiteralPath $manageScriptPath -PathType Leaf)) {
         return $null
     }
 
@@ -219,7 +351,8 @@ function Start-RaymanMemorySummarizer {
     )
 
     $paths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
-    if (-not (Test-Path -LiteralPath $paths.ManageScript -PathType Leaf)) {
+    $manageScriptPath = Resolve-RaymanMemoryManageScriptPath -Paths $paths -WorkspaceRoot $WorkspaceRoot
+    if ([string]::IsNullOrWhiteSpace($manageScriptPath) -or -not (Test-Path -LiteralPath $manageScriptPath -PathType Leaf)) {
         return $false
     }
 
@@ -233,7 +366,7 @@ function Start-RaymanMemorySummarizer {
         $argList = @(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
-            '-File', $paths.ManageScript,
+            '-File', $manageScriptPath,
             '-Action', 'summarize',
             '-WorkspaceRoot', $paths.WorkspaceRoot,
             '-TaskKey', $TaskKey,
@@ -265,7 +398,7 @@ function Get-RaymanMemoryPromptPreamble {
     if ([string]::IsNullOrWhiteSpace($query)) {
         $query = [string]$TaskKind
     }
-    $result = Invoke-RaymanMemoryAction -WorkspaceRoot $WorkspaceRoot -Action 'search' -Query $query -TaskKey $TaskKey -TaskKind $TaskKind -Tags $Tags -Limit 5 -RecentLimit 2 -Quiet
+    $result = Invoke-RaymanMemoryAction -WorkspaceRoot $WorkspaceRoot -Action 'search' -Query $query -TaskKey $TaskKey -TaskKind $TaskKind -Scope 'all' -Tags $Tags -Limit 5 -RecentLimit 2 -Quiet
     if ($null -eq $result) { return '' }
 
     $hintLines = New-Object System.Collections.Generic.List[string]
@@ -282,7 +415,16 @@ function Get-RaymanMemoryPromptPreamble {
         $summaryLines.Add(("- [{0}] {1}" -f [string]$summary.outcome, $text)) | Out-Null
     }
 
-    if ($hintLines.Count -eq 0 -and $summaryLines.Count -eq 0) {
+    $recallLines = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($result.recall_results)) {
+        $text = [string]$item.content
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $sourceKind = if ($item.PSObject.Properties['source_kind']) { [string]$item.source_kind } else { 'memory' }
+        $label = if ($item.PSObject.Properties['session_name'] -and -not [string]::IsNullOrWhiteSpace([string]$item.session_name)) { [string]$item.session_name } else { [string]$item.kind }
+        $recallLines.Add(("- [{0}] {1}: {2}" -f $sourceKind, $label, $text)) | Out-Null
+    }
+
+    if ($hintLines.Count -eq 0 -and $summaryLines.Count -eq 0 -and $recallLines.Count -eq 0) {
         return ''
     }
 
@@ -292,6 +434,12 @@ function Get-RaymanMemoryPromptPreamble {
     if ($hintLines.Count -gt 0) {
         $lines.Add('memory_hints:') | Out-Null
         foreach ($line in $hintLines) {
+            $lines.Add($line) | Out-Null
+        }
+    }
+    if ($recallLines.Count -gt 0) {
+        $lines.Add('recall_results:') | Out-Null
+        foreach ($line in $recallLines) {
             $lines.Add($line) | Out-Null
         }
     }

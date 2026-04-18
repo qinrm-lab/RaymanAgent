@@ -1,4 +1,4 @@
-$repeatErrorGuardPath = Join-Path $PSScriptRoot '..\utils\repeat_error_guard.ps1'
+﻿$repeatErrorGuardPath = Join-Path $PSScriptRoot '..\utils\repeat_error_guard.ps1'
 if (Test-Path -LiteralPath $repeatErrorGuardPath -PathType Leaf) {
     . $repeatErrorGuardPath -NoMain
 }
@@ -77,12 +77,12 @@ function Set-RaymanManagedTextBlock {
     }
 }
 
-if (-not (Get-Variable -Name 'RaymanCodexCompatibilityCache' -Scope Script -ErrorAction SilentlyContinue)) {
-    $script:RaymanCodexCompatibilityCache = @{}
+if (-not (Test-Path 'variable:global:RaymanCodexCompatibilityCache')) {
+    $global:RaymanCodexCompatibilityCache = @{}
 }
 
-if (-not (Get-Variable -Name 'RaymanCodexLoginOverrideSupportCache' -Scope Script -ErrorAction SilentlyContinue)) {
-    $script:RaymanCodexLoginOverrideSupportCache = @{}
+if (-not (Test-Path 'variable:global:RaymanCodexLoginOverrideSupportCache')) {
+    $global:RaymanCodexLoginOverrideSupportCache = @{}
 }
 
 function ConvertTo-RaymanStringKeyMap {
@@ -852,7 +852,7 @@ function Get-RaymanCodexConfigState {
     }
 
     $providerSections = New-Object System.Collections.Generic.List[string]
-    foreach ($match in @([regex]::Matches($raw, '(?ms)^\[model_providers\.(?<name>[^\]\r\n]+)\]\r?\n(?<body>.*?)(?=^\[|\z)'))) {
+    foreach ($match in @([regex]::Matches($raw, '(?ms)^\[model_providers\.(?<name>[^\]\r\n]+)\]\r?\n(?<body>.*?)(?=^\s*\[|^# RAYMAN:|\z)'))) {
         $name = [string]$match.Groups['name'].Value.Trim()
         if ([string]::IsNullOrWhiteSpace($name)) {
             continue
@@ -1062,8 +1062,6 @@ function Get-RaymanCodexDesktopBlockedThreadPatterns {
     return @(
         'answer \d+ questions to proceed',
         'question[s]? to proceed',
-        'request_user_input',
-        'acceptance criteria',
         '请选择',
         '需要回答',
         '需要先回答',
@@ -1839,7 +1837,7 @@ function Get-RaymanCodexYunyiTomlState {
             return [pscustomobject]$state
         }
 
-        $providerMatch = [regex]::Match($raw, '(?ms)^\[model_providers\.yunyi\]\r?\n(?<body>.*?)(?=^\[|\z)')
+        $providerMatch = [regex]::Match($raw, '(?ms)^\[model_providers\.yunyi\]\r?\n(?<body>.*?)(?=^\s*\[|^# RAYMAN:|\z)')
         $body = if ($providerMatch.Success) { [string]$providerMatch.Groups['body'].Value } else { [string]$raw }
 
         $baseUrlMatch = [regex]::Match($body, '(?im)^\s*base_url\s*=\s*"(?<value>[^"]+)"')
@@ -2210,7 +2208,7 @@ function Set-RaymanCodexYunyiConfigFile {
 
     $updatedRaw = [string]$existingRaw
     $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^# RAYMAN:YUNYI:BEGIN\r?\n.*?^# RAYMAN:YUNYI:END\r?\n?', '')
-    $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.yunyi\]\r?\n.*?(?=^\[|\z)', '')
+    $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.yunyi\]\r?\n.*?(?=^\s*\[|^# RAYMAN:|\z)', '')
     $updatedRaw = [regex]::Replace($updatedRaw, '(?im)^\s*model_provider\s*=\s*"yunyi"\s*\r?\n?', '')
     $updatedRaw = [regex]::Replace($updatedRaw, '(\r?\n){3,}', ($newline + $newline))
     $updatedRaw = $updatedRaw.Trim()
@@ -3180,7 +3178,7 @@ function Get-RaymanCodexWorkspaceTrustState {
         return [pscustomobject]$state
     }
 
-    $pattern = '(?ms)^' + [regex]::Escape($sectionHeader) + '\r?\n(?<body>.*?)(?=^\[|\z)'
+    $pattern = '(?ms)^' + [regex]::Escape($sectionHeader) + '\r?\n(?<body>.*?)(?=^\s*\[|^# RAYMAN:|\z)'
     $match = [regex]::Match($raw, $pattern)
     if (-not $match.Success) {
         return [pscustomobject]$state
@@ -3232,7 +3230,7 @@ function Set-RaymanCodexWorkspaceTrust {
     $trustLine = ('trust_level = "{0}"' -f $TrustLevel)
     $updated = $existing
     $changed = $false
-    $pattern = '(?ms)^' + [regex]::Escape($sectionHeader) + '\r?\n(?<body>.*?)(?=^\[|\z)'
+    $pattern = '(?ms)^' + [regex]::Escape($sectionHeader) + '\r?\n(?<body>.*?)(?=^\s*\[|^# RAYMAN:|\z)'
     $match = [regex]::Match($existing, $pattern)
 
     if ($match.Success) {
@@ -4711,6 +4709,10 @@ function Resolve-RaymanCodexLoginConfigOverrides {
         [string]$CodexHome = ''
     )
 
+    if (-not (Test-Path 'variable:global:RaymanCodexLoginOverrideSupportCache')) {
+        $global:RaymanCodexLoginOverrideSupportCache = @{}
+    }
+
     $specs = @(Get-RaymanCodexLoginConfigOverrideSpecs -Mode $Mode -WorkspaceRoot $WorkspaceRoot)
     $keys = @($specs | ForEach-Object { [string]$_.key } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     $result = [ordered]@{
@@ -4734,8 +4736,8 @@ function Resolve-RaymanCodexLoginConfigOverrides {
     }
 
     $cacheKey = ('{0}|{1}|{2}' -f [string]$codex.path, ([string]$Mode).Trim().ToLowerInvariant(), ($(if ([string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) { '' } else { Resolve-RaymanCodexWorkspacePath -WorkspaceRoot $WorkspaceRoot })))
-    if ($script:RaymanCodexLoginOverrideSupportCache.ContainsKey($cacheKey)) {
-        return $script:RaymanCodexLoginOverrideSupportCache[$cacheKey]
+    if ($global:RaymanCodexLoginOverrideSupportCache.ContainsKey($cacheKey)) {
+        return $global:RaymanCodexLoginOverrideSupportCache[$cacheKey]
     }
 
     $configArgs = New-Object System.Collections.Generic.List[string]
@@ -4759,7 +4761,7 @@ function Resolve-RaymanCodexLoginConfigOverrides {
     }
 
     $finalResult = [pscustomobject]$result
-    $script:RaymanCodexLoginOverrideSupportCache[$cacheKey] = $finalResult
+    $global:RaymanCodexLoginOverrideSupportCache[$cacheKey] = $finalResult
     return $finalResult
 }
 
@@ -5894,8 +5896,8 @@ function Get-RaymanCodexCliCompatibilityStatus {
     }
 
     $cacheKey = ('{0}|{1}' -f [string]$codex.path, [string]$context.codex_home)
-    if (-not $ForceRefresh -and $script:RaymanCodexCompatibilityCache.ContainsKey($cacheKey)) {
-        return $script:RaymanCodexCompatibilityCache[$cacheKey]
+    if (-not $ForceRefresh -and $global:RaymanCodexCompatibilityCache.ContainsKey($cacheKey)) {
+        return $global:RaymanCodexCompatibilityCache[$cacheKey]
     }
 
     $minimumVersion = '0.116.0'
@@ -5936,7 +5938,7 @@ function Get-RaymanCodexCliCompatibilityStatus {
             output = $output
             context = $context
         }
-        $script:RaymanCodexCompatibilityCache[$cacheKey] = $result
+        $global:RaymanCodexCompatibilityCache[$cacheKey] = $result
         return $result
     }
 
@@ -5950,7 +5952,7 @@ function Get-RaymanCodexCliCompatibilityStatus {
         output = if ([string]::IsNullOrWhiteSpace($output)) { [string]$versionInfo.raw } else { $output }
         context = $context
     }
-    $script:RaymanCodexCompatibilityCache[$cacheKey] = $result
+    $global:RaymanCodexCompatibilityCache[$cacheKey] = $result
     return $result
 }
 
@@ -5987,7 +5989,7 @@ function Ensure-RaymanCodexCliCompatible {
             context = $compatibility.context
         }
         $cacheKey = ('{0}|{1}' -f [string]$codex.path, [string](Get-RaymanMapValue -Map $compatibility.context -Key 'codex_home' -Default ''))
-        $script:RaymanCodexCompatibilityCache[$cacheKey] = $result
+        $global:RaymanCodexCompatibilityCache[$cacheKey] = $result
         return $result
     }
 
@@ -6005,13 +6007,13 @@ function Ensure-RaymanCodexCliCompatible {
             context = $context
         }
         $cacheKey = ('{0}|{1}' -f [string]$codex.path, [string](Get-RaymanMapValue -Map $context -Key 'codex_home' -Default ''))
-        $script:RaymanCodexCompatibilityCache[$cacheKey] = $result
+        $global:RaymanCodexCompatibilityCache[$cacheKey] = $result
         return $result
     }
 
     $cacheKey = ('{0}|{1}' -f [string]$codex.path, [string](Get-RaymanMapValue -Map $context -Key 'codex_home' -Default ''))
-    if ($script:RaymanCodexCompatibilityCache.ContainsKey($cacheKey)) {
-        $script:RaymanCodexCompatibilityCache.Remove($cacheKey)
+    if ($global:RaymanCodexCompatibilityCache.ContainsKey($cacheKey)) {
+        $global:RaymanCodexCompatibilityCache.Remove($cacheKey)
     }
 
     $compatibilityAfter = Get-RaymanCodexCliCompatibilityStatus -WorkspaceRoot $WorkspaceRoot -AccountAlias $AccountAlias -ForceRefresh
@@ -6025,7 +6027,7 @@ function Ensure-RaymanCodexCliCompatible {
         output = if ([string]::IsNullOrWhiteSpace([string]$compatibilityAfter.output)) { [string]$updateResult.output } else { [string]$compatibilityAfter.output }
         context = $context
     }
-    $script:RaymanCodexCompatibilityCache[$cacheKey] = $result
+    $global:RaymanCodexCompatibilityCache[$cacheKey] = $result
     return $result
 }
 

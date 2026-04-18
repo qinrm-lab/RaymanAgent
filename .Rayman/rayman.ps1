@@ -324,7 +324,7 @@ function Show-Help {
   if (Get-Command Format-RaymanHelpText -ErrorAction SilentlyContinue) {
     $helpText = (Format-RaymanHelpText -WorkspaceRoot $script:RaymanCliWorkspaceRoot -Surface pwsh)
   } else {
-    $helpVersion = 'v165'
+    $helpVersion = 'v164'
     if (Get-Command Get-RaymanCatalogVersionToken -ErrorAction SilentlyContinue) {
       $helpVersion = Get-RaymanCatalogVersionToken -WorkspaceRoot $script:RaymanCliWorkspaceRoot
     }
@@ -1043,6 +1043,14 @@ switch ($cmd) {
     & "$PSScriptRoot\scripts\memory\manage_memory.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Action search @CliArgs
     break
   }
+  "context-audit" {
+    & "$PSScriptRoot\scripts\agents\context_audit.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs
+    break
+  }
+  "skills" {
+    & "$PSScriptRoot\scripts\skills\manage_skills.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path @CliArgs
+    break
+  }
 
   "doctor" {
     $doctorArgs = @($CliArgs)
@@ -1433,6 +1441,7 @@ switch ($cmd) {
   "state-save" { & "$PSScriptRoot\scripts\state\save_state.ps1" @CliArgs; break }
   "state-list" { & "$PSScriptRoot\scripts\state\list_state.ps1" @CliArgs; break }
   "state-resume" { & "$PSScriptRoot\scripts\state\resume_state.ps1" @CliArgs; break }
+  "rollback" { & "$PSScriptRoot\scripts\state\rollback_state.ps1" @CliArgs; break }
   "worktree-create" { & "$PSScriptRoot\scripts\state\worktree_create.ps1" @CliArgs; break }
   "test-fix" { & "$PSScriptRoot\scripts\repair\run_tests_and_fix.ps1" @CliArgs; break }
   "dist-sync" { & "$PSScriptRoot\scripts\release\sync_dist_from_src.ps1" -WorkspaceRoot (Resolve-Path (Join-Path $PSScriptRoot "..")).Path -Validate; break }

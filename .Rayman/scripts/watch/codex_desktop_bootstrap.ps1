@@ -6,6 +6,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$savedCodexDesktopBootstrapCliState = @{
+  StatePath = [string]$StatePath
+  NoMain = [bool]$NoMain
+}
+
 $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
   throw "common.ps1 not found: $commonPath"
@@ -23,6 +28,13 @@ if (-not (Test-Path -LiteralPath $embeddedLibPath -PathType Leaf)) {
   throw "embedded_watchers.lib.ps1 not found: $embeddedLibPath"
 }
 . $embeddedLibPath
+$codexManageScript = Join-Path $PSScriptRoot '..\codex\manage_accounts.ps1'
+if (Test-Path -LiteralPath $codexManageScript -PathType Leaf) {
+  . $codexManageScript -NoMain
+}
+
+$StatePath = [string]$savedCodexDesktopBootstrapCliState.StatePath
+$NoMain = [bool]$savedCodexDesktopBootstrapCliState.NoMain
 
 function Get-RaymanCodexDesktopBootstrapDefaultStatePath {
   $localAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
@@ -84,6 +96,22 @@ function Get-RaymanCodexDesktopActiveSessionSeconds {
 
 function Get-RaymanCodexDesktopStopGraceSeconds {
   return (Get-RaymanEnvInt -Name 'RAYMAN_CODEX_DESKTOP_STOP_GRACE_SECONDS' -Default 900 -Min 60 -Max 86400)
+}
+
+function Get-RaymanCodexDesktopBindingAutoApplySignature {
+  param(
+    [object]$Plan,
+    [string]$SessionId = ''
+  )
+
+  $baseSignature = [string](Get-RaymanMapValue -Map $Plan -Key 'signature' -Default '')
+  if ([string]::IsNullOrWhiteSpace([string]$baseSignature)) {
+    return ''
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$SessionId)) {
+    return $baseSignature
+  }
+  return ('{0}|session={1}' -f $baseSignature, [string]$SessionId)
 }
 
 function Write-RaymanCodexDesktopBootstrapReport {
@@ -232,6 +260,11 @@ function Save-RaymanCodexDesktopBootstrapState {
       last_stop_attempt_at = [string](Get-RaymanMapValue -Map $entry -Key 'last_stop_attempt_at' -Default '')
       watch_state = [string](Get-RaymanMapValue -Map $entry -Key 'watch_state' -Default '')
       last_error = [string](Get-RaymanMapValue -Map $entry -Key 'last_error' -Default '')
+      last_binding_auto_apply_signature = [string](Get-RaymanMapValue -Map $entry -Key 'last_binding_auto_apply_signature' -Default '')
+      last_binding_auto_apply_at = [string](Get-RaymanMapValue -Map $entry -Key 'last_binding_auto_apply_at' -Default '')
+      last_binding_auto_apply_success = [bool](Get-RaymanMapValue -Map $entry -Key 'last_binding_auto_apply_success' -Default $false)
+      last_binding_auto_apply_reason = [string](Get-RaymanMapValue -Map $entry -Key 'last_binding_auto_apply_reason' -Default '')
+      last_binding_auto_apply_error = [string](Get-RaymanMapValue -Map $entry -Key 'last_binding_auto_apply_error' -Default '')
     }
   }
   Write-RaymanUtf8NoBom -Path ([string]$State.StateFilePath) -Content (($payload | ConvertTo-Json -Depth 8).TrimEnd() + "`n")
@@ -393,6 +426,8 @@ function Invoke-RaymanCodexDesktopBootstrapCycle {
     $activityAt = ConvertTo-RaymanNullableDateTime -Value ([string]$entry.activity_at)
     $activityAdvanced = ($null -ne $lastObservedAt -and $null -ne $activityAt -and [datetime]$activityAt -gt [datetime]$lastObservedAt)
     $isConfirmedActive = ($State.ActiveWorkspaces.Contains($key) -or $sessionChanged -or $activityAdvanced)
+    $existingActive = Get-RaymanMapValue -Map $State.ActiveWorkspaces -Key $key -Default $null
+    $promotedActive = ($null -eq $existingActive)
 
     $newEntry = [ordered]@{
       workspace_root = [string]$entry.workspace_root
@@ -404,10 +439,14 @@ function Invoke-RaymanCodexDesktopBootstrapCycle {
       last_stop_attempt_at = [string](Get-RaymanMapValue -Map $existing -Key 'last_stop_attempt_at' -Default '')
       watch_state = $(if ($isConfirmedActive) { [string](Get-RaymanMapValue -Map $existing -Key 'watch_state' -Default 'desktop_active_index') } else { 'desktop_observed' })
       last_error = [string](Get-RaymanMapValue -Map $existing -Key 'last_error' -Default '')
+      last_binding_auto_apply_signature = [string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_signature' -Default '')
+      last_binding_auto_apply_at = [string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_at' -Default '')
+      last_binding_auto_apply_success = [bool](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_success' -Default $false)
+      last_binding_auto_apply_reason = [string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_reason' -Default '')
+      last_binding_auto_apply_error = [string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_error' -Default '')
     }
 
     if ($isConfirmedActive) {
-      $existingActive = Get-RaymanMapValue -Map $State.ActiveWorkspaces -Key $key -Default $null
       $State.ActiveWorkspaces[$key] = [ordered]@{
         workspace_root = [string]$entry.workspace_root
         last_session_id = [string]$entry.desktop_session_id
@@ -419,6 +458,46 @@ function Invoke-RaymanCodexDesktopBootstrapCycle {
       $confirmedEntries.Add($entry) | Out-Null
     } else {
       $null = $State.ActiveWorkspaces.Remove($key)
+    }
+
+    if (
+      $isConfirmedActive -and
+      (Get-Command Get-RaymanCodexWorkspaceBindingAutoApplyPlan -ErrorAction SilentlyContinue) -and
+      (Get-Command Invoke-RaymanCodexWorkspaceBindingAutoApply -ErrorAction SilentlyContinue)
+    ) {
+      $bindingPlan = Get-RaymanCodexWorkspaceBindingAutoApplyPlan -WorkspaceRoot ([string]$entry.workspace_root)
+      $bindingSignature = Get-RaymanCodexDesktopBindingAutoApplySignature -Plan $bindingPlan -SessionId ([string]$entry.desktop_session_id)
+      $lastBindingSignature = [string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_signature' -Default '')
+      $lastBindingAt = ConvertTo-RaymanNullableDateTime -Value ([string](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_at' -Default ''))
+      $lastBindingSuccess = [bool](Get-RaymanMapValue -Map $existing -Key 'last_binding_auto_apply_success' -Default $false)
+      $bindingRetrySeconds = Get-RaymanCodexWorkspaceBindingAutoApplyRetrySeconds -WorkspaceRoot ([string]$entry.workspace_root)
+      $bindingRetryDue = (-not $lastBindingSuccess -and ($null -eq $lastBindingAt -or (((Get-Date) - [datetime]$lastBindingAt).TotalSeconds -ge $bindingRetrySeconds)))
+      $bindingShouldApply = (
+        [bool](Get-RaymanMapValue -Map $bindingPlan -Key 'applicable' -Default $false) -and
+        ($promotedActive -or $sessionChanged -or ($bindingSignature -ne $lastBindingSignature) -or $bindingRetryDue)
+      )
+
+      if ($bindingShouldApply) {
+        $bindingApply = Invoke-RaymanCodexWorkspaceBindingAutoApply -WorkspaceRoot ([string]$entry.workspace_root) -Reason 'codex-desktop-active-session' -SessionId ([string]$entry.desktop_session_id)
+        $newEntry.last_binding_auto_apply_signature = [string]$bindingSignature
+        $newEntry.last_binding_auto_apply_at = $now.ToString('o')
+        $newEntry.last_binding_auto_apply_success = [bool]$bindingApply.success
+        $newEntry.last_binding_auto_apply_reason = [string]$bindingApply.detail
+        $newEntry.last_binding_auto_apply_error = if ([bool]$bindingApply.success) { '' } else { [string]$bindingApply.detail }
+        $results.Add([pscustomobject]@{
+            workspace_root = [string]$entry.workspace_root
+            action = 'binding-auto-apply'
+            success = [bool]$bindingApply.success
+            exit_code = if ([bool]$bindingApply.success) { 0 } else { 1 }
+            state = if ([bool]$bindingApply.success) { 'binding_applied' } else { 'binding_apply_failed' }
+          }) | Out-Null
+      } elseif (-not [bool](Get-RaymanMapValue -Map $bindingPlan -Key 'applicable' -Default $false)) {
+        $newEntry.last_binding_auto_apply_signature = ''
+        $newEntry.last_binding_auto_apply_at = ''
+        $newEntry.last_binding_auto_apply_success = $false
+        $newEntry.last_binding_auto_apply_reason = [string](Get-RaymanMapValue -Map $bindingPlan -Key 'reason' -Default '')
+        $newEntry.last_binding_auto_apply_error = ''
+      }
     }
 
     $shouldStart = ($isConfirmedActive -and ($sessionChanged -or $null -eq $lastStartAttemptAt -or (((Get-Date) - [datetime]$lastStartAttemptAt).TotalSeconds -ge 300)))
@@ -460,6 +539,11 @@ function Invoke-RaymanCodexDesktopBootstrapCycle {
       last_stop_attempt_at = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_stop_attempt_at' -Default '')
       watch_state = [string](Get-RaymanMapValue -Map $existingRaw -Key 'watch_state' -Default '')
       last_error = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_error' -Default '')
+      last_binding_auto_apply_signature = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_binding_auto_apply_signature' -Default '')
+      last_binding_auto_apply_at = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_binding_auto_apply_at' -Default '')
+      last_binding_auto_apply_success = [bool](Get-RaymanMapValue -Map $existingRaw -Key 'last_binding_auto_apply_success' -Default $false)
+      last_binding_auto_apply_reason = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_binding_auto_apply_reason' -Default '')
+      last_binding_auto_apply_error = [string](Get-RaymanMapValue -Map $existingRaw -Key 'last_binding_auto_apply_error' -Default '')
     }
     $workspaceRoot = [string]$existing.workspace_root
     $lastActivityAt = ConvertTo-RaymanNullableDateTime -Value ([string]$existing.last_session_activity_at)

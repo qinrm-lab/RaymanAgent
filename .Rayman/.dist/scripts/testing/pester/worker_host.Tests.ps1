@@ -91,4 +91,97 @@ Describe 'worker host auth guards' {
     }
   }
 
+  It 'keeps per-client staged sessions isolated' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_host_client_isolation_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+
+      $clientA = [pscustomobject]@{
+        schema = 'rayman.worker.client_context.v1'
+        client_id = 'aaaaaaaaaaaaaaaa'
+        machine_name = 'DEV-A'
+        source_workspace_root = 'C:\dev\a'
+        workspace_name = 'a'
+      }
+      $clientB = [pscustomobject]@{
+        schema = 'rayman.worker.client_context.v1'
+        client_id = 'bbbbbbbbbbbbbbbb'
+        machine_name = 'DEV-B'
+        source_workspace_root = 'C:\dev\b'
+        workspace_name = 'b'
+      }
+
+      Set-RaymanWorkerClientSyncManifest -WorkspaceRoot $root -ClientContext $clientA -SyncManifest ([pscustomobject]@{
+          schema = 'rayman.worker.sync_manifest.v1'
+          generated_at = (Get-Date).ToString('o')
+          mode = 'staged'
+          source_workspace_root = 'C:\dev\a'
+          staging_root = (Join-Path $root '.Rayman\runtime\worker\staging\aaaaaaaaaaaaaaaa\stage-a')
+        }) | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\runtime\worker\staging\aaaaaaaaaaaaaaaa\stage-a') | Out-Null
+      Set-RaymanWorkerClientSyncManifest -WorkspaceRoot $root -ClientContext $clientB -SyncManifest ([pscustomobject]@{
+          schema = 'rayman.worker.sync_manifest.v1'
+          generated_at = (Get-Date).ToString('o')
+          mode = 'staged'
+          source_workspace_root = 'C:\dev\b'
+          staging_root = (Join-Path $root '.Rayman\runtime\worker\staging\bbbbbbbbbbbbbbbb\stage-b')
+        }) | Out-Null
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman\runtime\worker\staging\bbbbbbbbbbbbbbbb\stage-b') | Out-Null
+
+      $statusA = Invoke-RaymanWorkerRequestData -WorkspaceRoot $root -HostStartTime '' -RequestData ([pscustomobject]@{
+          method = 'GET'
+          path = '/status'
+          headers = @{}
+          query_string = @{ client_id = 'aaaaaaaaaaaaaaaa' }
+          body_json = $null
+          body_bytes = @()
+        })
+      $statusB = Invoke-RaymanWorkerRequestData -WorkspaceRoot $root -HostStartTime '' -RequestData ([pscustomobject]@{
+          method = 'GET'
+          path = '/status'
+          headers = @{}
+          query_string = @{ client_id = 'bbbbbbbbbbbbbbbb' }
+          body_json = $null
+          body_bytes = @()
+        })
+
+      [string]$statusA.client_session.client_id | Should -Be 'aaaaaaaaaaaaaaaa'
+      [string]$statusB.client_session.client_id | Should -Be 'bbbbbbbbbbbbbbbb'
+      [string]$statusA.execution_root | Should -Match 'stage-a$'
+      [string]$statusB.execution_root | Should -Match 'stage-b$'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'rejects attached sync requests on shared workers' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_host_reject_attached_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+
+      {
+        Invoke-RaymanWorkerRequestData -WorkspaceRoot $root -HostStartTime '' -RequestData ([pscustomobject]@{
+            method = 'POST'
+            path = '/sync'
+            headers = @{}
+            query_string = @{}
+            body_json = [pscustomobject]@{
+              mode = 'attached'
+              client_context = [pscustomobject]@{
+                schema = 'rayman.worker.client_context.v1'
+                client_id = 'cccccccccccccccc'
+                machine_name = 'DEV-C'
+                source_workspace_root = 'C:\dev\c'
+                workspace_name = 'c'
+              }
+            }
+            body_bytes = @()
+          })
+      } | Should -Throw '*shared worker only supports staged mode*'
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 }

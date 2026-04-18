@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
   [switch]$NoMain,
   [Parameter(Position=0)][string]$Action = 'status',
@@ -7,6 +7,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$manageAccountsIsMain = (-not $NoMain)
 
 $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (-not (Test-Path -LiteralPath $commonPath -PathType Leaf)) {
@@ -888,7 +890,7 @@ function Set-RaymanCodexAliasYunyiConfig {
 
   $updatedRaw = [string]$existingRaw
   $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^# RAYMAN:YUNYI:BEGIN\r?\n.*?^# RAYMAN:YUNYI:END\r?\n?', '')
-  $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.yunyi\]\r?\n.*?(?=^\[|\z)', '')
+  $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.yunyi\]\r?\n.*?(?=^\s*\[|^# RAYMAN:|\z)', '')
   $updatedRaw = [regex]::Replace($updatedRaw, '(?im)^\s*model_provider\s*=\s*"yunyi"\s*\r?\n?', '')
   $updatedRaw = [regex]::Replace($updatedRaw, '(\r?\n){3,}', ($newline + $newline))
   $updatedRaw = $updatedRaw.Trim()
@@ -1928,34 +1930,50 @@ function Set-RaymanCodexDesktopConfigMode {
   $existingRaw = if (Test-Path -LiteralPath $configPath -PathType Leaf) { Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 } else { '' }
   $newline = if ([string]$existingRaw -match "`r`n") { "`r`n" } else { "`n" }
 
-  if ($normalizedMode -eq 'yunyi') {
-    $backupCandidates = @(
-      (Join-Path $desktopHome 'config.toml.yunyi')
-      (Get-RaymanCodexDesktopModeBackupPath -Alias $Alias -Name 'desktop.config.yunyi.toml')
-      (Get-RaymanCodexDesktopModeBackupPath -Alias $Alias -Name 'desktop.config.last-non-chatgpt.toml')
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+if ($normalizedMode -in @('api', 'yunyi')) {
+      $aliasHome = Get-RaymanCodexAccountHomePath -Alias $Alias
+      $aliasConfigPath = Get-RaymanCodexAccountConfigPath -CodexHome $aliasHome
+      
+      if (-not [string]::IsNullOrWhiteSpace([string]$aliasConfigPath) -and (Test-Path -LiteralPath $aliasConfigPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $aliasConfigPath -Destination $configPath -Force
+        Ensure-RaymanCodexAccountConfig -CodexHome $desktopHome | Out-Null
+        return [pscustomobject]@{
+          success = $true
+          path = $configPath
+          reason = 'restored_from_alias'
+          restore_source = [string]$aliasConfigPath
+        }
+      } elseif ($normalizedMode -eq 'yunyi') {
+        # Fallback to backups if alias config is missing but restoring yunyi
+        $backupCandidates = @(
+          (Join-Path $desktopHome 'config.toml.yunyi')
+          (Get-RaymanCodexDesktopModeBackupPath -Alias $Alias -Name 'desktop.config.yunyi.toml')
+          (Get-RaymanCodexDesktopModeBackupPath -Alias $Alias -Name 'desktop.config.last-non-chatgpt.toml')
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
 
-    $restorePath = $backupCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    if ($null -eq $restorePath -or [string]::IsNullOrWhiteSpace([string]$restorePath)) {
-      return [pscustomobject]@{
-        success = $false
-        path = $configPath
-        reason = 'yunyi_config_backup_missing'
-      }
-    }
+        $restorePath = $backupCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if ($null -eq $restorePath -or [string]::IsNullOrWhiteSpace([string]$restorePath)) {
+          return [pscustomobject]@{
+            success = $false
+            path = $configPath
+            reason = 'yunyi_config_backup_missing'
+          }
+        }
 
-    Copy-Item -LiteralPath ([string]$restorePath) -Destination $configPath -Force
-    Ensure-RaymanCodexAccountConfig -CodexHome $desktopHome | Out-Null
-    return [pscustomobject]@{
-      success = $true
-      path = $configPath
-      reason = 'restored_from_backup'
-      restore_source = [string]$restorePath
+        Copy-Item -LiteralPath ([string]$restorePath) -Destination $configPath -Force
+        Ensure-RaymanCodexAccountConfig -CodexHome $desktopHome | Out-Null
+        return [pscustomobject]@{
+          success = $true
+          path = $configPath
+          reason = 'restored_from_backup'
+          restore_source = [string]$restorePath
+        }
     }
   }
 
   $updatedRaw = [string]$existingRaw
-  $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.[^\]\r\n]+\]\r?\n.*?(?=^\[|\z)', '')
+  $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^# RAYMAN:YUNYI:BEGIN\r?\n.*?# RAYMAN:YUNYI:END\r?\n?', '')
+  $updatedRaw = [regex]::Replace($updatedRaw, '(?ms)^\[model_providers\.[^\]\r\n]+\]\r?\n.*?(?=^\s*\[|^# RAYMAN:|\z)', '')
   $updatedRaw = [regex]::Replace($updatedRaw, '(?im)^\s*model_provider\s*=.*\r?\n?', '')
   $updatedRaw = [regex]::Replace($updatedRaw, '(\r?\n){3,}', ($newline + $newline))
   $updatedRaw = $updatedRaw.Trim()
@@ -2690,7 +2708,7 @@ function Invoke-RaymanCodexDesktopStatusValidation {
   $inspectResult = $null
   try {
     $inspectRaw = & $psHost -NoProfile -ExecutionPolicy Bypass -File $inspectScriptPath -WorkspaceRoot $resolvedWorkspace -WindowTitleRegex '.*Codex.*' -TimeoutSeconds 5 -MaxDepth 8 -OutFile $inspectPath -Json
-    $inspectResult = $inspectRaw | ConvertFrom-Json -Depth 20
+    $inspectResult = ConvertFrom-RaymanJsonText -Text ([string]$inspectRaw)
   } catch {
     $inspectResult = [pscustomobject]@{
       success = $false
@@ -2750,7 +2768,7 @@ function Invoke-RaymanCodexDesktopStatusValidation {
   $flowResult = $null
   try {
     $flowRaw = & $psHost -NoProfile -ExecutionPolicy Bypass -File $flowScriptPath -WorkspaceRoot $resolvedWorkspace -FlowFile $flowPath -Require -Json
-    $flowResult = $flowRaw | ConvertFrom-Json -Depth 20
+    $flowResult = ConvertFrom-RaymanJsonText -Text ([string]$flowRaw)
   } catch {
     $flowResult = [pscustomobject]@{
       success = $false
@@ -3598,6 +3616,144 @@ function Sync-WorkspaceTrust {
   return $result
 }
 
+function Get-RaymanCodexWorkspaceBindingAutoApplyEnabled {
+  param([string]$WorkspaceRoot = '')
+
+  return (Get-RaymanWorkspaceEnvBool -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_CODEX_WORKSPACE_BINDING_AUTO_APPLY_ENABLED' -Default $true)
+}
+
+function Get-RaymanCodexWorkspaceBindingAutoApplyRetrySeconds {
+  param([string]$WorkspaceRoot = '')
+
+  $raw = [string](Get-RaymanWorkspaceEnvString -WorkspaceRoot $WorkspaceRoot -Name 'RAYMAN_CODEX_WORKSPACE_BINDING_AUTO_APPLY_RETRY_SECONDS' -Default '300')
+  $value = 300
+  try {
+    $value = [int]$raw
+  } catch {
+    $value = 300
+  }
+
+  if ($value -lt 30) {
+    return 30
+  }
+  if ($value -gt 3600) {
+    return 3600
+  }
+  return $value
+}
+
+function Get-RaymanCodexWorkspaceBindingAutoApplyPlan {
+  param([string]$WorkspaceRoot)
+
+  $resolvedWorkspace = Resolve-WorkspaceRootInput -InputRoot $WorkspaceRoot
+  $enabled = Get-RaymanCodexWorkspaceBindingAutoApplyEnabled -WorkspaceRoot $resolvedWorkspace
+  $context = Resolve-RaymanCodexContext -WorkspaceRoot $resolvedWorkspace
+  $result = [ordered]@{
+    enabled = [bool]$enabled
+    applicable = $false
+    workspace_root = $resolvedWorkspace
+    account_alias = [string]$context.account_alias
+    binding_profile = [string]$context.binding_profile
+    mode = ''
+    signature = ''
+    reason = 'workspace_unbound'
+  }
+
+  if (-not [bool]$enabled) {
+    $result.reason = 'disabled'
+    return [pscustomobject]$result
+  }
+  if (-not (Test-RaymanCodexWindowsHost)) {
+    $result.reason = 'non_windows_host'
+    return [pscustomobject]$result
+  }
+  if (-not [bool]$context.managed) {
+    $result.reason = 'workspace_unbound'
+    return [pscustomobject]$result
+  }
+  if (-not [bool]$context.account_known) {
+    $result.reason = 'unknown_alias'
+    return [pscustomobject]$result
+  }
+
+  $record = $context.account_record
+  $mode = Normalize-RaymanCodexAuthModeLast -Mode ([string](Get-RaymanMapValue -Map $record -Key 'desktop_target_mode' -Default (Get-RaymanMapValue -Map $record -Key 'last_login_mode' -Default (Get-RaymanMapValue -Map $record -Key 'auth_mode_last' -Default ''))))
+  $result.mode = [string]$mode
+  if ($mode -notin @('web', 'api', 'yunyi')) {
+    $result.reason = 'desktop_activation_not_applicable'
+    return [pscustomobject]$result
+  }
+
+  $result.applicable = $true
+  $result.signature = ('{0}|{1}' -f [string]$context.account_alias, [string]$mode)
+  $result.reason = 'ready'
+  return [pscustomobject]$result
+}
+
+function Invoke-RaymanCodexWorkspaceBindingAutoApply {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$Reason = 'bootstrap',
+    [string]$SessionId = '',
+    [switch]$Force
+  )
+
+  $plan = Get-RaymanCodexWorkspaceBindingAutoApplyPlan -WorkspaceRoot $WorkspaceRoot
+  $result = [ordered]@{
+    workspace_root = [string]$plan.workspace_root
+    reason = [string]$Reason
+    session_id = [string]$SessionId
+    enabled = [bool]$plan.enabled
+    applicable = [bool]$plan.applicable
+    attempted = $false
+    success = $false
+    alias = [string]$plan.account_alias
+    mode = [string]$plan.mode
+    signature = [string]$plan.signature
+    status = if ([bool]$plan.enabled) { 'skipped' } else { 'disabled' }
+    detail = [string]$plan.reason
+    activation = $null
+    auth_status = $null
+    trust_synced = $false
+  }
+
+  if (-not [bool]$plan.enabled -or -not [bool]$plan.applicable) {
+    return [pscustomobject]$result
+  }
+
+  $result.attempted = $true
+  try {
+    $account = Ensure-RaymanCodexAccount -Alias ([string]$plan.account_alias)
+    $activation = Invoke-RaymanCodexDesktopAliasActivation -WorkspaceRoot ([string]$plan.workspace_root) -Alias ([string]$plan.account_alias) -Account $account -Mode ([string]$plan.mode)
+    $result.activation = $activation
+    if (-not [bool](Get-RaymanMapValue -Map $activation -Key 'success' -Default $false)) {
+      $result.status = 'failed'
+      $result.detail = [string](Get-RaymanMapValue -Map $activation -Key 'reason' -Default 'desktop_activation_failed')
+      $result.auth_status = Get-RaymanCodexLoginStatus -WorkspaceRoot ([string]$plan.workspace_root) -AccountAlias ([string]$plan.account_alias) -GuardStage 'codex.bootstrap'
+      return [pscustomobject]$result
+    }
+
+    $status = Get-RaymanMapValue -Map $activation -Key 'status' -Default $null
+    if ($null -eq $status) {
+      $status = Get-RaymanCodexLoginStatus -WorkspaceRoot ([string]$plan.workspace_root) -AccountAlias ([string]$plan.account_alias) -GuardStage 'codex.bootstrap'
+    }
+    $result.auth_status = $status
+    if ([bool](Get-RaymanMapValue -Map $status -Key 'authenticated' -Default $false)) {
+      Sync-WorkspaceTrust -WorkspaceRoot ([string]$plan.workspace_root) -Alias ([string]$plan.account_alias) | Out-Null
+      $result.trust_synced = $true
+    }
+
+    $result.success = $true
+    $result.status = 'applied'
+    $result.detail = [string](Get-RaymanMapValue -Map $activation -Key 'reason' -Default 'desktop_activation_applied')
+    return [pscustomobject]$result
+  } catch {
+    $result.status = 'failed'
+    $result.detail = $_.Exception.Message
+    return [pscustomobject]$result
+  }
+}
+
 function Invoke-ActionLogin {
   param(
     [string]$Alias,
@@ -3735,7 +3891,7 @@ function Invoke-ActionSwitch {
   )
   if ($shouldRepairWebSwitch) {
     Write-CodexWarn ("switch detected desktop/global web auth mismatch for alias={0}; triggering web relogin repair." -f $desiredAlias)
-    $repairLogin = Invoke-CodexAliasNativeLogin -Alias $desiredAlias -TargetWorkspaceRoot $resolvedWorkspace -Profile $desiredProfile -Mode 'web' -LogoutFirst
+    $repairLogin = Invoke-CodexAliasNativeLogin -Alias $desiredAlias -TargetWorkspaceRoot $resolvedWorkspace -Profile $desiredProfile -Mode 'web'
     if ($null -ne $repairLogin) {
       $status = Get-RaymanMapValue -Map $repairLogin -Key 'status' -Default $status
       $account = Get-RaymanMapValue -Map $repairLogin -Key 'account' -Default $account
@@ -3831,7 +3987,7 @@ function Invoke-ActionUpgrade {
   return $payload
 }
 
-if ($NoMain) {
+if (-not $manageAccountsIsMain) {
   return
 }
 
@@ -3900,3 +4056,5 @@ try {
 } catch {
   Exit-CodexError $_.Exception.Message
 }
+
+exit 0

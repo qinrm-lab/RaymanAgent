@@ -39,7 +39,8 @@ function Add-Check {
 function Test-NonEmptyFile {
   param(
     [string]$RelativePath,
-    [string[]]$RequiredTokens = @()
+    [string[]]$RequiredTokens = @(),
+    [string[]]$ForbiddenPatterns = @()
   )
 
   $fullPath = Join-Path $resolvedWorkspaceRoot $RelativePath
@@ -61,8 +62,25 @@ function Test-NonEmptyFile {
     }
   }
 
-  if ($missingTokens.Count -gt 0) {
-    Add-Check -Name $RelativePath -Passed $false -Detail ("missing tokens: {0}" -f (($missingTokens | ForEach-Object { $_ }) -join ', '))
+  $matchedForbiddenPatterns = New-Object System.Collections.Generic.List[string]
+  foreach ($pattern in $ForbiddenPatterns) {
+    if ([string]::IsNullOrWhiteSpace([string]$pattern)) {
+      continue
+    }
+    if ($raw -match [string]$pattern) {
+      $matchedForbiddenPatterns.Add([string]$pattern) | Out-Null
+    }
+  }
+
+  if ($missingTokens.Count -gt 0 -or $matchedForbiddenPatterns.Count -gt 0) {
+    $problems = New-Object System.Collections.Generic.List[string]
+    if ($missingTokens.Count -gt 0) {
+      $problems.Add(("missing tokens: {0}" -f (($missingTokens | ForEach-Object { $_ }) -join ', '))) | Out-Null
+    }
+    if ($matchedForbiddenPatterns.Count -gt 0) {
+      $problems.Add(("forbidden patterns matched: {0}" -f (($matchedForbiddenPatterns | ForEach-Object { $_ }) -join ', '))) | Out-Null
+    }
+    Add-Check -Name $RelativePath -Passed $false -Detail (($problems | ForEach-Object { $_ }) -join ' | ')
     return
   }
 
@@ -70,7 +88,7 @@ function Test-NonEmptyFile {
 }
 
 foreach ($assetContract in @(Get-RaymanManagedAssetContracts)) {
-  Test-NonEmptyFile -RelativePath ([string]$assetContract.relative_path) -RequiredTokens @($assetContract.required_tokens)
+  Test-NonEmptyFile -RelativePath ([string]$assetContract.relative_path) -RequiredTokens @($assetContract.required_tokens) -ForbiddenPatterns @($assetContract.forbidden_patterns)
 }
 
 if (-not $SkipContextRefresh) {
@@ -91,8 +109,21 @@ if (-not (Test-Path -LiteralPath $manualCommandValidator -PathType Leaf)) {
   Add-Check -Name 'manual-command-contracts' -Passed $false -Detail ("missing validator: {0}" -f $manualCommandValidator)
 } else {
   try {
-    $validatorJson = & $manualCommandValidator -WorkspaceRoot $resolvedWorkspaceRoot -AsJson
-    $validatorResult = ($validatorJson | ForEach-Object { [string]$_ }) -join [Environment]::NewLine | ConvertFrom-Json -ErrorAction Stop
+    $validatorOutput = @(& $manualCommandValidator -WorkspaceRoot $resolvedWorkspaceRoot -AsJson)
+    $validatorJson = (($validatorOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($validatorJson)) {
+      throw 'manual command validator returned no JSON payload'
+    }
+
+    $validatorResult = $validatorJson | ConvertFrom-Json -ErrorAction Stop
+    $missingProps = @(
+      @('passed', 'check_count', 'failure_count') |
+        Where-Object { -not $validatorResult.PSObject.Properties[[string]$_] }
+    )
+    if ($missingProps.Count -gt 0) {
+      throw ("manual command validator JSON missing properties: {0}" -f ($missingProps -join ', '))
+    }
+
     Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail ("checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count)
   } catch {
     Add-Check -Name 'manual-command-contracts' -Passed $false -Detail $_.Exception.Message

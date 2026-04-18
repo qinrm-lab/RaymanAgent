@@ -5,11 +5,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$emitJson = [bool]$AsJson
 
 # schema: rayman.manual_command_contracts.v1
 . (Join-Path $WorkspaceRoot '.Rayman\common.ps1')
 . (Join-Path $WorkspaceRoot '.Rayman\scripts\utils\command_catalog.ps1')
 . (Join-Path $WorkspaceRoot '.Rayman\scripts\agents\agent_asset_manifest.ps1')
+$AsJson = [System.Management.Automation.SwitchParameter]$emitJson
 
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $checks = New-Object 'System.Collections.Generic.List[object]'
@@ -185,6 +187,8 @@ function Invoke-UnitBackedManualCommandValidation {
   try {
     $runner = @"
 `$ErrorActionPreference = 'Stop'
+`$InformationPreference = 'SilentlyContinue'
+`$ProgressPreference = 'SilentlyContinue'
 `$pesterModule = Get-Module -ListAvailable -Name Pester | Where-Object { `$_.Version -ge [Version]'5.0.0' } | Sort-Object Version -Descending | Select-Object -First 1
 if (`$null -eq `$pesterModule) { throw 'Pester 5+ is not installed.' }
 Import-Module ([string]`$pesterModule.Path) -Force | Out-Null
@@ -192,12 +196,12 @@ Import-Module ([string]`$pesterModule.Path) -Force | Out-Null
 `$config.Run.Path = @('$fullPath')
 `$config.Run.PassThru = `$true
 `$config.Output.Verbosity = 'None'
-`$result = Invoke-Pester -Configuration `$config
+`$result = Invoke-Pester -Configuration `$config 6>`$null
 if ([int]`$result.FailedCount -gt 0) { exit 1 }
 exit 0
 "@
     Set-Content -LiteralPath $runnerPath -Value $runner -Encoding UTF8
-    $proc = Start-Process -FilePath ([string]$psHost.Source) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runnerPath) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $proc = Start-Process -FilePath ([string]$psHost.Source) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runnerPath) -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $detailSuffix = ''
     if ([int]$proc.ExitCode -ne 0 -and (Test-Path -LiteralPath $stderrPath -PathType Leaf)) {
       $stderrRaw = Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
@@ -308,8 +312,8 @@ $result = [pscustomobject]@{
   checks = @($checks.ToArray())
 }
 
-if ($AsJson) {
-  $result | ConvertTo-Json -Depth 8
+if ([bool]$AsJson) {
+  return ($result | ConvertTo-Json -Depth 8 -Compress)
 } else {
   foreach ($check in @($checks.ToArray())) {
     $status = if ($check.passed) { 'PASS' } else { 'FAIL' }

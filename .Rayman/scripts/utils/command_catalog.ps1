@@ -46,7 +46,7 @@ function Test-RaymanCatalogWindowsHost {
 function Get-RaymanCatalogVersionToken {
   param([string]$WorkspaceRoot)
 
-  $fallback = 'v165'
+  $fallback = 'v164'
   if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
     return $fallback
   }

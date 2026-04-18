@@ -172,6 +172,23 @@ Describe 'worker common helpers' {
     }
   }
 
+  It 'builds a stable client context from machine name and workspace root' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_client_context_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+
+      $first = Get-RaymanWorkerClientContext -WorkspaceRoot $root
+      $second = Get-RaymanWorkerClientContext -WorkspaceRoot $root
+
+      $first.client_id | Should -Be $second.client_id
+      [string]$first.client_id | Should -Match '^[0-9a-f]{16}$'
+      [string]$first.source_workspace_root | Should -Be (Resolve-Path -LiteralPath $root).Path
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'discovers a packaged download vsdbg payload before legacy runtime tools or PATH' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_vsdbg_download_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -251,11 +268,40 @@ Describe 'worker common helpers' {
       $status.control.base_url | Should -Be ('http://127.0.0.1:{0}/' -f (Get-RaymanWorkerControlPort))
       $status.control.scope | Should -Be 'loopback'
       $status.control.auth_required | Should -Be $false
+      $status.shared_worker | Should -Be $true
+      $status.session_isolation | Should -Be 'multi_client_staged_only'
+      @($status.supported_sync_modes) | Should -Contain 'staged'
       $status.firewall_ready | Should -Be $true
       $status.firewall.required | Should -Be $false
     } finally {
       [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED', $lanBackup)
       [Environment]::SetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN', $tokenBackup)
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'records per-client session summaries in status snapshots' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_status_client_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
+      Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
+      $client = Get-RaymanWorkerClientContext -WorkspaceRoot $root
+      $syncManifest = [pscustomobject]@{
+        schema = 'rayman.worker.sync_manifest.v1'
+        generated_at = (Get-Date).ToString('o')
+        mode = 'staged'
+        source_workspace_root = $root
+        staging_root = (Join-Path (Join-Path (Join-Path $root '.Rayman\runtime\worker\staging') ([string]$client.client_id)) 'stage-test')
+      }
+
+      New-Item -ItemType Directory -Force -Path ([string]$syncManifest.staging_root) | Out-Null
+      Set-RaymanWorkerClientSyncManifest -WorkspaceRoot $root -ClientContext $client -SyncManifest $syncManifest | Out-Null
+      $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $root -ClientContext $client
+
+      [string]$status.client_session.client_id | Should -Be ([string]$client.client_id)
+      [string]$status.client_session.workspace_mode | Should -Be 'staged'
+      [string]$status.client_session.source_workspace_root | Should -Be $root
+    } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

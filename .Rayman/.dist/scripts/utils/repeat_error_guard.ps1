@@ -9,7 +9,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not (Get-Command Get-RaymanMapValue -ErrorAction SilentlyContinue)) {
+if (-not (Test-Path 'Function:\Get-RaymanMapValue')) {
   function Get-RaymanMapValue {
     param(
       [object]$Map,
@@ -45,7 +45,7 @@ if (-not (Get-Command Get-RaymanMapValue -ErrorAction SilentlyContinue)) {
   }
 }
 
-if (-not (Get-Command Write-RaymanUtf8NoBom -ErrorAction SilentlyContinue)) {
+if (-not (Test-Path 'Function:\Write-RaymanUtf8NoBom')) {
   function Write-RaymanUtf8NoBom {
     param(
       [string]$Path,

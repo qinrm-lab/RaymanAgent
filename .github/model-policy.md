@@ -38,6 +38,7 @@
 
 - review prompt 路由由 `.Rayman/config/model_routing.json` 管理。
 - Codex subagent / role 默认值由 `.Rayman/config/codex_agents/*.toml` 管理。
+- `.Rayman/config/codex_agents/*.toml` 默认不 pin 具体 OpenAI model snapshot，而是继承 parent session model；推荐把 parent session 保持在当前 GPT-5 系列最新合适模型上，只有在任务明确要求或额度/性能约束需要时才显式覆盖。
 - OpenAI / model / SDK / docs 相关任务应优先走 OpenAI Docs MCP，而不是依赖过期记忆。
 - browser / web / e2e 相关任务优先走 Playwright MCP；desktop / UIA / WinForms / WPF / MAUI(Windows) 相关任务优先走 Rayman WinApp MCP。
 

@@ -10,6 +10,7 @@
   "memory_hints": [
     {
       "id": 2,
+      "source_kind": "memory",
       "kind": "constraint",
       "scope": "workspace",
       "task_kind": "",
@@ -23,8 +24,86 @@
       "readonly": true
     }
   ],
-  "recent_task_summaries": [],
+  "session_recalls": [
+    {
+      "id": 1,
+      "source_kind": "session_manual",
+      "kind": "session_recall",
+      "scope": "session",
+      "task_kind": "",
+      "content": "Paused session covering rollback verification and release parity.",
+      "summary_text": "Paused session covering rollback verification and release parity.",
+      "session_slug": "alpha",
+      "session_name": "Alpha",
+      "session_kind": "manual",
+      "status": "paused",
+      "backend": "codex",
+      "account_alias": "alpha",
+      "owner_display": "VSCODE_PID#111",
+      "task_description": "Verify rollback restore UX",
+      "files_touched": [".Rayman/scripts/state/rollback_state.ps1"],
+      "artifact_paths": [".Rayman/state/sessions/alpha/handover.md"],
+      "updated_at": "2026-04-16T02:30:00+00:00",
+      "score": 0.8,
+      "lexical_score": 0.42,
+      "semantic_score": 0.8
+    }
+  ],
+  "recall_results": [
+    {
+      "id": 1,
+      "source_kind": "session_manual",
+      "kind": "session_recall",
+      "scope": "session",
+      "task_kind": "",
+      "content": "Paused session covering rollback verification and release parity.",
+      "summary_text": "Paused session covering rollback verification and release parity.",
+      "session_slug": "alpha",
+      "session_name": "Alpha",
+      "session_kind": "manual",
+      "status": "paused",
+      "backend": "codex",
+      "account_alias": "alpha",
+      "owner_display": "VSCODE_PID#111",
+      "task_description": "Verify rollback restore UX",
+      "files_touched": [".Rayman/scripts/state/rollback_state.ps1"],
+      "artifact_paths": [".Rayman/state/sessions/alpha/handover.md"],
+      "updated_at": "2026-04-16T02:30:00+00:00",
+      "score": 0.8,
+      "lexical_score": 0.42,
+      "semantic_score": 0.8
+    },
+    {
+      "id": 2,
+      "source_kind": "memory",
+      "kind": "constraint",
+      "scope": "workspace",
+      "task_kind": "",
+      "content": "必须先读这个文件: 本文件必须包含全部 Project requirements（按路径文本列出）。",
+      "tags": ["constraint", "requirements"],
+      "confidence": 1.0,
+      "score": 0.3,
+      "lexical_score": 0.25,
+      "semantic_score": 0.0,
+      "source_task_key": "workspace/constraints",
+      "readonly": true
+    }
+  ],
+  "recent_task_summaries": [
+    {
+      "task_key": "handover/alpha",
+      "task_kind": "handover",
+      "outcome": "success",
+      "success": true,
+      "summary_text": "Updated rollback restore flow and kept snapshot semantics unchanged.",
+      "files_touched": [".Rayman/scripts/state/rollback_state.ps1"],
+      "lessons": ["Keep rollback scoped to session checkpoints."],
+      "updated_at": "2026-04-16T02:40:00+00:00",
+      "source_kind": "memory"
+    }
+  ],
   "search_backend": "lexical",
+  "session_search_backend": "fts5",
   "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
   "fallback_reason": "embedding_model_unavailable:OSError"
 }

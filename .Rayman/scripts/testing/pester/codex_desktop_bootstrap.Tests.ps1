@@ -164,6 +164,89 @@ Describe 'codex desktop bootstrap active workspace detection' {
     }
   }
 
+  It 'auto-applies the bound workspace alias once when a Desktop session becomes active' {
+    $fixture = New-CodexDesktopBootstrapTestRoot
+    $raymanHome = Join-Path $fixture.root 'RaymanHome'
+    $originalLocalAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
+    $originalDesktopHome = [Environment]::GetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_HOME')
+    $originalActiveSeconds = [Environment]::GetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_ACTIVE_SESSION_SECONDS')
+    $originalRaymanHome = [Environment]::GetEnvironmentVariable('RAYMAN_HOME')
+    try {
+      [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $fixture.local_app_data)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_HOME', $fixture.desktop_home)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_ACTIVE_SESSION_SECONDS', '120')
+      [Environment]::SetEnvironmentVariable('RAYMAN_HOME', $raymanHome)
+
+      Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
+      Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $fixture.workspace_root -AccountAlias 'alpha' -Profile '' | Out-Null
+      Set-RaymanCodexAccountLoginDiagnostics -Alias 'alpha' -LoginMode 'web' -AuthScope 'desktop_global' -LaunchStrategy 'switch' -PromptClassification 'none' -StartedAt '2026-04-17T00:00:00Z' -FinishedAt '2026-04-17T00:00:05Z' -Success $true -DesktopTargetMode 'web' | Out-Null
+
+      $sessionPath = Write-CodexDesktopBootstrapSession -DesktopHome $fixture.desktop_home -WorkspaceRoot $fixture.workspace_root -SessionTimestamp (Get-Date).AddHours(-6) -LastWriteAt (Get-Date).AddSeconds(-20)
+      $state = Read-RaymanCodexDesktopBootstrapState -ResolvedStatePath (Get-RaymanCodexDesktopBootstrapDefaultStatePath)
+
+      Mock Invoke-RaymanCodexDesktopBootstrapWatchCommand {
+        [pscustomobject]@{
+          success = $true
+          exit_code = 0
+          output = ''
+          error = ''
+          command = 'start watchers'
+        }
+      } -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root -and [string]$Action -eq 'start' }
+      Mock Get-RaymanCodexWorkspaceBindingAutoApplyPlan {
+        [pscustomobject]@{
+          enabled = $true
+          applicable = $true
+          workspace_root = $fixture.workspace_root
+          account_alias = 'alpha'
+          binding_profile = ''
+          mode = 'web'
+          signature = 'alpha|web'
+          reason = 'ready'
+        }
+      } -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root }
+      Mock Get-RaymanCodexWorkspaceBindingAutoApplyRetrySeconds { 300 } -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root }
+      Mock Invoke-RaymanCodexWorkspaceBindingAutoApply {
+        [pscustomobject]@{
+          attempted = $true
+          success = $true
+          alias = 'alpha'
+          mode = 'web'
+          signature = 'alpha|web'
+          detail = 'desktop_activation_applied'
+        }
+      } -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root }
+
+      $first = Invoke-RaymanCodexDesktopBootstrapCycle -State $state
+      @($first.actions | Where-Object { [string]$_.action -eq 'binding-auto-apply' }).Count | Should -Be 0
+      Assert-MockCalled Invoke-RaymanCodexWorkspaceBindingAutoApply -Times 0 -Exactly
+
+      (Get-Item -LiteralPath $sessionPath).LastWriteTime = (Get-Date).AddSeconds(-5)
+      $second = Invoke-RaymanCodexDesktopBootstrapCycle -State $state
+      $bindingActions = @($second.actions | Where-Object { [string]$_.action -eq 'binding-auto-apply' })
+
+      @($bindingActions).Count | Should -Be 1
+      [bool]$bindingActions[0].success | Should -Be $true
+      Assert-MockCalled Invoke-RaymanCodexWorkspaceBindingAutoApply -Times 1 -Exactly -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root }
+
+      $third = Invoke-RaymanCodexDesktopBootstrapCycle -State $state
+      @($third.actions | Where-Object { [string]$_.action -eq 'binding-auto-apply' }).Count | Should -Be 0
+      Assert-MockCalled Invoke-RaymanCodexWorkspaceBindingAutoApply -Times 1 -Exactly -ParameterFilter { [string]$WorkspaceRoot -eq $fixture.workspace_root }
+
+      $savedState = Get-Content -LiteralPath ([string]$state.StateFilePath) -Raw -Encoding UTF8 | ConvertFrom-Json
+      $workspaceState = @($savedState.workspaces.PSObject.Properties | ForEach-Object { $_.Value } | Where-Object { [string]$_.workspace_root -eq $fixture.workspace_root } | Select-Object -First 1)[0]
+
+      [string]$workspaceState.last_binding_auto_apply_signature | Should -Be 'alpha|web|session=desktop-session-1'
+      [bool]$workspaceState.last_binding_auto_apply_success | Should -Be $true
+    } finally {
+      [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $originalLocalAppData)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_HOME', $originalDesktopHome)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_DESKTOP_ACTIVE_SESSION_SECONDS', $originalActiveSeconds)
+      [Environment]::SetEnvironmentVariable('RAYMAN_HOME', $originalRaymanHome)
+      Remove-Item -LiteralPath $fixture.root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'treats a dead pid file as stale and replaces it with the current bootstrap pid' {
     $fixture = New-CodexDesktopBootstrapTestRoot
     $originalLocalAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')

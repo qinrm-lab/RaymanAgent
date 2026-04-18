@@ -22,7 +22,10 @@ Describe 'manual command contracts' {
 
   It 'validates live manual command references and archive markers on the repo' {
     $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\agents\validate_manual_command_contracts.ps1'
-    $result = & $scriptPath -WorkspaceRoot $script:WorkspaceRoot -AsJson | ConvertFrom-Json
+    $raw = @(& $scriptPath -WorkspaceRoot $script:WorkspaceRoot -AsJson)
+    $json = (($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    $json | Should -Match '^\{'
+    $result = $json | ConvertFrom-Json
 
     $result.passed | Should -Be $true
     ([int]$result.failure_count) | Should -Be 0

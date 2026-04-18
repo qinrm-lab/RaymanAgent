@@ -23,9 +23,11 @@ Platform tags:
 - `[ all ]` `rayman migrate`: Migrate legacy requirements into the standard layout.
 - `[ pwsh-only ]` `rayman.ps1 memory-bootstrap`: Probe and prepare the Agent Memory Python runtime.
 - `[ pwsh-only ]` `rayman.ps1 memory-summarize`: Drain pending episodic summaries into task summaries and semantic memory.
-- `[ pwsh-only ]` `rayman.ps1 memory-search`: Query Agent Memory hints and recent summaries.
+- `[ pwsh-only ]` `rayman.ps1 memory-search`: Query unified recall across Agent Memory and saved sessions.
 
 [Diagnostics]
+- `[ pwsh-only ]` `rayman.ps1 context-audit`: Audit managed context sources for prompt injection and oversize risk.
+- `[ pwsh-only ]` `rayman.ps1 skills`: Inspect trusted skill roots and skills audit results.
 - `[ all ]` `rayman doctor`: Run read-only health checks.
 - `[ all ]` `rayman copy-self-check`: Run copy-initialization smoke verification.
 - `[ all ]` `rayman check`: Run the baseline check suite.
@@ -40,7 +42,7 @@ Platform tags:
 - `[ pwsh-only ]` `rayman.ps1 linux-test`: Run Linux tests in WSL with dependency bootstrap.
 - `[ all ]` `rayman dispatch`: Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`: Manage Rayman-scoped Codex accounts, switching, and CLI execution.
-- `[ windows-only ]` `rayman.ps1 worker`: Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
+- `[ windows-only ]` `rayman.ps1 worker`: Manage shared LAN Rayman Workers with staged sync, exec, debug, and upgrade.
 - `[ windows-only ]` `rayman.ps1 workspace-install`: Install distributable .Rayman into a local workspace, run setup, and default self-check.
 - `[ windows-only ]` `rayman.ps1 workspace-register`: Register this RaymanAgent source workspace and install the rayman-here bootstrap launcher.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`: Sync or inspect Rayman-managed Codex capabilities.
@@ -55,7 +57,7 @@ Platform tags:
 [Automation]
 - `[ pwsh-only ]` `rayman.ps1 review-loop`: Run the dispatch plus test-fix review loop.
 - `[ pwsh-only ]` `rayman.ps1 first-pass-report`: Generate the first-pass KPI report.
-- `[ pwsh-only ]` `rayman.ps1 prompts`: List, show, or apply reusable prompt templates.
+- `[ pwsh-only ]` `rayman.ps1 prompts`: List, show, apply, or eval reusable prompt templates.
 
 [Project Gates]
 - `[ all ]` `rayman fast-gate`: Run the standard project fast gate.
@@ -72,6 +74,11 @@ Platform tags:
 [Diagnostics]
 - `[ all ]` `rayman clean`: Clean runtime, temp, and copy-smoke artifacts.
 - `[ all ]` `rayman snapshot`: Create a rollback snapshot under .Rayman/runtime/snapshots.
+
+[State]
+- `[ pwsh-only ]` `rayman.ps1 rollback`: List, diff, or restore session-backed checkpoints.
+
+[Diagnostics]
 - `[ all ]` `rayman metrics`: Show telemetry metrics and assertions.
 - `[ all ]` `rayman trend`: Generate the daily telemetry trend report.
 - `[ all ]` `rayman baseline-guard`: Compare recent telemetry against the historical baseline.

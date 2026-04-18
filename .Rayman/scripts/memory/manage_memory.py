@@ -27,6 +27,7 @@ SEMANTIC_KINDS = {
 }
 MAX_HINTS = 5
 MAX_RECENT_SUMMARIES = 2
+MAX_SESSION_RECALLS = 5
 
 
 def utc_now() -> str:
@@ -142,12 +143,23 @@ def resolve_paths(workspace_root: str) -> MemoryPaths:
 class EmbeddingEngine:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
+        self.enabled = os.environ.get("RAYMAN_MEMORY_ENABLE_EMBEDDINGS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.available = False
         self.backend = "lexical"
-        self.reason = "embedding_runtime_unavailable"
+        self.reason = "embedding_disabled"
         self._model = None
 
     def load(self, prewarm: bool = False) -> None:
+        if not self.enabled:
+            self.available = False
+            self.backend = "lexical"
+            self.reason = "embedding_disabled"
+            return
         if self.available or self._model is not None:
             return
 
@@ -204,6 +216,7 @@ class MemoryStore:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.engine = EmbeddingEngine(model_name)
+        self.fts5_available = False
         self.ensure_schema()
 
     def close(self) -> None:
@@ -272,9 +285,35 @@ class MemoryStore:
             );
             CREATE INDEX IF NOT EXISTS idx_semantic_memories_lookup
                 ON semantic_memories(scope, kind, task_kind, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS session_recalls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_slug TEXT NOT NULL UNIQUE,
+                session_name TEXT NOT NULL DEFAULT '',
+                session_kind TEXT NOT NULL DEFAULT 'manual',
+                status TEXT NOT NULL DEFAULT 'paused',
+                backend TEXT NOT NULL DEFAULT '',
+                account_alias TEXT NOT NULL DEFAULT '',
+                owner_display TEXT NOT NULL DEFAULT '',
+                owner_key TEXT NOT NULL DEFAULT '',
+                task_description TEXT NOT NULL DEFAULT '',
+                summary_text TEXT NOT NULL DEFAULT '',
+                files_touched_json TEXT NOT NULL DEFAULT '[]',
+                artifact_paths_json TEXT NOT NULL DEFAULT '[]',
+                stash_oid TEXT NOT NULL DEFAULT '',
+                worktree_path TEXT NOT NULL DEFAULT '',
+                branch TEXT NOT NULL DEFAULT '',
+                search_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_recalls_updated_at ON session_recalls(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_session_recalls_lookup
+                ON session_recalls(session_kind, backend, account_alias, owner_key, updated_at DESC);
             """
         )
         self.conn.commit()
+        self._ensure_session_recall_fts()
 
     def write_status(
         self,
@@ -293,6 +332,7 @@ class MemoryStore:
             "episodes": self.scalar("SELECT COUNT(*) FROM episodes"),
             "task_summaries": self.scalar("SELECT COUNT(*) FROM task_summaries"),
             "semantic_memories": self.scalar("SELECT COUNT(*) FROM semantic_memories"),
+            "session_recalls": self.scalar("SELECT COUNT(*) FROM session_recalls"),
         }
         status = {
             "schema": "rayman.agent_memory.status.v1",
@@ -305,6 +345,7 @@ class MemoryStore:
             "embedding_model": self.model_name,
             "deps_ready": bool(self.engine.available),
             "search_backend": self.engine.backend,
+            "session_search_backend": "fts5" if self.fts5_available else "lexical",
             "fallback_reason": self.engine.reason,
             "prewarm_requested": bool(prewarm),
             "counts": counts,
@@ -325,6 +366,101 @@ class MemoryStore:
     def write_runtime_artifact(self, name: str, payload: Dict[str, Any]) -> None:
         path = self.paths.runtime_root / name
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _ensure_session_recall_fts(self) -> None:
+        try:
+            self.conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS session_recalls_fts
+                USING fts5(
+                    session_slug,
+                    session_name,
+                    session_kind,
+                    backend,
+                    account_alias,
+                    owner_display,
+                    task_description,
+                    summary_text,
+                    files_touched,
+                    search_text
+                );
+                """
+            )
+            self.fts5_available = True
+        except sqlite3.OperationalError:
+            self.fts5_available = False
+            return
+
+        rows = self.conn.execute(
+            """
+            SELECT session_slug, session_name, session_kind, backend, account_alias,
+                   owner_display, task_description, summary_text, files_touched_json, search_text
+            FROM session_recalls
+            """
+        ).fetchall()
+        for row in rows:
+            self._refresh_session_fts_entry(dict(row))
+        self.conn.commit()
+
+    def _refresh_session_fts_entry(self, row: Dict[str, Any]) -> None:
+        if not self.fts5_available:
+            return
+        files_text = " ".join(json.loads(row.get("files_touched_json") or "[]"))
+        self.conn.execute("DELETE FROM session_recalls_fts WHERE session_slug = ?", (normalize_text(row.get("session_slug")),))
+        self.conn.execute(
+            """
+            INSERT INTO session_recalls_fts (
+                session_slug, session_name, session_kind, backend, account_alias,
+                owner_display, task_description, summary_text, files_touched, search_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalize_text(row.get("session_slug")),
+                normalize_text(row.get("session_name")),
+                normalize_text(row.get("session_kind")),
+                normalize_text(row.get("backend")),
+                normalize_text(row.get("account_alias")),
+                normalize_text(row.get("owner_display")),
+                normalize_text(row.get("task_description")),
+                normalize_text(row.get("summary_text")),
+                files_text,
+                normalize_text(row.get("search_text")),
+            ),
+        )
+
+    def _extract_patch_files(self, patch_path: str) -> List[str]:
+        path = Path(normalize_text(patch_path))
+        if not path.is_file():
+            return []
+        result: List[str] = []
+        seen = set()
+        try:
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                match = re.match(r"^diff --git a/(.+?) b/(.+)$", line)
+                if not match:
+                    continue
+                file_path = normalize_text(match.group(2))
+                if file_path and file_path not in seen:
+                    seen.add(file_path)
+                    result.append(file_path)
+        except Exception:
+            return []
+        return result
+
+    def _build_session_search_text(self, payload: Dict[str, Any], files_touched: Sequence[str]) -> str:
+        parts = [
+            normalize_text(payload.get("session_slug")),
+            normalize_text(payload.get("session_name")),
+            normalize_text(payload.get("session_kind")),
+            normalize_text(payload.get("status")),
+            normalize_text(payload.get("backend")),
+            normalize_text(payload.get("account_alias")),
+            normalize_text(payload.get("owner_display")),
+            normalize_text(payload.get("task_description")),
+            normalize_text(payload.get("summary_text")),
+            " ".join(normalize_text(item) for item in files_touched),
+        ]
+        return " ".join(part for part in parts if part).strip()
 
     def record_episode(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         now = utc_now()
@@ -414,6 +550,88 @@ class MemoryStore:
             "updated_at": row["updated_at"],
         }
 
+    def refresh_session_recall(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        session_slug = normalize_text(payload.get("session_slug"))
+        if not session_slug:
+            raise ValueError("session_slug is required")
+
+        patch_path = normalize_text(payload.get("patch_path"))
+        handover_path = normalize_text(payload.get("handover_path"))
+        meta_path = normalize_text(payload.get("meta_path"))
+        files_touched = self._extract_patch_files(patch_path)
+        if not files_touched and handover_path:
+            files_touched = tokenize(normalize_text(payload.get("summary_text")))
+            files_touched = [item for item in files_touched if "/" in item or "." in item][:10]
+
+        artifact_paths = [item for item in [handover_path, patch_path, meta_path] if normalize_text(item)]
+        search_text = self._build_session_search_text(payload, files_touched)
+        now = utc_now()
+        created_at = normalize_text(payload.get("created_at")) or now
+        updated_at = normalize_text(payload.get("updated_at")) or now
+
+        self.conn.execute(
+            """
+            INSERT INTO session_recalls (
+                session_slug, session_name, session_kind, status, backend, account_alias,
+                owner_display, owner_key, task_description, summary_text, files_touched_json,
+                artifact_paths_json, stash_oid, worktree_path, branch, search_text,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_slug) DO UPDATE SET
+                session_name=excluded.session_name,
+                session_kind=excluded.session_kind,
+                status=excluded.status,
+                backend=excluded.backend,
+                account_alias=excluded.account_alias,
+                owner_display=excluded.owner_display,
+                owner_key=excluded.owner_key,
+                task_description=excluded.task_description,
+                summary_text=excluded.summary_text,
+                files_touched_json=excluded.files_touched_json,
+                artifact_paths_json=excluded.artifact_paths_json,
+                stash_oid=excluded.stash_oid,
+                worktree_path=excluded.worktree_path,
+                branch=excluded.branch,
+                search_text=excluded.search_text,
+                created_at=CASE
+                    WHEN session_recalls.created_at = '' THEN excluded.created_at
+                    ELSE session_recalls.created_at
+                END,
+                updated_at=excluded.updated_at
+            """,
+            (
+                session_slug,
+                normalize_text(payload.get("session_name")),
+                normalize_text(payload.get("session_kind")) or "manual",
+                normalize_text(payload.get("status")) or "paused",
+                normalize_text(payload.get("backend")),
+                normalize_text(payload.get("account_alias")),
+                normalize_text(payload.get("owner_display")),
+                normalize_text(payload.get("owner_key")),
+                normalize_text(payload.get("task_description")),
+                normalize_text(payload.get("summary_text")),
+                json_dumps(files_touched),
+                json_dumps(artifact_paths),
+                normalize_text(payload.get("stash_oid")),
+                normalize_text(payload.get("worktree_path")),
+                normalize_text(payload.get("branch")),
+                search_text,
+                created_at,
+                updated_at,
+            ),
+        )
+        row = self.conn.execute("SELECT * FROM session_recalls WHERE session_slug = ?", (session_slug,)).fetchone()
+        if row is not None:
+            self._refresh_session_fts_entry(dict(row))
+        self.conn.commit()
+        return {
+            "schema": "rayman.agent_memory.session_refresh.v1",
+            "success": True,
+            "session_slug": session_slug,
+            "files_touched": files_touched,
+            "search_backend": "fts5" if self.fts5_available else "lexical",
+        }
+
     def summarize_tasks(
         self,
         *,
@@ -465,6 +683,84 @@ class MemoryStore:
             "task_summaries": summarized,
         }
 
+    def _search_session_recalls(
+        self,
+        *,
+        query: str,
+        task_kind: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        rows = [dict(row) for row in self.conn.execute("SELECT * FROM session_recalls ORDER BY updated_at DESC").fetchall()]
+        query_text = normalize_text(query)
+        fts_scores: Dict[str, float] = {}
+        if self.fts5_available and query_text:
+            try:
+                fts_rows = self.conn.execute(
+                    """
+                    SELECT session_slug, bm25(session_recalls_fts) AS rank
+                    FROM session_recalls_fts
+                    WHERE session_recalls_fts MATCH ?
+                    ORDER BY rank ASC
+                    LIMIT ?
+                    """,
+                    (query_text, max(limit * 3, 10)),
+                ).fetchall()
+                max_rank = 0.0
+                for row in fts_rows:
+                    rank = abs(float(row["rank"] or 0.0))
+                    if rank > max_rank:
+                        max_rank = rank
+                for row in fts_rows:
+                    rank = abs(float(row["rank"] or 0.0))
+                    score = 1.0 if max_rank <= 0 else max(0.0, 1.0 - (rank / (max_rank + 1.0)))
+                    fts_scores[normalize_text(row["session_slug"])] = round(score, 6)
+            except sqlite3.OperationalError:
+                self.fts5_available = False
+
+        scored: List[Dict[str, Any]] = []
+        for row in rows:
+            if task_kind:
+                row_task_text = " ".join(
+                    [
+                        normalize_text(row.get("task_description")),
+                        normalize_text(row.get("summary_text")),
+                    ]
+                ).lower()
+                if task_kind.lower() not in row_task_text and task_kind.lower() not in normalize_text(row.get("session_kind")).lower():
+                    continue
+            search_text = normalize_text(row.get("search_text"))
+            lexical = lexical_score(query_text, search_text) if query_text else 0.0
+            fts_score = fts_scores.get(normalize_text(row.get("session_slug")), 0.0)
+            score = fts_score if fts_score > 0 else lexical
+            source_kind = f"session_{normalize_text(row.get('session_kind')) or 'manual'}"
+            scored.append(
+                {
+                    "id": int(row["id"]),
+                    "source_kind": source_kind,
+                    "kind": "session_recall",
+                    "scope": "session",
+                    "task_kind": task_kind,
+                    "content": normalize_text(row.get("summary_text")) or normalize_text(row.get("task_description")),
+                    "summary_text": normalize_text(row.get("summary_text")),
+                    "session_slug": normalize_text(row.get("session_slug")),
+                    "session_name": normalize_text(row.get("session_name")),
+                    "session_kind": normalize_text(row.get("session_kind")),
+                    "status": normalize_text(row.get("status")),
+                    "backend": normalize_text(row.get("backend")),
+                    "account_alias": normalize_text(row.get("account_alias")),
+                    "owner_display": normalize_text(row.get("owner_display")),
+                    "task_description": normalize_text(row.get("task_description")),
+                    "files_touched": json.loads(row.get("files_touched_json") or "[]"),
+                    "artifact_paths": json.loads(row.get("artifact_paths_json") or "[]"),
+                    "updated_at": normalize_text(row.get("updated_at")),
+                    "score": round(score, 6),
+                    "lexical_score": round(lexical, 6),
+                    "semantic_score": round(fts_score, 6),
+                }
+            )
+        scored.sort(key=lambda item: (item["score"], item["updated_at"]), reverse=True)
+        return scored[:limit]
+
     def search(
         self,
         *,
@@ -483,77 +779,89 @@ class MemoryStore:
         query_text = normalize_text(query)
         filter_tags = normalize_tags(tags or [])
         self.engine.load(prewarm=False)
+        effective_scope = normalize_text(scope).lower() or "all"
+        include_memory = effective_scope not in {"session"}
+        include_sessions = effective_scope in {"", "all", "session"}
 
-        conditions = []
-        params: List[Any] = []
-        if scope:
-            conditions.append("scope = ?")
-            params.append(scope)
-        if kind:
-            conditions.append("kind = ?")
-            params.append(kind)
-        if task_kind:
-            conditions.append("(task_kind = '' OR task_kind = ?)")
-            params.append(task_kind)
-        sql = "SELECT * FROM semantic_memories"
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY confidence DESC, updated_at DESC"
-        candidates = [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+        hints: List[Dict[str, Any]] = []
+        used_ids: List[int] = []
+        if include_memory:
+            conditions = []
+            params: List[Any] = []
+            if effective_scope not in {"", "all", "memory"}:
+                conditions.append("scope = ?")
+                params.append(effective_scope)
+            if kind:
+                conditions.append("kind = ?")
+                params.append(kind)
+            if task_kind:
+                conditions.append("(task_kind = '' OR task_kind = ?)")
+                params.append(task_kind)
+            sql = "SELECT * FROM semantic_memories"
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            sql += " ORDER BY confidence DESC, updated_at DESC"
+            candidates = [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-        if filter_tags:
-            filtered = []
+            if filter_tags:
+                filtered = []
+                for row in candidates:
+                    row_tags = set(json.loads(row["tags"] or "[]"))
+                    if set(filter_tags).issubset(row_tags):
+                        filtered.append(row)
+                candidates = filtered
+
+            query_vector: List[float] = []
+            if query_text and self.engine.available:
+                encoded = self.engine.encode([query_text])
+                if encoded:
+                    query_vector = encoded[0]
+
+            scored = []
             for row in candidates:
-                row_tags = set(json.loads(row["tags"] or "[]"))
-                if set(filter_tags).issubset(row_tags):
-                    filtered.append(row)
-            candidates = filtered
+                content_text = normalize_text(row["content_text"])
+                row_vector = decode_vector(row["embedding_blob"])
+                lexical = lexical_score(query_text, content_text) if query_text else 0.0
+                semantic = cosine_similarity(query_vector, row_vector) if query_vector and row_vector else 0.0
+                score = semantic if semantic > 0 else lexical
+                score += float(row["confidence"] or 0.0) * 0.05
+                scored.append((score, lexical, semantic, row))
+            scored.sort(key=lambda item: (item[0], item[2], item[1], item[3]["updated_at"]), reverse=True)
 
-        query_vector: List[float] = []
-        if query_text and self.engine.available:
-            encoded = self.engine.encode([query_text])
-            if encoded:
-                query_vector = encoded[0]
+            for score, lexical, semantic, row in scored[:limit]:
+                hints.append(
+                    {
+                        "id": int(row["id"]),
+                        "source_kind": "memory",
+                        "kind": row["kind"],
+                        "scope": row["scope"],
+                        "task_kind": row["task_kind"],
+                        "content": row["content_text"],
+                        "tags": json.loads(row["tags"] or "[]"),
+                        "confidence": float(row["confidence"] or 0.0),
+                        "score": round(score, 6),
+                        "lexical_score": round(lexical, 6),
+                        "semantic_score": round(semantic, 6),
+                        "source_task_key": row["source_task_key"],
+                        "readonly": bool(row["readonly"]),
+                    }
+                )
+                used_ids.append(int(row["id"]))
 
-        scored = []
-        for row in candidates:
-            content_text = normalize_text(row["content_text"])
-            row_vector = decode_vector(row["embedding_blob"])
-            lexical = lexical_score(query_text, content_text) if query_text else 0.0
-            semantic = cosine_similarity(query_vector, row_vector) if query_vector and row_vector else 0.0
-            score = semantic if semantic > 0 else lexical
-            score += float(row["confidence"] or 0.0) * 0.05
-            scored.append((score, lexical, semantic, row))
-        scored.sort(key=lambda item: (item[0], item[2], item[1], item[3]["updated_at"]), reverse=True)
+            if used_ids:
+                now = utc_now()
+                self.conn.executemany(
+                    "UPDATE semantic_memories SET last_used_at = ? WHERE id = ?",
+                    [(now, item) for item in used_ids],
+                )
+                self.conn.commit()
 
-        hints = []
-        used_ids = []
-        for score, lexical, semantic, row in scored[:limit]:
-            hints.append(
-                {
-                    "id": int(row["id"]),
-                    "kind": row["kind"],
-                    "scope": row["scope"],
-                    "task_kind": row["task_kind"],
-                    "content": row["content_text"],
-                    "tags": json.loads(row["tags"] or "[]"),
-                    "confidence": float(row["confidence"] or 0.0),
-                    "score": round(score, 6),
-                    "lexical_score": round(lexical, 6),
-                    "semantic_score": round(semantic, 6),
-                    "source_task_key": row["source_task_key"],
-                    "readonly": bool(row["readonly"]),
-                }
-            )
-            used_ids.append(int(row["id"]))
-
-        if used_ids:
-            now = utc_now()
-            self.conn.executemany(
-                "UPDATE semantic_memories SET last_used_at = ? WHERE id = ?",
-                [(now, item) for item in used_ids],
-            )
-            self.conn.commit()
+        session_recalls = self._search_session_recalls(query=query_text, task_kind=task_kind, limit=min(limit, MAX_SESSION_RECALLS)) if include_sessions else []
+        recall_results = sorted(
+            [*hints, *session_recalls],
+            key=lambda item: (float(item.get("score") or 0.0), normalize_text(item.get("updated_at"))),
+            reverse=True,
+        )[: max(limit, len(session_recalls))]
 
         summary_conditions = []
         summary_params: List[Any] = []
@@ -578,6 +886,7 @@ class MemoryStore:
                 "files_touched": json.loads(row["files_touched"] or "[]"),
                 "lessons": json.loads(row["lessons_json"] or "[]"),
                 "updated_at": row["updated_at"],
+                "source_kind": "memory",
             }
             for row in self.conn.execute(summary_sql, summary_params).fetchall()
         ]
@@ -588,12 +897,15 @@ class MemoryStore:
             "query": query_text,
             "task_key": task_key,
             "task_kind": task_kind,
-            "scope": scope or "workspace",
+            "scope": effective_scope,
             "kind": kind,
             "tags": filter_tags,
             "memory_hints": hints,
+            "session_recalls": session_recalls,
+            "recall_results": recall_results,
             "recent_task_summaries": recent_rows,
             "search_backend": self.engine.backend,
+            "session_search_backend": "fts5" if self.fts5_available else "lexical",
             "embedding_model": self.model_name,
             "fallback_reason": self.engine.reason,
         }
@@ -998,7 +1310,7 @@ def load_payload(path: str) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Rayman Agent Memory backend")
-    parser.add_argument("action", choices=["status", "record", "summarize", "search", "prune"])
+    parser.add_argument("action", choices=["status", "record", "summarize", "search", "prune", "session-refresh"])
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--model-name", default=os.environ.get("RAYMAN_MEMORY_EMBEDDING_MODEL", MODEL_NAME_DEFAULT))
     parser.add_argument("--input-json-file", default="")
@@ -1066,6 +1378,11 @@ def main() -> int:
             )
             store.write_status(success=True, message="Agent Memory search completed")
             store.write_runtime_artifact("search.last.json", result)
+        elif args.action == "session-refresh":
+            payload = load_payload(args.input_json_file)
+            result = store.refresh_session_recall(payload)
+            store.write_status(success=True, message="Agent Memory session recall refreshed")
+            store.write_runtime_artifact("session_refresh.last.json", result)
         elif args.action == "prune":
             result = store.prune(
                 max_age_days=max(0, int(args.max_age_days)),

@@ -1,0 +1,16 @@
+{
+  "schema": "rayman.event_hooks.v1",
+  "enabled": true,
+  "sinks": {
+    "jsonl": {
+      "enabled": true,
+      "directory": ".Rayman/runtime/events",
+      "rollover": "daily"
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "",
+      "timeout_seconds": 5
+    }
+  }
+}

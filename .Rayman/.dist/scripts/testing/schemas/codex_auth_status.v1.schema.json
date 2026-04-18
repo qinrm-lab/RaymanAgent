@@ -101,6 +101,28 @@
     "repair_command": {
       "type": "string"
     },
+    "known_error_signature": {
+      "type": "string"
+    },
+    "known_error_severity": {
+      "type": "string"
+    },
+    "known_error_message": {
+      "type": "string"
+    },
+    "guard_stage": {
+      "type": "string"
+    },
+    "repeat_prevented": {
+      "type": "boolean"
+    },
+    "known_error_matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
     "auth_mode_last": {
       "type": "string"
     },
@@ -226,7 +248,10 @@
           "type": "integer"
         },
         "latest": {
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": true
         },
         "recent_saved_states": {

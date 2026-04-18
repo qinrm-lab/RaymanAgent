@@ -196,6 +196,417 @@ function Get-RaymanWorkerHostRuntimeRoot {
   return $path
 }
 
+function Get-RaymanWorkerStableHash {
+  param(
+    [string]$Seed,
+    [int]$Length = 16
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$Seed)) {
+    $Seed = 'rayman-worker'
+  }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Seed)
+    $hash = $sha.ComputeHash($bytes)
+  } finally {
+    $sha.Dispose()
+  }
+  $hex = ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+  if ($Length -gt 0 -and $Length -lt $hex.Length) {
+    return $hex.Substring(0, $Length)
+  }
+  return $hex
+}
+
+function Get-RaymanWorkerClientContext {
+  param([string]$WorkspaceRoot)
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $machineName = Get-RaymanWorkerMachineName
+  $seed = ('{0}|{1}' -f $machineName.ToLowerInvariant(), $resolvedRoot.ToLowerInvariant())
+  $clientId = Get-RaymanWorkerStableHash -Seed $seed -Length 16
+  return [pscustomobject]@{
+    schema = 'rayman.worker.client_context.v1'
+    client_id = $clientId
+    machine_name = $machineName
+    source_workspace_root = $resolvedRoot
+    workspace_name = (Split-Path -Leaf $resolvedRoot)
+    generated_at = (Get-Date).ToString('o')
+  }
+}
+
+function Normalize-RaymanWorkerClientId {
+  param([string]$ClientId)
+
+  $candidate = ([string]$ClientId).Trim().ToLowerInvariant()
+  if ($candidate -match '^[0-9a-f]{8,64}$') {
+    return $candidate
+  }
+  return ''
+}
+
+function Resolve-RaymanWorkerClientContext {
+  param(
+    [string]$WorkspaceRoot = '',
+    [object]$ClientContext = $null,
+    [string]$ClientId = ''
+  )
+
+  if ($null -ne $ClientContext -and $ClientContext.PSObject.Properties['client_id']) {
+    $resolvedClientId = Normalize-RaymanWorkerClientId -ClientId ([string]$ClientContext.client_id)
+    if (-not [string]::IsNullOrWhiteSpace([string]$resolvedClientId)) {
+      return [pscustomobject]@{
+        schema = if ($ClientContext.PSObject.Properties['schema']) { [string]$ClientContext.schema } else { 'rayman.worker.client_context.v1' }
+        client_id = $resolvedClientId
+        machine_name = if ($ClientContext.PSObject.Properties['machine_name']) { [string]$ClientContext.machine_name } else { '' }
+        source_workspace_root = if ($ClientContext.PSObject.Properties['source_workspace_root']) { [string]$ClientContext.source_workspace_root } else { '' }
+        workspace_name = if ($ClientContext.PSObject.Properties['workspace_name']) { [string]$ClientContext.workspace_name } else { '' }
+        generated_at = if ($ClientContext.PSObject.Properties['generated_at']) { [string]$ClientContext.generated_at } else { (Get-Date).ToString('o') }
+      }
+    }
+  }
+
+  $resolvedClientIdFromText = Normalize-RaymanWorkerClientId -ClientId $ClientId
+  if (-not [string]::IsNullOrWhiteSpace([string]$resolvedClientIdFromText)) {
+    return [pscustomobject]@{
+      schema = 'rayman.worker.client_context.v1'
+      client_id = $resolvedClientIdFromText
+      machine_name = ''
+      source_workspace_root = ''
+      workspace_name = ''
+      generated_at = (Get-Date).ToString('o')
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$WorkspaceRoot) -and (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
+    return (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot)
+  }
+
+  return $null
+}
+
+function Get-RaymanWorkerSessionIsolation {
+  return 'multi_client_staged_only'
+}
+
+function Get-RaymanWorkerSupportedSyncModes {
+  return @('staged')
+}
+
+function Get-RaymanWorkerClientRuntimeRoot {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $normalizedClientId = Normalize-RaymanWorkerClientId -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$normalizedClientId)) {
+    return ''
+  }
+  $path = Join-Path (Join-Path (Get-RaymanWorkerHostRuntimeRoot -WorkspaceRoot $WorkspaceRoot) 'clients') $normalizedClientId
+  Ensure-RaymanWorkerDirectory -Path $path
+  return $path
+}
+
+function Get-RaymanWorkerClientSessionPath {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $root = Get-RaymanWorkerClientRuntimeRoot -WorkspaceRoot $WorkspaceRoot -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$root)) { return '' }
+  return (Join-Path $root 'session.json')
+}
+
+function Get-RaymanWorkerClientStatusPath {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $root = Get-RaymanWorkerClientRuntimeRoot -WorkspaceRoot $WorkspaceRoot -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$root)) { return '' }
+  return (Join-Path $root 'status.last.json')
+}
+
+function Get-RaymanWorkerClientSyncLastPath {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $root = Get-RaymanWorkerClientRuntimeRoot -WorkspaceRoot $WorkspaceRoot -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$root)) { return '' }
+  return (Join-Path $root 'sync.last.json')
+}
+
+function Get-RaymanWorkerClientDebugSessionPath {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $root = Get-RaymanWorkerClientRuntimeRoot -WorkspaceRoot $WorkspaceRoot -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$root)) { return '' }
+  return (Join-Path $root 'debug.session.last.json')
+}
+
+function Get-RaymanWorkerClientStagingRoot {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$ClientId
+  )
+
+  $normalizedClientId = Normalize-RaymanWorkerClientId -ClientId $ClientId
+  if ([string]::IsNullOrWhiteSpace([string]$normalizedClientId)) {
+    return ''
+  }
+  $path = Join-Path (Get-RaymanWorkerStagingRoot -WorkspaceRoot $WorkspaceRoot) $normalizedClientId
+  Ensure-RaymanWorkerDirectory -Path $path
+  return $path
+}
+
+function Get-RaymanWorkerClientSyncManifest {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [string]$ClientId = ''
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext -ClientId $ClientId
+  if ($null -eq $context) {
+    return $null
+  }
+  $path = Get-RaymanWorkerClientSyncLastPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if ([string]::IsNullOrWhiteSpace([string]$path)) {
+    return $null
+  }
+  return (Read-RaymanWorkerJsonFile -Path $path)
+}
+
+function Get-RaymanWorkerClientDebugSession {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [string]$ClientId = ''
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext -ClientId $ClientId
+  if ($null -eq $context) {
+    return $null
+  }
+  $path = Get-RaymanWorkerClientDebugSessionPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if ([string]::IsNullOrWhiteSpace([string]$path)) {
+    return $null
+  }
+  return (Read-RaymanWorkerJsonFile -Path $path)
+}
+
+function Set-RaymanWorkerClientSyncManifest {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext,
+    [object]$SyncManifest
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext
+  if ($null -eq $context) {
+    return $null
+  }
+  $path = Get-RaymanWorkerClientSyncLastPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if ([string]::IsNullOrWhiteSpace([string]$path)) {
+    return $null
+  }
+  Write-RaymanWorkerJsonFile -Path $path -Value $SyncManifest
+  Set-RaymanWorkerClientSession -WorkspaceRoot $WorkspaceRoot -ClientContext $context -SyncManifest $SyncManifest | Out-Null
+  return $SyncManifest
+}
+
+function Set-RaymanWorkerClientDebugSession {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext,
+    [object]$DebugSession
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext
+  if ($null -eq $context) {
+    return $null
+  }
+  $path = Get-RaymanWorkerClientDebugSessionPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if ([string]::IsNullOrWhiteSpace([string]$path)) {
+    return $null
+  }
+  Write-RaymanWorkerJsonFile -Path $path -Value $DebugSession
+  return $DebugSession
+}
+
+function Set-RaymanWorkerClientSession {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext,
+    [object]$SyncManifest = $null
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext
+  if ($null -eq $context) {
+    return $null
+  }
+  $executionRoot = ''
+  $workspaceMode = 'staged_pending'
+  $lastSyncAt = ''
+  $sourceWorkspaceRoot = if ($context.PSObject.Properties['source_workspace_root']) { [string]$context.source_workspace_root } else { '' }
+  if ($null -ne $SyncManifest) {
+    if ($SyncManifest.PSObject.Properties['mode']) {
+      $workspaceMode = [string]$SyncManifest.mode
+    }
+    if ($SyncManifest.PSObject.Properties['staging_root']) {
+      $executionRoot = [string]$SyncManifest.staging_root
+    }
+    if ($SyncManifest.PSObject.Properties['source_workspace_root']) {
+      $sourceWorkspaceRoot = [string]$SyncManifest.source_workspace_root
+    }
+    if ($SyncManifest.PSObject.Properties['generated_at']) {
+      $lastSyncAt = [string]$SyncManifest.generated_at
+    }
+  }
+
+  $session = [pscustomobject]@{
+    schema = 'rayman.worker.client_session.v1'
+    generated_at = (Get-Date).ToString('o')
+    client_id = [string]$context.client_id
+    client_context = $context
+    workspace_mode = $workspaceMode
+    execution_root = $executionRoot
+    source_workspace_root = $sourceWorkspaceRoot
+    last_sync_at = $lastSyncAt
+    sync_manifest = $SyncManifest
+  }
+  $path = Get-RaymanWorkerClientSessionPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+    Write-RaymanWorkerJsonFile -Path $path -Value $session
+  }
+  return $session
+}
+
+function Get-RaymanWorkerClientSession {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [string]$ClientId = ''
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext -ClientId $ClientId
+  if ($null -eq $context) {
+    return $null
+  }
+  $path = Get-RaymanWorkerClientSessionPath -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)
+  if ([string]::IsNullOrWhiteSpace([string]$path)) {
+    return $null
+  }
+  return (Read-RaymanWorkerJsonFile -Path $path)
+}
+
+function New-RaymanWorkerClientSessionSummary {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [string]$ClientId = '',
+    [object]$SyncManifest = $null
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext -ClientId $ClientId
+  if ($null -eq $context) {
+    return $null
+  }
+  $manifest = $SyncManifest
+  if ($null -eq $manifest) {
+    $manifest = Get-RaymanWorkerClientSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $context
+  }
+  $session = Get-RaymanWorkerClientSession -WorkspaceRoot $WorkspaceRoot -ClientContext $context
+  if ($null -eq $session -and $null -ne $manifest) {
+    $session = Set-RaymanWorkerClientSession -WorkspaceRoot $WorkspaceRoot -ClientContext $context -SyncManifest $manifest
+  }
+
+  $workspaceMode = if ($null -ne $manifest -and $manifest.PSObject.Properties['mode']) {
+    [string]$manifest.mode
+  } elseif ($null -ne $session -and $session.PSObject.Properties['workspace_mode']) {
+    [string]$session.workspace_mode
+  } else {
+    'staged_pending'
+  }
+  $executionRoot = if ($null -ne $manifest -and $manifest.PSObject.Properties['staging_root']) {
+    [string]$manifest.staging_root
+  } elseif ($null -ne $session -and $session.PSObject.Properties['execution_root']) {
+    [string]$session.execution_root
+  } else {
+    ''
+  }
+  $sourceWorkspaceRoot = if ($null -ne $manifest -and $manifest.PSObject.Properties['source_workspace_root']) {
+    [string]$manifest.source_workspace_root
+  } elseif ($null -ne $session -and $session.PSObject.Properties['source_workspace_root']) {
+    [string]$session.source_workspace_root
+  } elseif ($context.PSObject.Properties['source_workspace_root']) {
+    [string]$context.source_workspace_root
+  } else {
+    ''
+  }
+  $lastSyncAt = if ($null -ne $manifest -and $manifest.PSObject.Properties['generated_at']) {
+    [string]$manifest.generated_at
+  } elseif ($null -ne $session -and $session.PSObject.Properties['last_sync_at']) {
+    [string]$session.last_sync_at
+  } else {
+    ''
+  }
+
+  return [pscustomobject]@{
+    client_id = [string]$context.client_id
+    workspace_mode = $workspaceMode
+    execution_root = $executionRoot
+    source_workspace_root = $sourceWorkspaceRoot
+    last_sync_at = $lastSyncAt
+  }
+}
+
+function Clear-RaymanWorkerClientSession {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$ClientContext = $null,
+    [string]$ClientId = ''
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext -ClientId $ClientId
+  if ($null -eq $context) {
+    return [pscustomobject]@{
+      schema = 'rayman.worker.client_clear.v1'
+      generated_at = (Get-Date).ToString('o')
+      cleared = $false
+      client_id = ''
+      removed_paths = @()
+    }
+  }
+  $removed = New-Object System.Collections.Generic.List[string]
+  foreach ($path in @(
+      (Get-RaymanWorkerClientRuntimeRoot -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id)),
+      (Get-RaymanWorkerClientStagingRoot -WorkspaceRoot $WorkspaceRoot -ClientId ([string]$context.client_id))
+    )) {
+    if ([string]::IsNullOrWhiteSpace([string]$path)) { continue }
+    if (Test-Path -LiteralPath $path) {
+      Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+      $removed.Add([string]$path) | Out-Null
+    }
+  }
+  return [pscustomobject]@{
+    schema = 'rayman.worker.client_clear.v1'
+    generated_at = (Get-Date).ToString('o')
+    cleared = $true
+    client_id = [string]$context.client_id
+    removed_paths = @($removed.ToArray())
+  }
+}
+
 function Get-RaymanWorkerHostStatusPath {
   param([string]$WorkspaceRoot)
 
@@ -498,6 +909,60 @@ function Get-RaymanWorkerControlHeaders {
     $headers['X-Rayman-Worker-Token'] = $token
   }
   return $headers
+}
+
+function Add-RaymanWorkerClientContextToUri {
+  param(
+    [string]$Uri,
+    [string]$WorkspaceRoot = '',
+    [object]$ClientContext = $null
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$Uri)) {
+    return $Uri
+  }
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot -ClientContext $ClientContext
+  if ($null -eq $context -or [string]::IsNullOrWhiteSpace([string]$context.client_id)) {
+    return $Uri
+  }
+
+  try {
+    $builder = [System.UriBuilder]::new([string]$Uri)
+    $query = [System.Web.HttpUtility]::ParseQueryString($builder.Query)
+    $query['client_id'] = [string]$context.client_id
+    $builder.Query = $query.ToString()
+    return $builder.Uri.AbsoluteUri
+  } catch {
+    $separator = if ([string]$Uri -match '\?') { '&' } else { '?' }
+    return ('{0}{1}client_id={2}' -f $Uri, $separator, [System.Uri]::EscapeDataString([string]$context.client_id))
+  }
+}
+
+function Add-RaymanWorkerClientContextToBody {
+  param(
+    [object]$Body,
+    [string]$WorkspaceRoot = '',
+    [object]$ClientContext = $null
+  )
+
+  $context = Resolve-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot -ClientContext $ClientContext
+  if ($null -eq $context) {
+    return $Body
+  }
+
+  if ($null -eq $Body) {
+    return [pscustomobject]@{
+      client_context = $context
+    }
+  }
+
+  $ordered = [ordered]@{}
+  foreach ($prop in $Body.PSObject.Properties) {
+    $ordered[$prop.Name] = $prop.Value
+  }
+  $ordered['client_context'] = $context
+  return [pscustomobject]$ordered
 }
 
 function Get-RaymanWorkerNormalizedControlUrl {
@@ -1080,12 +1545,17 @@ function Invoke-RaymanWorkerNativeCommandCapture {
 function Get-RaymanWorkerExecutionRoot {
   param(
     [string]$WorkspaceRoot,
-    [object]$SyncManifest = $null
+    [object]$SyncManifest = $null,
+    [object]$ClientContext = $null
   )
 
   if ($null -eq $SyncManifest) {
-    $syncPath = Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot
-    $SyncManifest = Read-RaymanWorkerJsonFile -Path $syncPath
+    $hasClientContext = ($null -ne (Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext))
+    $SyncManifest = Get-RaymanWorkerClientSyncManifest -WorkspaceRoot $WorkspaceRoot -ClientContext $ClientContext
+    if ($null -eq $SyncManifest -and -not $hasClientContext) {
+      $syncPath = Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot
+      $SyncManifest = Read-RaymanWorkerJsonFile -Path $syncPath
+    }
   }
 
   if ($null -ne $SyncManifest -and $SyncManifest.PSObject.Properties['mode'] -and [string]$SyncManifest.mode -eq 'staged') {
@@ -1714,17 +2184,25 @@ function Get-RaymanWorkerStatusSnapshot {
     [object]$SyncManifest = $null,
     [int]$ProcessId = 0,
     [string]$HostStartTime = '',
-    [switch]$IncludeProcesses
+    [switch]$IncludeProcesses,
+    [object]$ClientContext = $null
   )
 
   $resolvedWorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $resolvedClientContext = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext
+  if ($null -eq $resolvedClientContext) {
+    $resolvedClientContext = Resolve-RaymanWorkerClientContext -WorkspaceRoot $resolvedWorkspaceRoot
+  }
+  if ($null -eq $SyncManifest -and $null -ne $resolvedClientContext) {
+    $SyncManifest = Get-RaymanWorkerClientSyncManifest -WorkspaceRoot $resolvedWorkspaceRoot -ClientContext $resolvedClientContext
+  }
   $workerId = Get-RaymanWorkerStableId -WorkspaceRoot $resolvedWorkspaceRoot
   $controlPort = Get-RaymanWorkerControlPort
   $discoveryPort = Get-RaymanWorkerDiscoveryPort
   $lanEnabled = Get-RaymanWorkerLanEnabled -WorkspaceRoot $resolvedWorkspaceRoot
   $advertisedAddress = Get-RaymanWorkerAdvertisedAddress -WorkspaceRoot $resolvedWorkspaceRoot
   $git = Get-RaymanWorkerGitSnapshot -WorkspaceRoot $resolvedWorkspaceRoot
-  $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $resolvedWorkspaceRoot -SyncManifest $SyncManifest
+  $executionRoot = Get-RaymanWorkerExecutionRoot -WorkspaceRoot $resolvedWorkspaceRoot -SyncManifest $SyncManifest -ClientContext $resolvedClientContext
   $entrypoints = @(Get-RaymanWorkerDotNetEntrypoints -ExecutionRoot $executionRoot -WorkspaceRoot $resolvedWorkspaceRoot)
   $vsdbgStatus = Get-RaymanWorkerVsdbgStatus -WorkspaceRoot $resolvedWorkspaceRoot
   $firewallStatus = Get-RaymanWorkerFirewallStatus -WorkspaceRoot $resolvedWorkspaceRoot
@@ -1738,6 +2216,18 @@ function Get-RaymanWorkerStatusSnapshot {
     processes = @($processes)
     default_program = (Get-RaymanWorkerDefaultDebugTarget -ExecutionRoot $executionRoot -WorkspaceRoot $resolvedWorkspaceRoot)
   }
+  $clientSession = if ($null -ne $resolvedClientContext) {
+    New-RaymanWorkerClientSessionSummary -WorkspaceRoot $resolvedWorkspaceRoot -ClientContext $resolvedClientContext -SyncManifest $SyncManifest
+  } else {
+    $null
+  }
+  $effectiveWorkspaceMode = if ($null -ne $clientSession -and $clientSession.PSObject.Properties['workspace_mode'] -and -not [string]::IsNullOrWhiteSpace([string]$clientSession.workspace_mode)) {
+    [string]$clientSession.workspace_mode
+  } elseif ($null -ne $SyncManifest -and $SyncManifest.PSObject.Properties['mode']) {
+    [string]$SyncManifest.mode
+  } else {
+    $WorkspaceMode
+  }
   $payload = [ordered]@{
     schema = 'rayman.worker.status.v1'
     generated_at = (Get-Date).ToString('o')
@@ -1748,7 +2238,7 @@ function Get-RaymanWorkerStatusSnapshot {
     version = (Get-RaymanWorkerVersion -WorkspaceRoot $resolvedWorkspaceRoot)
     workspace_root = $resolvedWorkspaceRoot
     workspace_name = (Split-Path -Leaf $resolvedWorkspaceRoot)
-    workspace_mode = $WorkspaceMode
+    workspace_mode = $effectiveWorkspaceMode
     interactive_session = [Environment]::UserInteractive
     process_id = $ProcessId
     started_at = $HostStartTime
@@ -1771,15 +2261,19 @@ function Get-RaymanWorkerStatusSnapshot {
     capabilities = [pscustomobject]@{
       remote_exec = $true
       staged_sync = $true
-      attached_sync = $true
+      attached_sync = $false
       dotnet_debug = $true
       self_upgrade = $true
       windows_only = $true
     }
+    shared_worker = $true
+    session_isolation = (Get-RaymanWorkerSessionIsolation)
+    supported_sync_modes = @(Get-RaymanWorkerSupportedSyncModes)
     firewall = $firewallStatus
     git = $git
     sync = $SyncManifest
     execution_root = $executionRoot
+    client_session = $clientSession
     debug = [pscustomobject]$debugPayload
   }
   if (-not [bool]$vsdbgStatus.debugger_ready -and $vsdbgStatus.PSObject.Properties['debugger_error']) {
@@ -1800,12 +2294,13 @@ function Get-RaymanWorkerBeaconPayload {
     [object]$SyncManifest = $null,
     [int]$ProcessId = 0,
     [string]$HostStartTime = '',
-    [object]$StatusSnapshot = $null
+    [object]$StatusSnapshot = $null,
+    [object]$ClientContext = $null
   )
 
   $status = $StatusSnapshot
   if ($null -eq $status) {
-    $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -WorkspaceMode $WorkspaceMode -SyncManifest $SyncManifest -ProcessId $ProcessId -HostStartTime $HostStartTime
+    $status = Get-RaymanWorkerStatusSnapshot -WorkspaceRoot $WorkspaceRoot -WorkspaceMode $WorkspaceMode -SyncManifest $SyncManifest -ProcessId $ProcessId -HostStartTime $HostStartTime -ClientContext $ClientContext
   }
   $payload = [ordered]@{
     schema = 'rayman.worker.beacon.v1'
@@ -1826,6 +2321,9 @@ function Get-RaymanWorkerBeaconPayload {
     debugger_ready = if ($status.PSObject.Properties['debugger_ready']) { [bool]$status.debugger_ready } else { $false }
     debugger_path = if ($status.PSObject.Properties['debugger_path']) { [string]$status.debugger_path } else { '' }
     firewall_ready = if ($status.PSObject.Properties['firewall_ready']) { [bool]$status.firewall_ready } else { $false }
+    shared_worker = if ($status.PSObject.Properties['shared_worker']) { [bool]$status.shared_worker } else { $true }
+    session_isolation = if ($status.PSObject.Properties['session_isolation']) { [string]$status.session_isolation } else { (Get-RaymanWorkerSessionIsolation) }
+    supported_sync_modes = if ($status.PSObject.Properties['supported_sync_modes']) { @($status.supported_sync_modes) } else { @(Get-RaymanWorkerSupportedSyncModes) }
     capabilities = $status.capabilities
     git = $status.git
   }
@@ -1914,9 +2412,11 @@ function Set-RaymanActiveWorkerRecord {
     [string]$WorkspaceRoot,
     [object]$Worker,
     [string]$WorkspaceMode = 'attached',
-    [object]$SyncManifest = $null
+    [object]$SyncManifest = $null,
+    [object]$ClientContext = $null
   )
 
+  $resolvedClientContext = Resolve-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot -ClientContext $ClientContext
   $record = [pscustomobject]@{
     schema = 'rayman.worker.active.v1'
     updated_at = (Get-Date).ToString('o')
@@ -1927,6 +2427,7 @@ function Set-RaymanActiveWorkerRecord {
     control_url = [string]$Worker.control_url
     workspace_mode = $WorkspaceMode
     sync_manifest = $SyncManifest
+    client_context = $resolvedClientContext
   }
   Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerActivePath -WorkspaceRoot $WorkspaceRoot) -Value $record
   return $record
@@ -2031,7 +2532,8 @@ function Invoke-RaymanWorkerControlRequest {
     [string]$InFile = '',
     [string]$ContentType = 'application/json',
     [int]$TimeoutSeconds = 30,
-    [string]$WorkspaceRoot = ''
+    [string]$WorkspaceRoot = '',
+    [object]$ClientContext = $null
   )
 
   $uri = Get-RaymanWorkerControlUri -Worker $Worker -Path $Path
@@ -2042,9 +2544,11 @@ function Invoke-RaymanWorkerControlRequest {
   } else {
     ''
   }
+  $effectiveClientContext = Resolve-RaymanWorkerClientContext -WorkspaceRoot $headerWorkspaceRoot -ClientContext $ClientContext
   $headers = Get-RaymanWorkerControlHeaders -WorkspaceRoot $headerWorkspaceRoot
   try {
     if ($Method -eq 'GET') {
+      $uri = Add-RaymanWorkerClientContextToUri -Uri $uri -WorkspaceRoot $headerWorkspaceRoot -ClientContext $effectiveClientContext
       $params = @{
         Uri = $uri
         Method = 'Get'
@@ -2076,7 +2580,11 @@ function Invoke-RaymanWorkerControlRequest {
       return ($response.Content | ConvertFrom-Json -ErrorAction Stop)
     }
 
+    $requestBody = Add-RaymanWorkerClientContextToBody -Body $Body -WorkspaceRoot $headerWorkspaceRoot -ClientContext $effectiveClientContext
     $json = if ($null -eq $Body) { '{}' } else { ($Body | ConvertTo-Json -Depth 12) }
+    if ($null -ne $requestBody) {
+      $json = ($requestBody | ConvertTo-Json -Depth 12)
+    }
     $params = @{
       Uri = $uri
       Method = $Method
@@ -2152,6 +2660,7 @@ function Invoke-RaymanWorkerRemoteCommand {
 
   $worker = $context.worker
   $active = $context.active
+  $clientContext = if ($null -ne $active -and $active.PSObject.Properties['client_context']) { $active.client_context } else { (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot) }
   $body = [pscustomobject]@{
     command = $CommandText
     workspace_mode = if ($null -ne $active -and $active.PSObject.Properties['workspace_mode']) { [string]$active.workspace_mode } else { 'attached' }
@@ -2159,7 +2668,7 @@ function Invoke-RaymanWorkerRemoteCommand {
     timeout_seconds = (Get-RaymanWorkerExecutionTimeoutSeconds)
   }
 
-  $response = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/exec' -Body $body -TimeoutSeconds ([int]$body.timeout_seconds + 10) -WorkspaceRoot $WorkspaceRoot
+  $response = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/exec' -Body $body -TimeoutSeconds ([int]$body.timeout_seconds + 10) -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
   $outputLines = @()
   if ($null -ne $response -and $response.PSObject.Properties['output_lines']) {
     $outputLines = @($response.output_lines | ForEach-Object { [string]$_ })

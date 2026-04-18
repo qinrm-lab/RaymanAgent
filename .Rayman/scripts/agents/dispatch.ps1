@@ -33,6 +33,16 @@ if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
   . $memoryHelperPath
 }
 
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+  . $eventHooksPath -NoMain
+}
+
+$contextAuditHelperPath = Join-Path $PSScriptRoot 'context_audit.ps1'
+if (Test-Path -LiteralPath $contextAuditHelperPath -PathType Leaf) {
+  . $contextAuditHelperPath -NoMain
+}
+
 $sessionCommonPath = Join-Path $PSScriptRoot '..\state\session_common.ps1'
 if (Test-Path -LiteralPath $sessionCommonPath -PathType Leaf) {
   . $sessionCommonPath
@@ -170,6 +180,42 @@ function Get-JsonOrNull([string]$Path) {
   } catch {
     return $null
   }
+}
+
+function Get-DispatchContextAuditSummary {
+  param([object]$Audit)
+
+  if ($null -eq $Audit) {
+    return $null
+  }
+
+  return [ordered]@{
+    success = [bool]$Audit.success
+    blocked = [bool]$Audit.blocked
+    requested_mode = [string]$Audit.requested_mode
+    effective_mode = [string]$Audit.effective_mode
+    issue_count = [int]$Audit.issue_count
+    warning_count = [int]$Audit.warning_count
+    blocking_issue_count = [int]$Audit.blocking_issue_count
+    artifacts = if ($Audit.PSObject.Properties['artifacts']) { $Audit.artifacts } else { $null }
+  }
+}
+
+function Write-DispatchRuntimeEvent {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$RunId,
+    [string]$EventType,
+    [object]$Payload
+  )
+
+  if (-not (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue)) {
+    return
+  }
+
+  try {
+    Write-RaymanEvent -WorkspaceRoot $WorkspaceRoot -RunId $RunId -EventType $EventType -Category 'dispatch' -Payload $Payload | Out-Null
+  } catch {}
 }
 
 function Resolve-PromptTemplateKey {
@@ -907,8 +953,93 @@ function Build-SystemSlimDispatchPrompt {
   return $body
 }
 
+function Split-RaymanDispatchSimpleArguments {
+  param([string]$Text)
+
+  if ([string]::IsNullOrWhiteSpace([string]$Text)) { return @() }
+  if ($Text -match '[|;&<>]') { return $null }
+
+  $items = New-Object System.Collections.Generic.List[string]
+  $pattern = '"(?<double>(?:[^"\\]|\\.)*)"|''(?<single>[^'']*)''|(?<bare>\S+)'
+  foreach ($match in [regex]::Matches($Text, $pattern)) {
+    if ($match.Groups['double'].Success) {
+      $items.Add(([string]$match.Groups['double'].Value -replace '\\"', '"')) | Out-Null
+    } elseif ($match.Groups['single'].Success) {
+      $items.Add([string]$match.Groups['single'].Value) | Out-Null
+    } elseif ($match.Groups['bare'].Success) {
+      $items.Add([string]$match.Groups['bare'].Value) | Out-Null
+    }
+  }
+
+  return @($items.ToArray())
+}
+
+function Resolve-RaymanDispatchApplication {
+  param([string]$CommandName)
+
+  $names = @($CommandName)
+  if ($CommandName -eq 'rayman') {
+    $names += @('rayman.cmd', 'rayman.exe', 'rayman.ps1')
+  }
+
+  foreach ($name in @($names | Select-Object -Unique)) {
+    $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      return [string]$cmd.Source
+    }
+  }
+
+  return ''
+}
+
+function Invoke-RaymanDispatchRaymanCommand {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$CommandText,
+    [string]$DetailLogPath
+  )
+
+  $m = [regex]::Match([string]$CommandText, '^\s*(?<cmd>rayman(?:\.(?:ps1|cmd|bat|exe))?)\s*(?<args>.*)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if (-not $m.Success) { return $null }
+
+  $commandName = [string]$m.Groups['cmd'].Value
+  $args = Split-RaymanDispatchSimpleArguments -Text ([string]$m.Groups['args'].Value)
+  if ($null -eq $args) { return $null }
+
+  $source = Resolve-RaymanDispatchApplication -CommandName $commandName
+  if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+
+  $filePath = $source
+  $argumentList = @($args)
+  if ([System.IO.Path]::GetExtension($source).Equals('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $psHost = if (Get-Command Resolve-RaymanPowerShellHost -ErrorAction SilentlyContinue) {
+      Resolve-RaymanPowerShellHost
+    } else {
+      $candidate = Get-Command powershell.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($null -eq $candidate) { $candidate = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1 }
+      if ($null -ne $candidate) { [string]$candidate.Source } else { '' }
+    }
+    if ([string]::IsNullOrWhiteSpace($psHost)) { return $null }
+    $filePath = $psHost
+    $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $source) + @($args)
+  }
+
+  $capture = Invoke-RaymanNativeCommandCapture -FilePath $filePath -ArgumentList @($argumentList) -WorkingDirectory $WorkspaceRoot
+  foreach ($line in @($capture.stdout + $capture.stderr)) {
+    Add-Content -LiteralPath $DetailLogPath -Encoding UTF8 -Value ([string]$line)
+  }
+
+  return [pscustomobject]@{
+    command = $CommandText
+    exit_code = if ([bool]$capture.started) { [int]$capture.exit_code } else { 1 }
+    success = [bool]$capture.success
+    error_message = [string]$capture.error
+  }
+}
+
 function Invoke-RaymanDispatchLocalCommand {
   param(
+    [string]$WorkspaceRoot,
     [string]$CommandText,
     [string]$DetailLogPath
   )
@@ -921,6 +1052,11 @@ function Invoke-RaymanDispatchLocalCommand {
   }
 
   try {
+    $raymanResult = Invoke-RaymanDispatchRaymanCommand -WorkspaceRoot $WorkspaceRoot -CommandText $CommandText -DetailLogPath $DetailLogPath
+    if ($null -ne $raymanResult) {
+      return $raymanResult
+    }
+
     $commandOutput = Invoke-Expression $CommandText 2>&1
     if ($commandOutput) {
       $commandOutput | ForEach-Object { Add-Content -LiteralPath $DetailLogPath -Encoding UTF8 -Value ([string]$_) }
@@ -957,7 +1093,7 @@ function Invoke-RaymanDispatchExecutionCommand {
     }
   }
 
-  $localResult = Invoke-RaymanDispatchLocalCommand -CommandText $CommandText -DetailLogPath $DetailLogPath
+  $localResult = Invoke-RaymanDispatchLocalCommand -WorkspaceRoot $WorkspaceRoot -CommandText $CommandText -DetailLogPath $DetailLogPath
   $localResult | Add-Member -MemberType NoteProperty -Name execution_host -Value 'local' -Force
   $localResult | Add-Member -MemberType NoteProperty -Name worker_id -Value '' -Force
   $localResult | Add-Member -MemberType NoteProperty -Name worker_name -Value '' -Force
@@ -1126,6 +1262,140 @@ $interactionModePreamble = if (Get-Command Get-RaymanInteractionModePromptPreamb
   ''
 }
 $capabilityPreamble = Build-AgentCapabilityPreamble -CapabilityMatches $activeCapabilityMatches
+$contextAudit = $null
+$contextAuditEventSummary = $null
+if (Get-Command Invoke-RaymanContextAudit -ErrorAction SilentlyContinue) {
+  try {
+    $contextAudit = Invoke-RaymanContextAudit -WorkspaceRoot $WorkspaceRoot -Mode 'block' -InvocationSource 'dispatch'
+    $contextAuditEventSummary = Get-DispatchContextAuditSummary -Audit $contextAudit
+    Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("context audit: blocked={0}; warnings={1}; blocking={2}" -f [string]([bool]$contextAudit.blocked).ToString().ToLowerInvariant(), [int]$contextAudit.warning_count, [int]$contextAudit.blocking_issue_count)
+  } catch {
+    $contextAudit = [pscustomobject]@{
+      schema = 'rayman.context_audit.v1'
+      success = $false
+      blocked = $true
+      requested_mode = 'block'
+      effective_mode = 'block'
+      invocation_source = 'dispatch'
+      workspace_root = $WorkspaceRoot
+      generated_at = (Get-Date).ToString('o')
+      files_scanned = 0
+      bytes_scanned = 0
+      issue_count = 1
+      warning_count = 0
+      blocking_issue_count = 1
+      issues = @([pscustomobject]@{
+          severity = 'block'
+          kind = 'audit_failure'
+          path = ''
+          source_kind = 'context_audit'
+          message = ("Context audit failed: {0}" -f $_.Exception.Message)
+          evidence = ''
+        })
+      artifacts = $null
+    }
+    $contextAuditEventSummary = Get-DispatchContextAuditSummary -Audit $contextAudit
+    Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value ("context audit failed: {0}" -f $_.Exception.ToString())
+  }
+} else {
+  $contextAudit = [pscustomobject]@{
+    schema = 'rayman.context_audit.v1'
+    success = $false
+    blocked = $true
+    requested_mode = 'block'
+    effective_mode = 'block'
+    invocation_source = 'dispatch'
+    workspace_root = $WorkspaceRoot
+    generated_at = (Get-Date).ToString('o')
+    files_scanned = 0
+    bytes_scanned = 0
+    issue_count = 1
+    warning_count = 0
+    blocking_issue_count = 1
+    issues = @([pscustomobject]@{
+        severity = 'block'
+        kind = 'audit_unavailable'
+        path = ''
+        source_kind = 'context_audit'
+        message = 'Context audit helper is unavailable.'
+        evidence = ''
+      })
+    artifacts = $null
+  }
+  $contextAuditEventSummary = Get-DispatchContextAuditSummary -Audit $contextAudit
+  Add-Content -LiteralPath $detailLog -Encoding UTF8 -Value 'context audit unavailable'
+}
+Write-DispatchRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'dispatch.start' -Payload ([ordered]@{
+    run_id = $runId
+    task_kind = $TaskKind
+    task = $Task
+    prompt_key = $effectivePromptKey
+    preferred_backend = $effectivePreferredBackend
+    requested_model_alias = $requestedModelAlias
+    requested_resolved_model = $requestedResolvedModel
+    dry_run = [bool]$DryRun
+    context_audit = $contextAuditEventSummary
+  })
+if ($null -ne $contextAudit -and [bool]$contextAudit.blocked) {
+  $contextBlockedSummary = [ordered]@{
+    schema = 'rayman.agent.dispatch.v1'
+    generated_at = (Get-Date).ToString('o')
+    run_id = $runId
+    workspace_root = $WorkspaceRoot
+    repository = $repoName
+    task_kind = $TaskKind
+    effective_task_key = $effectiveTaskKey
+    memory_task_key = $memoryTaskKey
+    task = $Task
+    prompt_key = $effectivePromptKey
+    preferred_backend = $effectivePreferredBackend
+    requested_model_alias = $requestedModelAlias
+    requested_model_selector = $requestedModelSelector
+    requested_resolved_model = $requestedResolvedModel
+    model_resolution_source = $selectedModelSource
+    model_candidate_chain = @($modelCandidateChain)
+    model_selection_reason = $modelSelectionReason
+    model_availability = $modelAvailability
+    interaction_mode = $interactionMode
+    interaction_mode_label = $interactionModeLabel
+    selected_model_alias = $selectedModelAlias
+    selected_model_selector = $selectedModelSelector
+    resolved_model = $resolvedModel
+    selected_backend = 'blocked'
+    selection_reason = 'context_audit_blocked'
+    policy_blocked = $false
+    policy_block_reason = ''
+    policy_bypass_allowed = $false
+    policy_bypass_requested = $false
+    policy_bypassed = $false
+    policy_bypass_reason = ''
+    policy_decision_log = ''
+    capability_registry_path = [string]$capabilityState.registry_path
+    capability_registry_valid = [bool]$capabilityState.registry_valid
+    capability_matches = @($matchedCapabilities)
+    active_capability_matches = @($activeCapabilityMatches)
+    codex_capability_preamble = $capabilityPreamble
+    context_audit = $contextAudit
+    success = $false
+    exit_code = 8
+    detail_log = $detailLog
+  }
+  ($contextBlockedSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+  Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+  Write-DispatchRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'dispatch.finish' -Payload ([ordered]@{
+      run_id = $runId
+      selected_backend = 'blocked'
+      selection_reason = 'context_audit_blocked'
+      success = $false
+      exit_code = 8
+      delegated = $false
+      duration_ms = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $dispatchStartedAt).TotalMilliseconds))
+      context_audit = $contextAuditEventSummary
+      summary_path = $summaryPath
+    })
+  Write-Host '❌ [dispatch] blocked by context audit' -ForegroundColor Red
+  exit 8
+}
 $memoryPreamble = ''
 if (Get-Command Get-RaymanMemoryPromptPreamble -ErrorAction SilentlyContinue) {
   try {
@@ -1357,12 +1627,24 @@ if ($policy.blocked) {
     delegation_target = $delegationTarget
     delegation_reason = $delegationReason
     system_slim_report = $systemSlimReport
+    context_audit = $contextAudit
     success = $false
     exit_code = 5
     detail_log = $detailLog
   }
   ($blockedSummary | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
   Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+  Write-DispatchRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'dispatch.finish' -Payload ([ordered]@{
+      run_id = $runId
+      selected_backend = 'blocked'
+      selection_reason = $policyBlockedReason
+      success = $false
+      exit_code = 5
+      delegated = $false
+      duration_ms = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $dispatchStartedAt).TotalMilliseconds))
+      context_audit = $contextAuditEventSummary
+      summary_path = $summaryPath
+    })
   Write-Host ("❌ [dispatch] blocked by policy: {0}" -f $policyBlockedReason) -ForegroundColor Red
   exit 5
   }
@@ -1395,12 +1677,24 @@ if ($agenticEnabled -and $null -ne $agenticDocGate -and -not [bool]$agenticDocGa
     agentic_tool_policy = $agenticToolPolicy
     agentic_doc_gate = $agenticDocGate
     agentic_execution = $agenticExecution
+    context_audit = $contextAudit
     success = $false
     exit_code = 6
     detail_log = $detailLog
   }
   ($docGateSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
   Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+  Write-DispatchRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'dispatch.finish' -Payload ([ordered]@{
+      run_id = $runId
+      selected_backend = 'blocked'
+      selection_reason = 'agentic_doc_gate_failed'
+      success = $false
+      exit_code = 6
+      delegated = $false
+      duration_ms = [int][Math]::Max(0, [Math]::Round(((Get-Date) - $dispatchStartedAt).TotalMilliseconds))
+      context_audit = $contextAuditEventSummary
+      summary_path = $summaryPath
+    })
   Write-Host "❌ [dispatch] blocked by agentic doc gate" -ForegroundColor Red
   exit 6
 }
@@ -1696,6 +1990,7 @@ $summary = [ordered]@{
   delegation_target = $delegationTarget
   delegation_reason = $delegationReason
   system_slim_report = $systemSlimReport
+  context_audit = $contextAudit
   success = $success
   exit_code = $exitCode
   error_message = $errorMessage
@@ -1706,6 +2001,17 @@ $summary = [ordered]@{
 
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 Copy-Item -LiteralPath $summaryPath -Destination $lastPath -Force
+Write-DispatchRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'dispatch.finish' -Payload ([ordered]@{
+    run_id = $runId
+    selected_backend = $selectedBackend
+    selection_reason = $selectionReason
+    success = $success
+    exit_code = $exitCode
+    delegated = $delegated
+    duration_ms = $dispatchDurationMs
+    context_audit = $contextAuditEventSummary
+    summary_path = $summaryPath
+  })
 
 if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
   $dispatchErrorKind = if ($success) {

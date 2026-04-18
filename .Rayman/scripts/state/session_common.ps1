@@ -10,6 +10,14 @@ $ownershipHelperPath = Join-Path $PSScriptRoot '..\utils\workspace_process_owner
 if (Test-Path -LiteralPath $ownershipHelperPath -PathType Leaf) {
     . $ownershipHelperPath
 }
+$memoryHelperPath = Join-Path $PSScriptRoot '..\memory\memory_common.ps1'
+if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
+    . $memoryHelperPath
+}
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+    . $eventHooksPath -NoMain
+}
 
 function Get-RaymanStateWorkspaceRoot {
     param(
@@ -576,8 +584,58 @@ function Test-RaymanGitWorkTree {
     }
 }
 
+function Get-RaymanGitManagedExcludePathspecs {
+    return @(
+        ':(exclude).Rayman/state'
+        ':(exclude).Rayman/state/**'
+        ':(exclude).Rayman/runtime'
+        ':(exclude).Rayman/runtime/**'
+    )
+}
+
+function Get-RaymanGitContentPathspec {
+    param([switch]$ExcludeManaged)
+
+    $pathspec = New-Object System.Collections.Generic.List[string]
+    $pathspec.Add('.') | Out-Null
+    if ($ExcludeManaged) {
+        foreach ($entry in @(Get-RaymanGitManagedExcludePathspecs)) {
+            $pathspec.Add([string]$entry) | Out-Null
+        }
+    }
+    return @($pathspec.ToArray())
+}
+
+function Test-RaymanGitManagedStatusLine {
+    param([string]$Line)
+
+    $text = [string]$Line
+    if ($text.Length -lt 4) {
+        return $false
+    }
+
+    $pathValue = $text.Substring(3).Trim()
+    if ($pathValue -match '\s+->\s+(?<target>.+)$') {
+        $pathValue = [string]$matches['target']
+    }
+    $normalized = $pathValue.Trim('"').Replace('\', '/')
+    while ($normalized.StartsWith('./')) {
+        $normalized = $normalized.Substring(2)
+    }
+
+    return (
+        $normalized -eq '.Rayman/state' -or
+        $normalized.StartsWith('.Rayman/state/') -or
+        $normalized -eq '.Rayman/runtime' -or
+        $normalized.StartsWith('.Rayman/runtime/')
+    )
+}
+
 function Get-RaymanGitStatusLines {
-    param([string]$WorkspaceRoot)
+    param(
+        [string]$WorkspaceRoot,
+        [switch]$ExcludeManaged
+    )
 
     $gitPath = Get-RaymanGitCommandPath
     if ([string]::IsNullOrWhiteSpace($gitPath)) {
@@ -588,7 +646,18 @@ function Get-RaymanGitStatusLines {
     $saved = Get-Location
     try {
         Set-Location -LiteralPath $resolvedRoot
-        return @(& $gitPath status --porcelain 2>$null)
+        $pathspec = @(Get-RaymanGitContentPathspec -ExcludeManaged:$ExcludeManaged)
+        $statusArgs = @('status', '--porcelain', '--untracked-files=all', '--') + $pathspec
+        $lines = @(& $gitPath @statusArgs 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            return @($lines)
+        }
+
+        $fallback = @(& $gitPath status --porcelain --untracked-files=all 2>$null)
+        if (-not $ExcludeManaged) {
+            return @($fallback)
+        }
+        return @($fallback | Where-Object { -not (Test-RaymanGitManagedStatusLine -Line ([string]$_)) })
     } finally {
         Set-Location -LiteralPath $saved.Path
     }
@@ -643,7 +712,7 @@ function Save-RaymanGitSessionStash {
     }
 
     $resolvedRoot = Get-RaymanStateWorkspaceRoot -WorkspaceRoot $WorkspaceRoot
-    $status = @(Get-RaymanGitStatusLines -WorkspaceRoot $resolvedRoot)
+    $status = @(Get-RaymanGitStatusLines -WorkspaceRoot $resolvedRoot -ExcludeManaged)
     $result.status_count = $status.Count
     if ($status.Count -le 0) {
         $result.success = $true
@@ -657,7 +726,9 @@ function Save-RaymanGitSessionStash {
     $saved = Get-Location
     try {
         Set-Location -LiteralPath $resolvedRoot
-        & $gitPath stash push -u -m $message -- . ':(exclude).Rayman/state' | Out-Null
+        $pathspec = @(Get-RaymanGitContentPathspec -ExcludeManaged)
+        $stashArgs = @('stash', 'push', '-u', '-m', $message, '--') + $pathspec
+        & $gitPath @stashArgs | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $result.reason = 'stash_push_failed'
             return [pscustomobject]$result
@@ -862,15 +933,28 @@ function Save-RaymanSessionDiffArtifacts {
     $saved = Get-Location
     try {
         Set-Location -LiteralPath $result.workspace_root
-        $status = @(& $gitPath status --porcelain 2>$null)
+        $status = @(Get-RaymanGitStatusLines -WorkspaceRoot $result.workspace_root -ExcludeManaged)
         $result.files_changed = $status.Count
         if ($status.Count -gt 0) {
-            & $gitPath add -N . | Out-Null
-            $patchContent = @(& $gitPath diff) -join [Environment]::NewLine
+            $pathspec = @(Get-RaymanGitContentPathspec -ExcludeManaged)
+            $addArgs = @('add', '-N', '--') + $pathspec
+            & $gitPath @addArgs | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $result.reason = 'intent_add_failed'
+                return [pscustomobject]$result
+            }
+
+            $diffArgs = @('diff', '--') + $pathspec
+            $patchContent = @(& $gitPath @diffArgs) -join [Environment]::NewLine
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($patchContent)) {
+                $result.reason = 'diff_empty'
+                return [pscustomobject]$result
+            }
             Write-RaymanSessionTextFile -Path $paths.auto_save_patch_path -Content (($patchContent.TrimEnd()) + [Environment]::NewLine)
             Write-RaymanSessionJsonFile -Path $paths.auto_save_meta_path -Value ([ordered]@{
                     timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
                     files_changed = $status.Count
+                    excluded_managed_paths = @('.Rayman/state/**', '.Rayman/runtime/**')
                 })
             $result.saved = $true
             $result.reason = 'saved'
@@ -1021,6 +1105,16 @@ function Invoke-RaymanSessionCommandCheckpoint {
         auto_save_meta_path = if ($targetManifest.PSObject.Properties['handover_artifacts']) { [string]$targetManifest.handover_artifacts.auto_save_meta_path } else { '' }
         files_changed = if ($null -ne $artifacts -and $artifacts.PSObject.Properties['files_changed']) { [int]$artifacts.files_changed } else { 0 }
         saved = if ($null -ne $artifacts -and $artifacts.PSObject.Properties['saved']) { [bool]$artifacts.saved } else { $false }
+    }
+    if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
+        try {
+            Write-RaymanSessionRecall -WorkspaceRoot $runtimeContext.workspace_root -Manifest $targetManifest -HandoverPath $handoverPath -PatchPath ([string]$result.artifacts.auto_save_patch_path) -MetaPath ([string]$result.artifacts.auto_save_meta_path) | Out-Null
+        } catch {}
+    }
+    if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+        try {
+            Write-RaymanEvent -WorkspaceRoot $runtimeContext.workspace_root -EventType 'session.checkpoint' -Category 'state' -Payload $result | Out-Null
+        } catch {}
     }
     return [pscustomobject]$result
 }

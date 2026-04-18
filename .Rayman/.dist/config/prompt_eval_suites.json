@@ -1,0 +1,31 @@
+{
+  "schema": "rayman.prompt_eval_suites.v1",
+  "suites": [
+    {
+      "id": "agentic-review-core",
+      "description": "Render-review prompts against a representative bugfix task before release review.",
+      "prompts": [
+        "review.initial.prompt.md",
+        "review.counter.prompt.md",
+        "review.final.prompt.md"
+      ],
+      "cases": [
+        {
+          "id": "stateful-review-loop",
+          "task": "Improve a Rayman state workflow without breaking session resume or release gates.",
+          "acceptance_criteria": "Existing command surfaces remain compatible, release-gate-visible artifacts are updated, and rollback remains session-backed.",
+          "notes": "This is a rendering regression suite; no hosted optimizer is required.",
+          "expected_contains": [
+            "Rayman",
+            "acceptance"
+          ],
+          "forbidden_contains": [
+            "{{TASK}}",
+            "{{ACCEPTANCE_CRITERIA}}",
+            "{{NOTES}}"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,15 +1,15 @@
 param(
-  [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
-  [string]$GuardStage = 'manual',
-  [switch]$AsJson,
-  [switch]$FailOnMatch,
-  [switch]$NoMain
+  [Alias('WorkspaceRoot')][string]$RepeatErrorGuardWorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
+  [Alias('GuardStage')][string]$RepeatErrorGuardStage = 'manual',
+  [Alias('AsJson')][switch]$RepeatErrorGuardAsJson,
+  [Alias('FailOnMatch')][switch]$RepeatErrorGuardFailOnMatch,
+  [Alias('NoMain')][switch]$RepeatErrorGuardNoMain
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not (Get-Command Get-RaymanMapValue -ErrorAction SilentlyContinue)) {
+if (-not (Test-Path 'Function:\Get-RaymanMapValue')) {
   function Get-RaymanMapValue {
     param(
       [object]$Map,
@@ -45,7 +45,7 @@ if (-not (Get-Command Get-RaymanMapValue -ErrorAction SilentlyContinue)) {
   }
 }
 
-if (-not (Get-Command Write-RaymanUtf8NoBom -ErrorAction SilentlyContinue)) {
+if (-not (Test-Path 'Function:\Write-RaymanUtf8NoBom')) {
   function Write-RaymanUtf8NoBom {
     param(
       [string]$Path,
@@ -599,17 +599,17 @@ function Write-RaymanRepeatErrorGuardText {
   }
 }
 
-if (-not $NoMain) {
-  $resolvedWorkspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-  $report = Get-RaymanRepeatErrorGuardReport -WorkspaceRoot $resolvedWorkspace -GuardStage $GuardStage
+if (-not $RepeatErrorGuardNoMain) {
+  $resolvedWorkspace = (Resolve-Path -LiteralPath $RepeatErrorGuardWorkspaceRoot).Path
+  $report = Get-RaymanRepeatErrorGuardReport -WorkspaceRoot $resolvedWorkspace -GuardStage $RepeatErrorGuardStage
   Write-RaymanRepeatErrorGuardRuntimeReport -WorkspaceRoot $resolvedWorkspace -Report $report | Out-Null
-  if ($AsJson) {
+  if ($RepeatErrorGuardAsJson) {
     $report | ConvertTo-Json -Depth 12
   } else {
     Write-RaymanRepeatErrorGuardText -Report $report
   }
 
-  if ($FailOnMatch -and [bool](Get-RaymanMapValue -Map (Get-RaymanMapValue -Map $report -Key 'summary' -Default $null) -Key 'fail_fast' -Default $false)) {
+  if ($RepeatErrorGuardFailOnMatch -and [bool](Get-RaymanMapValue -Map (Get-RaymanMapValue -Map $report -Key 'summary' -Default $null) -Key 'fail_fast' -Default $false)) {
     exit 6
   }
 }

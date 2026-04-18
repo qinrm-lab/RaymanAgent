@@ -1,8 +1,9 @@
 #:schema https://developers.openai.com/codex/config-schema.json
 name = "rayman_explorer"
 description = "Read-only codebase explorer for locating the real execution path before edits start."
-model = "gpt-4o-mini"
-sandbox_mode = "danger-full-access"
+# Model intentionally omitted so this agent inherits the parent session model.
+# Rayman policy: prefer the parent session's current OpenAI GPT-5 model unless a task explicitly overrides it.
+sandbox_mode = "read-only"
 model_reasoning_effort = "high"
 developer_instructions = '''
 Role: rayman_explorer

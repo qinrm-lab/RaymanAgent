@@ -9,7 +9,9 @@ fast-init	all	core	Generate missing requirements only (no installs).	0
 migrate	all	core	Migrate legacy requirements into the standard layout.	0
 memory-bootstrap	pwsh-only	core	Probe and prepare the Agent Memory Python runtime.	0
 memory-summarize	pwsh-only	core	Drain pending episodic summaries into task summaries and semantic memory.	0
-memory-search	pwsh-only	core	Query Agent Memory hints and recent summaries.	0
+memory-search	pwsh-only	core	Query unified recall across Agent Memory and saved sessions.	0
+context-audit	pwsh-only	diagnostics	Audit managed context sources for prompt injection and oversize risk.	0
+skills	pwsh-only	diagnostics	Inspect trusted skill roots and skills audit results.	0
 doctor	all	diagnostics	Run read-only health checks.	0
 copy-self-check	all	diagnostics	Run copy-initialization smoke verification.	0
 check	all	diagnostics	Run the baseline check suite.	0
@@ -22,7 +24,7 @@ winapp-inspect	windows-only	automation	Export the Windows control tree for flow 
 linux-test	pwsh-only	automation	Run Linux tests in WSL with dependency bootstrap.	0
 dispatch	all	automation	Route a task to codex, copilot, or local backends.	1
 codex	all	automation	Manage Rayman-scoped Codex accounts, switching, and CLI execution.	1
-worker	windows-only	automation	Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.	1
+worker	windows-only	automation	Manage shared LAN Rayman Workers with staged sync, exec, debug, and upgrade.	1
 workspace-install	windows-only	automation	Install distributable .Rayman into a local workspace, run setup, and default self-check.	1
 workspace-register	windows-only	automation	Register this RaymanAgent source workspace and install the rayman-here bootstrap launcher.	1
 agent-capabilities	pwsh-only	automation	Sync or inspect Rayman-managed Codex capabilities.	1
@@ -31,7 +33,7 @@ agent-contract	pwsh-only	diagnostics	Check agent assets, instructions, and gener
 sound-check	windows-only	diagnostics	Play manual and done reminder sounds and require explicit user confirmation.	0
 review-loop	pwsh-only	automation	Run the dispatch plus test-fix review loop.	1
 first-pass-report	pwsh-only	automation	Generate the first-pass KPI report.	0
-prompts	pwsh-only	automation	List, show, or apply reusable prompt templates.	0
+prompts	pwsh-only	automation	List, show, apply, or eval reusable prompt templates.	0
 fast-gate	all	project	Run the standard project fast gate.	0
 browser-gate	all	project	Run the standard project browser gate.	0
 full-gate	all	project	Run the standard project full gate.	0
@@ -42,6 +44,7 @@ newversion	pwsh-only	release	Set the managed Rayman version across governed file
 package-dist	pwsh-only	release	Build the distributable .Rayman package.	0
 clean	all	diagnostics	Clean runtime, temp, and copy-smoke artifacts.	0
 snapshot	all	diagnostics	Create a rollback snapshot under .Rayman/runtime/snapshots.	0
+rollback	pwsh-only	state	List, diff, or restore session-backed checkpoints.	0
 metrics	all	diagnostics	Show telemetry metrics and assertions.	0
 trend	all	diagnostics	Generate the daily telemetry trend report.	0
 baseline-guard	all	diagnostics	Compare recent telemetry against the historical baseline.	0

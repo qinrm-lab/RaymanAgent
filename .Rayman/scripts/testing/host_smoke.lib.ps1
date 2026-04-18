@@ -436,6 +436,44 @@ function Resolve-RaymanHostSmokePythonCommand {
   }
 }
 
+function Get-RaymanHostSmokeMutexWaitSeconds {
+  $raw = [Environment]::GetEnvironmentVariable('RAYMAN_HOST_SMOKE_MUTEX_WAIT_SECONDS')
+  $parsed = 0
+  if (-not [string]::IsNullOrWhiteSpace([string]$raw) -and [int]::TryParse([string]$raw, [ref]$parsed)) {
+    if ($parsed -lt 1) { return 1 }
+    if ($parsed -gt 7200) { return 7200 }
+    return $parsed
+  }
+  return 900
+}
+
+function New-RaymanHostSmokeRunMutex {
+  param([string]$WorkspaceRootPath)
+
+  if ([string]::IsNullOrWhiteSpace([string]$WorkspaceRootPath)) {
+    return $null
+  }
+
+  $normalized = [string]$WorkspaceRootPath
+  try {
+    $normalized = [System.IO.Path]::GetFullPath([string]$WorkspaceRootPath)
+  } catch {}
+  $normalized = $normalized.Trim().TrimEnd('\', '/').ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace([string]$normalized)) {
+    return $null
+  }
+
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+  $sha1 = [System.Security.Cryptography.SHA1]::Create()
+  try {
+    $hash = ($sha1.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+  } finally {
+    $sha1.Dispose()
+  }
+
+  return (New-Object System.Threading.Mutex($false, ("Global\RaymanHostSmoke_{0}" -f $hash)))
+}
+
 function Select-RaymanHostSmokeLoopbackWorker {
   param(
     [object[]]$Workers = @(),

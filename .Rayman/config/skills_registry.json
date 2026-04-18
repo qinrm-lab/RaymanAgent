@@ -1,0 +1,23 @@
+{
+  "schema": "rayman.skills_registry.v1",
+  "duplicate_resolution": "prefer_managed",
+  "roots": [
+    {
+      "id": "github-managed-skills",
+      "path": ".github/skills",
+      "source_kind": "bundled",
+      "trust": "managed",
+      "enabled": true,
+      "allowlisted": true
+    },
+    {
+      "id": "rayman-managed-skills",
+      "path": ".Rayman/skills",
+      "source_kind": "bundled",
+      "trust": "managed",
+      "enabled": true,
+      "allowlisted": true
+    }
+  ],
+  "external_roots": []
+}

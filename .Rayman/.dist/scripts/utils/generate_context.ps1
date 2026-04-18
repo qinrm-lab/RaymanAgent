@@ -13,6 +13,10 @@ $commandCatalogPath = Join-Path $PSScriptRoot 'command_catalog.ps1'
 if (Test-Path -LiteralPath $commandCatalogPath -PathType Leaf) {
 	. $commandCatalogPath
 }
+$contextAuditPath = Join-Path $WorkspaceRoot '.Rayman\scripts\agents\context_audit.ps1'
+if (Test-Path -LiteralPath $contextAuditPath -PathType Leaf) {
+	. $contextAuditPath -NoMain
+}
 
 function Write-ContextInfo([string]$Message) {
 	if (Get-Command Write-Info -ErrorAction SilentlyContinue) {
@@ -187,6 +191,17 @@ if (-not (Test-Path -LiteralPath $skillsPath -PathType Leaf)) {
 	) | Set-Content -LiteralPath $skillsPath -Encoding UTF8
 }
 
+if (Get-Command Invoke-RaymanContextAudit -ErrorAction SilentlyContinue) {
+	try {
+		$audit = Invoke-RaymanContextAudit -WorkspaceRoot $WorkspaceRoot -Mode 'warn' -InvocationSource 'context-update'
+		if ([bool]$audit.blocking_issue_count -or [bool]$audit.warning_count) {
+			Write-ContextWarn ("[context] audit issues: warnings={0} blocking={1}" -f [int]$audit.warning_count, [int]$audit.blocking_issue_count)
+		}
+	} catch {
+		Write-ContextWarn ("[context] audit failed: {0}" -f $_.Exception.Message)
+	}
+}
+
 $workspaceName = Split-Path -Leaf $WorkspaceRoot
 $interactionMode = if (Get-Command Get-RaymanInteractionMode -ErrorAction SilentlyContinue) {
 	Get-RaymanInteractionMode -WorkspaceRoot $WorkspaceRoot
@@ -308,6 +323,11 @@ $lines.Add("## Auto Skills")
 $lines.Add("")
 $lines.Add('- File: `.Rayman\context\skills.auto.md`')
 $lines.Add("- Summary: " + ($(if ([string]::IsNullOrWhiteSpace($skillsHeadline)) { '(none)' } else { $skillsHeadline })))
+$lines.Add("")
+$lines.Add("## Trusted Skill Manifests")
+$lines.Add("")
+$lines.Add('- Policy: bundled Rayman skills are managed; external skill manifests must be explicitly allowlisted in `.Rayman\config\skills_registry.json` before they flow into generated context.')
+$lines.Add('- Audit: use `rayman.ps1 skills -Action audit` or inspect `.Rayman\runtime\skills.audit.last.json` for trust verdicts, duplicate IDs, invalid manifests, and blocked sources.')
 $lines.Add("")
 $lines.Add("## Collaboration Preference")
 $lines.Add("")

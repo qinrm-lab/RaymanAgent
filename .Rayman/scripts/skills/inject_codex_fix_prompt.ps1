@@ -9,6 +9,10 @@ $commonPath = Join-Path $PSScriptRoot '..\..\common.ps1'
 if (Test-Path -LiteralPath $commonPath -PathType Leaf) {
   . $commonPath
 }
+$contextAuditPath = Join-Path $PSScriptRoot '..\agents\context_audit.ps1'
+if (Test-Path -LiteralPath $contextAuditPath -PathType Leaf) {
+  . $contextAuditPath -NoMain
+}
 
 function Get-RaymanPreferredNewLine {
   param([string]$Text)
@@ -94,6 +98,12 @@ $skillsBegin = "<!-- RAYMAN:SKILLS:BEGIN -->"
 $skillsEnd   = "<!-- RAYMAN:SKILLS:END -->"
 $interactionBegin = "<!-- RAYMAN:INTERACTION:BEGIN -->"
 $interactionEnd = "<!-- RAYMAN:INTERACTION:END -->"
+
+if (Get-Command Invoke-RaymanContextAudit -ErrorAction SilentlyContinue) {
+  try {
+    Invoke-RaymanContextAudit -WorkspaceRoot $Root -Mode 'warn' -InvocationSource 'inject_codex_fix_prompt' | Out-Null
+  } catch {}
+}
 
 $skillsHeader = @"
 $skillsBegin

@@ -33,6 +33,16 @@ if (Test-Path -LiteralPath $memoryHelperPath -PathType Leaf) {
   . $memoryHelperPath
 }
 
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+  . $eventHooksPath -NoMain
+}
+
+$contextAuditHelperPath = Join-Path $PSScriptRoot 'context_audit.ps1'
+if (Test-Path -LiteralPath $contextAuditHelperPath -PathType Leaf) {
+  . $contextAuditHelperPath -NoMain
+}
+
 function Ensure-Dir([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
@@ -57,6 +67,42 @@ function Get-JsonOrNull([string]$Path) {
   } catch {
     return $null
   }
+}
+
+function Get-ReviewContextAuditSummary {
+  param([object]$Audit)
+
+  if ($null -eq $Audit) {
+    return $null
+  }
+
+  return [ordered]@{
+    success = [bool]$Audit.success
+    blocked = [bool]$Audit.blocked
+    requested_mode = [string]$Audit.requested_mode
+    effective_mode = [string]$Audit.effective_mode
+    issue_count = [int]$Audit.issue_count
+    warning_count = [int]$Audit.warning_count
+    blocking_issue_count = [int]$Audit.blocking_issue_count
+    artifacts = if ($Audit.PSObject.Properties['artifacts']) { $Audit.artifacts } else { $null }
+  }
+}
+
+function Write-ReviewRuntimeEvent {
+  param(
+    [string]$WorkspaceRoot,
+    [string]$RunId,
+    [string]$EventType,
+    [object]$Payload
+  )
+
+  if (-not (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue)) {
+    return
+  }
+
+  try {
+    Write-RaymanEvent -WorkspaceRoot $WorkspaceRoot -RunId $RunId -EventType $EventType -Category 'review' -Payload $Payload | Out-Null
+  } catch {}
 }
 
 function Resolve-PromptTemplateKey {
@@ -352,6 +398,8 @@ $memoryTaskKey = if (Get-Command Get-RaymanMemoryTaskKey -ErrorAction SilentlyCo
 } else {
   ''
 }
+$contextAudit = $null
+$contextAuditEventSummary = $null
 
 $dispatchScript = Join-Path $raymanDir 'scripts\agents\dispatch.ps1'
 $testFixScript = Join-Path $raymanDir 'scripts\repair\run_tests_and_fix.ps1'
@@ -400,6 +448,124 @@ if (-not [string]::IsNullOrWhiteSpace($effectiveBypassReason)) {
   $effectiveBypassReason = $effectiveBypassReason.Trim()
 }
 
+if (Get-Command Invoke-RaymanContextAudit -ErrorAction SilentlyContinue) {
+  try {
+    $contextAudit = Invoke-RaymanContextAudit -WorkspaceRoot $WorkspaceRoot -Mode 'block' -InvocationSource 'review-loop'
+    $contextAuditEventSummary = Get-ReviewContextAuditSummary -Audit $contextAudit
+    Write-LoopLog -Path $detailLogPath -Message ("context audit blocked={0} warnings={1} blocking={2}" -f [string]([bool]$contextAudit.blocked).ToString().ToLowerInvariant(), [int]$contextAudit.warning_count, [int]$contextAudit.blocking_issue_count)
+  } catch {
+    $contextAudit = [pscustomobject]@{
+      schema = 'rayman.context_audit.v1'
+      success = $false
+      blocked = $true
+      requested_mode = 'block'
+      effective_mode = 'block'
+      invocation_source = 'review-loop'
+      workspace_root = $WorkspaceRoot
+      generated_at = (Get-Date).ToString('o')
+      files_scanned = 0
+      bytes_scanned = 0
+      issue_count = 1
+      warning_count = 0
+      blocking_issue_count = 1
+      issues = @([pscustomobject]@{
+          severity = 'block'
+          kind = 'audit_failure'
+          path = ''
+          source_kind = 'context_audit'
+          message = ("Context audit failed: {0}" -f $_.Exception.Message)
+          evidence = ''
+        })
+      artifacts = $null
+    }
+    $contextAuditEventSummary = Get-ReviewContextAuditSummary -Audit $contextAudit
+    Write-LoopLog -Path $detailLogPath -Message ("context audit failed: {0}" -f $_.Exception.ToString())
+  }
+} else {
+  $contextAudit = [pscustomobject]@{
+    schema = 'rayman.context_audit.v1'
+    success = $false
+    blocked = $true
+    requested_mode = 'block'
+    effective_mode = 'block'
+    invocation_source = 'review-loop'
+    workspace_root = $WorkspaceRoot
+    generated_at = (Get-Date).ToString('o')
+    files_scanned = 0
+    bytes_scanned = 0
+    issue_count = 1
+    warning_count = 0
+    blocking_issue_count = 1
+    issues = @([pscustomobject]@{
+        severity = 'block'
+        kind = 'audit_unavailable'
+        path = ''
+        source_kind = 'context_audit'
+        message = 'Context audit helper is unavailable.'
+        evidence = ''
+      })
+    artifacts = $null
+  }
+  $contextAuditEventSummary = Get-ReviewContextAuditSummary -Audit $contextAudit
+  Write-LoopLog -Path $detailLogPath -Message 'context audit unavailable'
+}
+
+Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.start' -Payload ([ordered]@{
+    run_id = $runId
+    task_kind = $TaskKind
+    task = $Task
+    prompt_key = $PromptKey
+    preferred_backend = $PreferredBackend
+    max_rounds = $MaxRounds
+    context_audit = $contextAuditEventSummary
+  })
+if ($null -ne $contextAudit -and [bool]$contextAudit.blocked) {
+  $failedAt = Get-Date
+  $contextDurationMs = [int][Math]::Max(0, [Math]::Round(($failedAt - $startedAt).TotalMilliseconds))
+  $contextBlockedSummary = @{
+    schema = 'rayman.review_loop.v1'
+    run_id = $runId
+    workspace_root = $WorkspaceRoot
+    task_kind = $TaskKind
+    memory_task_key = $memoryTaskKey
+    task = $Task
+    prompt_key = $PromptKey
+    preferred_backend = $PreferredBackend
+    policy_bypass_requested = $policyBypassRequested
+    policy_bypass_reason = $effectiveBypassReason
+    max_rounds = $MaxRounds
+    started_at = $startedAt.ToString('o')
+    finished_at = $failedAt.ToString('o')
+    duration_ms = $contextDurationMs
+    success = $false
+    first_pass = $false
+    final_exit_code = 8
+    final_error_kind = 'context_audit_blocked'
+    blocked_before_round1 = $true
+    context_audit = $contextAudit
+    rounds = @()
+    diff_summary_enabled = $false
+    diff_max_files = 0
+    diff_ignore_dirs = @()
+    diff_report = $diffReportPath
+    detail_log = $detailLogPath
+    first_pass_telemetry = $firstPassTsv
+  }
+  ($contextBlockedSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+  Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.finish' -Payload ([ordered]@{
+      run_id = $runId
+      success = $false
+      first_pass = $false
+      final_exit_code = 8
+      final_error_kind = 'context_audit_blocked'
+      duration_ms = $contextDurationMs
+      context_audit = $contextAuditEventSummary
+      summary_path = $summaryPath
+    })
+  Write-Host '❌ [review-loop] blocked by context audit' -ForegroundColor Red
+  exit 8
+}
+
 $requiredAssetAnalysis = Get-RaymanRequiredAssetAnalysis -WorkspaceRoot $WorkspaceRoot -Label 'review-loop-preflight' -RequiredRelPaths @(
   '.Rayman/scripts/agents/dispatch.ps1',
   '.Rayman/scripts/repair/run_tests_and_fix.ps1',
@@ -431,6 +597,7 @@ if (-not [bool]$requiredAssetAnalysis.ok) {
     final_error_kind = 'missing_required_assets'
     blocked_before_round1 = $true
     required_assets = $requiredAssetAnalysis
+    context_audit = $contextAudit
     rounds = @()
     diff_summary_enabled = $false
     diff_max_files = 0
@@ -440,6 +607,16 @@ if (-not [bool]$requiredAssetAnalysis.ok) {
     first_pass_telemetry = $firstPassTsv
   }
   ($preflightSummary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+  Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.finish' -Payload ([ordered]@{
+      run_id = $runId
+      success = $false
+      first_pass = $false
+      final_exit_code = 11
+      final_error_kind = 'missing_required_assets'
+      duration_ms = $preflightDurationMs
+      context_audit = $contextAuditEventSummary
+      summary_path = $summaryPath
+    })
   try {
     Write-RaymanRulesTelemetryRecord -WorkspaceRoot $WorkspaceRoot -RunId $runId -Profile 'review-loop' -Stage 'preflight' -Scope $TaskKind -Status 'FAIL' -ExitCode 11 -DurationMs $preflightDurationMs -Command 'review-loop' | Out-Null
   } catch {}
@@ -661,6 +838,20 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
       $roundAcceptanceClosed = [bool]$agenticReflection.acceptance_closed
       $agenticDocGatePass = $roundDocGatePass
       $agenticAcceptanceClosed = $roundAcceptanceClosed
+      Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.reflection' -Payload ([ordered]@{
+          run_id = $runId
+          round = $round
+          outcome = $roundReflectionOutcome
+          doc_gate_pass = $roundDocGatePass
+          acceptance_closed = $roundAcceptanceClosed
+          error_kind = $finalErrorKind
+          policy_ok = $false
+          dispatch_exit = $dispatchExit
+          fallback_count = $agenticFallbackCount
+          replan_count = $replanCount
+          selected_tools = @($agenticSelectedTools)
+          context_audit = $contextAuditEventSummary
+        })
     }
     $rounds.Add([pscustomobject]@{
       round = $round
@@ -777,6 +968,20 @@ for ($round = 1; $round -le $MaxRounds; $round++) {
     $roundAcceptanceClosed = [bool]$agenticReflection.acceptance_closed
     $agenticDocGatePass = $roundDocGatePass
     $agenticAcceptanceClosed = $roundAcceptanceClosed
+    Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.reflection' -Payload ([ordered]@{
+        run_id = $runId
+        round = $round
+        outcome = $roundReflectionOutcome
+        doc_gate_pass = $roundDocGatePass
+        acceptance_closed = $roundAcceptanceClosed
+        error_kind = $errorKind
+        policy_ok = $policyOk
+        test_exit = $testExit
+        fallback_count = $agenticFallbackCount
+        replan_count = $replanCount
+        selected_tools = @($agenticSelectedTools)
+        context_audit = $contextAuditEventSummary
+      })
     if ($roundReflectionOutcome -eq 'replan') {
       $replanCount++
     }
@@ -886,6 +1091,7 @@ $summary = @{
   worker_name = $reviewWorkerName
   workspace_mode = $reviewWorkspaceMode
   sync_manifest = $reviewSyncManifest
+  context_audit = $contextAudit
   final_exit_code = $finalExitCode
   final_error_kind = $finalErrorKind
   rounds = @($rounds.ToArray())
@@ -955,6 +1161,17 @@ if ($diffSummaryEnabled) {
 }
 
 ($summary | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+Write-ReviewRuntimeEvent -WorkspaceRoot $WorkspaceRoot -RunId $runId -EventType 'review.finish' -Payload ([ordered]@{
+    run_id = $runId
+    success = $success
+    first_pass = $firstPass
+    final_exit_code = $finalExitCode
+    final_error_kind = $finalErrorKind
+    duration_ms = $durationMs
+    rounds = $rounds.Count
+    context_audit = $contextAuditEventSummary
+    summary_path = $summaryPath
+  })
 
 if (Get-Command Write-RaymanEpisodeMemory -ErrorAction SilentlyContinue) {
   $finalDiffSummary = $null

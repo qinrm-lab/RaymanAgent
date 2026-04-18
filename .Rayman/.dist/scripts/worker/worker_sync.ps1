@@ -280,11 +280,16 @@ function Expand-RaymanWorkerSyncBundle {
   param(
     [string]$WorkspaceRoot,
     [string]$BundlePath,
-    [string]$ExecutionRoot = ''
+    [string]$ExecutionRoot = '',
+    [object]$ClientContext = $null
   )
 
   $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   $resolvedBundle = (Resolve-Path -LiteralPath $BundlePath).Path
+  $resolvedClientContext = Resolve-RaymanWorkerClientContext -WorkspaceRoot '' -ClientContext $ClientContext
+  if ($null -eq $resolvedClientContext) {
+    throw 'client_context is required for staged sync on a shared worker'
+  }
   $tempRoot = Get-RaymanWorkerSyncTempRoot -WorkspaceRoot $resolvedRoot
   $extractRoot = Join-Path $tempRoot ("x-{0}" -f [Guid]::NewGuid().ToString('n').Substring(0, 8))
   Ensure-RaymanWorkerDirectory -Path $extractRoot
@@ -298,7 +303,7 @@ function Expand-RaymanWorkerSyncBundle {
 
   $payloadRoot = Join-Path $extractRoot 'payload'
   if ([string]::IsNullOrWhiteSpace([string]$ExecutionRoot)) {
-    $ExecutionRoot = Join-Path (Get-RaymanWorkerStagingRoot -WorkspaceRoot $resolvedRoot) ("stage-{0}" -f [string]$manifest.bundle_id)
+    $ExecutionRoot = Join-Path (Get-RaymanWorkerClientStagingRoot -WorkspaceRoot $resolvedRoot -ClientId ([string]$resolvedClientContext.client_id)) ("stage-{0}" -f [string]$manifest.bundle_id)
   }
   Ensure-RaymanWorkerDirectory -Path $ExecutionRoot
 
@@ -309,12 +314,15 @@ function Expand-RaymanWorkerSyncBundle {
     mode = 'staged'
     bundle_id = [string]$manifest.bundle_id
     bundle_path = $resolvedBundle
+    client_id = [string]$resolvedClientContext.client_id
+    client_context = $resolvedClientContext
     source_workspace_root = [string]$manifest.source_workspace_root
     staging_root = $ExecutionRoot
     cleanup_hint = ('Remove-Item -LiteralPath ''{0}'' -Recurse -Force' -f $ExecutionRoot.Replace("'", "''"))
     rollback_hint = 'switch back to attached mode'
     bundle_manifest = $manifest
   }
+  Set-RaymanWorkerClientSyncManifest -WorkspaceRoot $resolvedRoot -ClientContext $resolvedClientContext -SyncManifest $syncManifest | Out-Null
   Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $resolvedRoot) -Value $syncManifest
   return $syncManifest
 }

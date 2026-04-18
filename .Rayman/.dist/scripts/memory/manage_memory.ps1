@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('status', 'record', 'summarize', 'search', 'prune')][string]$Action = 'status',
+    [ValidateSet('status', 'record', 'summarize', 'search', 'prune', 'session-refresh')][string]$Action = 'status',
     [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
     [string]$InputJsonFile = '',
     [string]$Query = '',
@@ -22,14 +22,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$requestedWorkspaceRoot = $WorkspaceRoot
+
 $bootstrapPath = Join-Path $PSScriptRoot 'memory_bootstrap.ps1'
 if (-not (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) {
     throw "memory_bootstrap.ps1 not found: $bootstrapPath"
 }
 . $bootstrapPath
 
-$resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-$bootstrap = Invoke-RaymanMemoryBootstrap -WorkspaceRoot $resolvedRoot -EnsureDeps:$false -NoInstallDeps:$NoInstallDeps -Prewarm:$Prewarm -Quiet:$Quiet
+$eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
+if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
+    . $eventHooksPath -NoMain
+}
+
+$resolvedRoot = (Resolve-Path -LiteralPath $requestedWorkspaceRoot).Path
+$raymanScriptRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$bootstrap = Invoke-RaymanMemoryBootstrap -WorkspaceRoot $resolvedRoot -ScriptRoot $raymanScriptRoot -SkipStatusProbe -EnsureDeps:$false -NoInstallDeps:$NoInstallDeps -Prewarm:$Prewarm -Quiet:$Quiet
 if (-not $bootstrap.Success) {
     if ($Json) {
         [pscustomobject]@{
@@ -43,7 +51,7 @@ if (-not $bootstrap.Success) {
     throw $bootstrap.Message
 }
 
-$backendPath = Join-Path $resolvedRoot '.Rayman\scripts\memory\manage_memory.py'
+$backendPath = Join-Path $raymanScriptRoot '.Rayman\scripts\memory\manage_memory.py'
 $pythonArgs = New-Object System.Collections.Generic.List[string]
 foreach ($item in @($bootstrap.PythonArgs)) {
     $pythonArgs.Add([string]$item) | Out-Null
@@ -107,5 +115,39 @@ if ($Json) {
     $pythonArgs.Add('--json') | Out-Null
 }
 
-& $bootstrap.PythonExe $pythonArgs.ToArray()
-exit $LASTEXITCODE
+$raw = & $bootstrap.PythonExe $pythonArgs.ToArray()
+$exitCode = [int]$LASTEXITCODE
+$rawLines = @($raw | ForEach-Object { [string]$_ })
+$rawText = ($rawLines -join [Environment]::NewLine)
+
+if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+    $payload = $null
+    if (-not [string]::IsNullOrWhiteSpace($rawText)) {
+        try {
+            $payload = $rawText | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            $payload = [pscustomobject]@{
+                schema = 'rayman.event.memory_passthrough.v1'
+                raw_output = $rawText
+            }
+        }
+    }
+    $eventType = switch ($Action) {
+        'search' { 'memory.search' }
+        'summarize' { 'memory.summarize' }
+        'session-refresh' { 'memory.session_refresh' }
+        default { '' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($eventType)) {
+        Write-RaymanEvent -WorkspaceRoot $resolvedRoot -EventType $eventType -Category 'memory' -Payload ([ordered]@{
+                action = $Action
+                exit_code = $exitCode
+                result = $payload
+            }) | Out-Null
+    }
+}
+
+if ($rawLines.Count -gt 0) {
+    $rawLines | Write-Output
+}
+exit $exitCode

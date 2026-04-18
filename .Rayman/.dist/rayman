@@ -121,7 +121,7 @@ orig_args=("$@")
 rayman_show_help() {
   local catalog="./.Rayman/config/command_catalog.tsv"
   cat <<'TXT'
-Rayman CLI (v165)
+Rayman CLI (v164)
 
 Usage:
   ./.Rayman/rayman <command>

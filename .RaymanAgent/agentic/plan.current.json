@@ -1,12 +1,12 @@
 {
   "schema": "rayman.agentic.plan.v1",
-  "plan_id": "cc7b44b235b44b70b3d7a1f40c7dc239",
-  "generated_at": "2026-04-15T11:43:36.6115942+08:00",
+  "plan_id": "d365ca70704246afb3007815c88c346b",
+  "generated_at": "2026-04-16T14:19:07.3363813-10:00",
   "workspace_root": "E:\\rayman\\software\\RaymanAgent",
-  "task_kind": "-Prompt",
-  "task": "你好",
+  "task_kind": "review",
+  "task": "OpenAI docs review",
   "command": "",
-  "prompt_key": "",
+  "prompt_key": "review.initial.prompt.md",
   "preferred_backend": "",
   "pipeline": "planner_v1",
   "requirements_path": "E:\\rayman\\software\\RaymanAgent\\.RaymanAgent\\.RaymanAgent.requirements.md",
@@ -20,13 +20,14 @@
     "约定：Solution/Project requirements 均在 .RaymanAgent/ 下，不应在根目录出现 .*.requirements.md。"
   ],
   "acceptance_criteria": [
-    "Task goal remains: 你好",
-    "Selected tool policy must be written before execution.",
-    "Doc gate must pass for the active pipeline stage."
+    "Task goal remains: OpenAI docs review",
+    "Reflection outcome must be `done` before the run is treated as successful.",
+    "Doc gate must pass with current plan/tool-policy/reflection artifacts.",
+    "Review-loop success still requires `test-fix` to pass."
   ],
   "tool_budget": {
-    "max_selected_tools": 3,
-    "max_fallbacks": 2,
+    "max_selected_tools": 4,
+    "max_fallbacks": 3,
     "max_subagents": 2
   },
   "allowed_subagents": [
@@ -37,8 +38,14 @@
     "rayman_winapp_debugger",
     "rayman_worker"
   ],
-  "selected_subagents": [],
+  "selected_subagents": [
+    "rayman_reviewer",
+    "rayman_docs_researcher"
+  ],
   "selected_tool_keys": [
+    "openai_docs_mcp",
+    "rayman_docs_researcher",
+    "rayman_reviewer",
     "local_shell"
   ],
   "stop_conditions": [

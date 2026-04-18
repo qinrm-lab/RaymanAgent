@@ -9,12 +9,14 @@
   "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
   "deps_ready": false,
   "search_backend": "lexical",
+  "session_search_backend": "fts5",
   "fallback_reason": "embedding_model_unavailable:OSError",
   "prewarm_requested": false,
   "counts": {
     "episodes": 0,
     "task_summaries": 0,
-    "semantic_memories": 0
+    "semantic_memories": 0,
+    "session_recalls": 1
   },
   "generated_at": "2026-03-23T16:13:24+00:00",
   "python_version": "3.13.5"

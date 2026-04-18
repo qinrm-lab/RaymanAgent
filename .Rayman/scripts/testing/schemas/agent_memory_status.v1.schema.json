@@ -12,6 +12,7 @@
     "embedding_model",
     "deps_ready",
     "search_backend",
+    "session_search_backend",
     "fallback_reason",
     "prewarm_requested",
     "counts",
@@ -29,15 +30,17 @@
     "embedding_model": { "type": "string", "minLength": 1 },
     "deps_ready": { "type": "boolean" },
     "search_backend": { "type": "string", "enum": ["embedding", "lexical"] },
+    "session_search_backend": { "type": "string", "enum": ["fts5", "lexical"] },
     "fallback_reason": { "type": "string" },
     "prewarm_requested": { "type": "boolean" },
     "counts": {
       "type": "object",
-      "required": ["episodes", "task_summaries", "semantic_memories"],
+      "required": ["episodes", "task_summaries", "semantic_memories", "session_recalls"],
       "properties": {
         "episodes": { "type": "integer", "minimum": 0 },
         "task_summaries": { "type": "integer", "minimum": 0 },
-        "semantic_memories": { "type": "integer", "minimum": 0 }
+        "semantic_memories": { "type": "integer", "minimum": 0 },
+        "session_recalls": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
     },

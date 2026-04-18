@@ -1,6 +1,6 @@
 # Rayman 发布验收标准（Release Requirements）
 
-> 当前版本： v165
+> 当前版本： v164
 > 适用范围：本工作区内的 **Rayman 工具链发布包（vXXX.zip）**。
 >
 > 目标：把“是否可交付”从手工试运行，变成 **可重复、可自动化、可追溯** 的验收。
@@ -260,7 +260,7 @@
   - 远程发现、同步、调试准备、升级至少要有可追踪 runtime 状态文件
   - `worker status` / beacon / debug manifest 必须暴露 `debugger_ready`、`debugger_path`，失败时必须暴露 `debugger_error`
   - `worker install-local` / `worker upgrade` / `worker debug` 必须自动确保 `vsdbg`，或返回可追踪诊断
-  - `run_host_smoke.ps1` 必须覆盖 worker loopback `discover -> use -> status -> exec -> sync attached -> sync staged -> debug prepare -> clear`
+  - `run_host_smoke.ps1` 必须覆盖 worker loopback `discover -> use -> status -> sync attached(应被拒绝) -> sync staged -> exec -> debug prepare -> clear`
   - reusable lane / nightly lane 必须支持产出 `fast-gate` / `browser-gate` 的 project gate 报告
 
 ---

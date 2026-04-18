@@ -40,6 +40,11 @@ Describe 'command catalog' {
     ($names -contains 'health-check') | Should -Be $true
     ($names -contains 'proxy-health') | Should -Be $true
     ($names -contains 'one-click-health') | Should -Be $true
+    ($names -contains 'context-audit') | Should -Be $true
+    ($names -contains 'skills') | Should -Be $true
+    ($names -contains 'memory-search') | Should -Be $true
+    ($names -contains 'rollback') | Should -Be $true
+    ($names -contains 'prompts') | Should -Be $true
     ($names -contains 'state-list') | Should -Be $true
     ($names -contains 'worktree-create') | Should -Be $true
     ($names -contains 'self-check') | Should -Be $false
@@ -70,6 +75,11 @@ Describe 'command catalog' {
     $helpText | Should -Match 'package-dist'
     $helpText | Should -Match 'health-check'
     $helpText | Should -Match 'proxy-health'
+    $helpText | Should -Match 'context-audit'
+    $helpText | Should -Match 'skills'
+    $helpText | Should -Match 'memory-search'
+    $helpText | Should -Match 'rollback'
+    $helpText | Should -Match 'prompts'
     $helpText | Should -Not -Match '(?m)^\s+self-check\s+\['
     $helpText | Should -Not -Match '(?m)^\s+copy-check\s+\['
     $helpText | Should -Not -Match '(?m)^\s+package\s+\['
@@ -99,7 +109,9 @@ Describe 'command catalog' {
 
   It 'keeps help, README, commands, and context aligned with the catalog' {
     $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\verify_cli_parity.ps1'
-    $result = & $scriptPath -WorkspaceRoot $script:WorkspaceRoot -AsJson | ConvertFrom-Json
+    $raw = @(& $scriptPath -WorkspaceRoot $script:WorkspaceRoot -AsJson)
+    $json = (($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    $result = $json | ConvertFrom-Json
 
     $result.success | Should -Be $true
   }

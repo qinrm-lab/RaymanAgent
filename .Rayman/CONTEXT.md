@@ -7,7 +7,7 @@
 ## Workspace Snapshot
 
 - Root: `.`
-- Top-level entries: .gitattributes, .github, .gitignore, .Rayman, .RaymanAgent, .SolutionName, AGENTS.md, RaymanAgent.slnx
+- Top-level entries: .gitattributes, .github, .gitignore, .Rayman, .RaymanAgent, .SolutionName, AGENTS.md, RaymanAgent.slnx, test_pester.ps1
 
 ## Governance & Agent Assets
 
@@ -71,14 +71,22 @@
 - agentic_pipeline.json
 - codex_multi_agent.json
 - command_catalog.tsv
+- event_hooks.json
 - model_routing.json
+- prompt_eval_suites.json
 - review_loop.json
+- skills_registry.json
 - system_slim_policy.json
 
 ## Auto Skills
 
 - File: `.Rayman\context\skills.auto.md`
 - Summary: # Skills（自动）
+
+## Trusted Skill Manifests
+
+- Policy: bundled Rayman skills are managed; external skill manifests must be explicitly allowlisted in `.Rayman\config\skills_registry.json` before they flow into generated context.
+- Audit: use `rayman.ps1 skills -Action audit` or inspect `.Rayman\runtime\skills.audit.last.json` for trust verdicts, duplicate IDs, invalid manifests, and blocked sources.
 
 ## Collaboration Preference
 
@@ -101,7 +109,7 @@
 - `[ windows-only ]` `rayman.ps1 watch-stop`：Stop background watchers and helper processes.
 - `[ all ]` `rayman dispatch`：Route a task to codex, copilot, or local backends.
 - `[ all ]` `rayman codex`：Manage Rayman-scoped Codex accounts, switching, and CLI execution.
-- `[ windows-only ]` `rayman.ps1 worker`：Manage LAN Rayman Workers, remote sync, exec, debug, and upgrade.
+- `[ windows-only ]` `rayman.ps1 worker`：Manage shared LAN Rayman Workers with staged sync, exec, debug, and upgrade.
 - `[ windows-only ]` `rayman.ps1 workspace-install`：Install distributable .Rayman into a local workspace, run setup, and default self-check.
 - `[ windows-only ]` `rayman.ps1 workspace-register`：Register this RaymanAgent source workspace and install the rayman-here bootstrap launcher.
 - `[ pwsh-only ]` `rayman.ps1 agent-capabilities`：Sync or inspect Rayman-managed Codex capabilities.

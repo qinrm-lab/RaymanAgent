@@ -6,6 +6,7 @@ BeforeAll {
   $script:SaveStateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\save_state.ps1'
   $script:ResumeStateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\resume_state.ps1'
   $script:ListStateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\list_state.ps1'
+  $script:RollbackScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\rollback_state.ps1'
   $script:WorktreeCreateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\worktree_create.ps1'
   $script:SessionCommonPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\session_common.ps1'
   $script:CodexCommonPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\codex\codex_common.ps1'
@@ -50,6 +51,30 @@ function script:New-StateSessionOwnerContext {
     owner_key = ('{0}:{1}:{2}' -f $Source, $ownerHash, $workspaceHash)
     owner_display = ('{0}#{1}' -f $Source, $Token)
   }
+}
+
+function script:Get-StateSessionEventTypes {
+  param([string]$Root)
+
+  $eventDir = Join-Path $Root '.Rayman\runtime\events'
+  if (-not (Test-Path -LiteralPath $eventDir -PathType Container)) {
+    return @()
+  }
+
+  $types = New-Object System.Collections.Generic.List[string]
+  foreach ($file in @(Get-ChildItem -LiteralPath $eventDir -Filter '*.jsonl' -File -ErrorAction SilentlyContinue)) {
+    foreach ($line in @(Get-Content -LiteralPath $file.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+      try {
+        $event = [string]$line | ConvertFrom-Json -ErrorAction Stop
+        if ($event.PSObject.Properties['event_type']) {
+          $types.Add([string]$event.event_type) | Out-Null
+        }
+      } catch {}
+    }
+  }
+
+  return @($types.ToArray())
 }
 
 Describe 'named state sessions' {
@@ -418,6 +443,79 @@ Describe 'session isolation helpers' {
         & $script:GitPath -C $root worktree remove --force ([string]$worktree.worktree_path) 2>$null | Out-Null
         Remove-Item -LiteralPath ([string]$worktree.worktree_path) -Recurse -Force -ErrorAction SilentlyContinue
       }
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'surfaces manual and auto-temp sessions through rollback list' {
+    $root = New-StateSessionTestRoot
+    try {
+      Initialize-StateSessionGitRoot -Root $root
+      $ownerA = New-StateSessionOwnerContext -Root $root -Token '111'
+
+      Set-Content -LiteralPath (Join-Path $root 'notes.txt') -Encoding UTF8 -Value 'auto temp change'
+      Invoke-RaymanSessionCommandCheckpoint -WorkspaceRoot $root -DurationMs 400000 -Backend 'codex' -AccountAlias 'alpha' -OwnerContext $ownerA -CommandText 'codex exec alpha-temp' | Out-Null
+
+      & $script:GitPath -C $root checkout -- notes.txt | Out-Null
+      Set-Content -LiteralPath (Join-Path $root 'notes.txt') -Encoding UTF8 -Value 'manual change'
+      & $script:SaveStateScript -WorkspaceRoot $root -Name 'Manual Alpha' -TaskDescription 'manual rollback task' | Out-Null
+
+      $list = & $script:RollbackScript -WorkspaceRoot $root -Action list -Json | ConvertFrom-Json
+      $kinds = @($list.sessions | ForEach-Object { [string]$_.session_kind })
+
+      $list.schema | Should -Be 'rayman.rollback.list.v1'
+      ($kinds -contains 'manual') | Should -Be $true
+      ($kinds -contains 'auto_temp') | Should -Be $true
+      @($list.sessions | Where-Object { [bool]$_.has_handover }).Count | Should -BeGreaterThan 0
+      @($list.sessions | Where-Object { [bool]$_.has_patch }).Count | Should -BeGreaterThan 0
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'renders diff and restores auto-temp checkpoints through rollback' {
+    $root = New-StateSessionTestRoot
+    try {
+      Initialize-StateSessionGitRoot -Root $root
+      $ownerA = New-StateSessionOwnerContext -Root $root -Token '111'
+      Set-Content -LiteralPath (Join-Path $root 'notes.txt') -Encoding UTF8 -Value 'auto temp restore'
+
+      $checkpoint = Invoke-RaymanSessionCommandCheckpoint -WorkspaceRoot $root -DurationMs 400000 -Backend 'codex' -AccountAlias 'alpha' -OwnerContext $ownerA -CommandText 'codex exec alpha-restore'
+      & $script:GitPath -C $root checkout -- notes.txt | Out-Null
+
+      $diff = & $script:RollbackScript -WorkspaceRoot $root -Action diff -Slug ([string]$checkpoint.session_slug) -Json | ConvertFrom-Json
+      $restore = & $script:RollbackScript -WorkspaceRoot $root -Action restore -Slug ([string]$checkpoint.session_slug) -Json | ConvertFrom-Json
+      $eventTypes = @(Get-StateSessionEventTypes -Root $root)
+
+      $diff.schema | Should -Be 'rayman.rollback.diff.v1'
+      [string]$diff.patch.mode | Should -Be 'patch'
+      [int]$diff.patch.file_count | Should -BeGreaterThan 0
+      $restore.schema | Should -Be 'rayman.rollback.restore.v1'
+      $restore.restored | Should -Be $true
+      [string]$restore.session_kind | Should -Be 'auto_temp'
+      [string]$restore.resume_result.schema | Should -Be 'rayman.state.resume.v1'
+      (Get-Content -LiteralPath (Join-Path $root 'notes.txt') -Raw -Encoding UTF8).Trim() | Should -Be 'auto temp restore'
+      ($eventTypes -contains 'rollback.restore') | Should -Be $true
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'restores manual checkpoints through rollback without creating archive snapshots' {
+    $root = New-StateSessionTestRoot
+    try {
+      Initialize-StateSessionGitRoot -Root $root
+      Set-Content -LiteralPath (Join-Path $root 'notes.txt') -Encoding UTF8 -Value 'manual rollback restore'
+
+      & $script:SaveStateScript -WorkspaceRoot $root -Name 'Manual Restore' -TaskDescription 'manual rollback restore task' | Out-Null
+      $restore = & $script:RollbackScript -WorkspaceRoot $root -Action restore -Name 'Manual Restore' -Json | ConvertFrom-Json
+
+      $restore.schema | Should -Be 'rayman.rollback.restore.v1'
+      $restore.restored | Should -Be $true
+      [string]$restore.session_kind | Should -Be 'manual'
+      (Get-Content -LiteralPath (Join-Path $root 'notes.txt') -Raw -Encoding UTF8).Trim() | Should -Be 'manual rollback restore'
+      (Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\snapshots') -PathType Container) | Should -Be $false
+    } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

@@ -26,6 +26,10 @@ $workspaceInstallScript = Join-Path $PSScriptRoot '..\workspace\install_workspac
 if (Test-Path -LiteralPath $workspaceInstallScript -PathType Leaf) {
   . $workspaceInstallScript -NoMain
 }
+$codexManageScript = Join-Path $PSScriptRoot '..\codex\manage_accounts.ps1'
+if (Test-Path -LiteralPath $codexManageScript -PathType Leaf) {
+  . $codexManageScript -NoMain
+}
 
 $WorkspaceRoot = [string]$savedVscodeBootstrapCliState.WorkspaceRoot
 $VscodeOwnerPid = [string]$savedVscodeBootstrapCliState.VscodeOwnerPid
@@ -382,6 +386,24 @@ $checkWslScript = Join-Path $WorkspaceRoot '.Rayman\scripts\utils\check_wsl_deps
 $contextFingerprint = Get-ContextRefreshFingerprint -Root $WorkspaceRoot
 
 try {
+  Invoke-BootstrapStep -Name 'codex-binding-auto-apply' -Mandatory $true -Action {
+    if (-not (Get-Command Invoke-RaymanCodexWorkspaceBindingAutoApply -ErrorAction SilentlyContinue)) {
+      return
+    }
+
+    $bindingApply = Invoke-RaymanCodexWorkspaceBindingAutoApply -WorkspaceRoot $WorkspaceRoot -Reason 'vscode-folder-open'
+    if ([bool]$bindingApply.attempted) {
+      if ([bool]$bindingApply.success) {
+        Write-Info ("[vscode-bootstrap] codex binding auto-applied alias={0} mode={1}" -f [string]$bindingApply.alias, [string]$bindingApply.mode)
+      } else {
+        Write-Warn ("[vscode-bootstrap] codex binding auto-apply failed alias={0} mode={1}: {2}" -f [string]$bindingApply.alias, [string]$bindingApply.mode, [string]$bindingApply.detail)
+      }
+      return
+    }
+
+    Write-Info ("[vscode-bootstrap] codex binding auto-apply skip ({0})" -f [string]$bindingApply.detail)
+  }
+
   Invoke-BootstrapStep -Name 'start-background-watchers' -Mandatory $true -Action {
     if (-not (Test-Path -LiteralPath $watchScript -PathType Leaf)) {
       throw ("missing script: {0}" -f $watchScript)

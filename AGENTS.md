@@ -20,7 +20,7 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 - 若当前环境不支持 multi-agent，Rayman 保留 MCP / 单代理流程，并把 `supported`、`effective`、`degraded_reason` 和角色状态写入 report/context 方便追踪。
 - GitHub.com 的 Copilot Memory、model picker / Auto model selection 属于平台能力；Rayman 只负责文档和检测，不在仓库内伪装成已托管能力。
 
-<!-- RAYMAN:MANDATORY_REQUIREMENTS_V165 -->
+<!-- RAYMAN:MANDATORY_REQUIREMENTS_V164 -->
 ## 强制 Requirements 规则（必须遵守）
 
 1. 你 **必须** 先阅读并严格遵守 `.<SolutionName>/.<SolutionName>.requirements.md`。
@@ -29,7 +29,7 @@ canonical 文件名为 `AGENTS.md`（兼容读取 `agents.md`）。
 4. 若 requirements 存在冲突或不清晰之处，你必须停止并报告冲突点，等待指示后再继续。
 
 专有名词保留英文：Agent / Codex / Copilot / Solution / Project。
-<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V165 -->
+<!-- /RAYMAN:MANDATORY_REQUIREMENTS_V164 -->
 
 ## 审批模式（full-auto）
 

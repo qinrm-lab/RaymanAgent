@@ -104,7 +104,7 @@ function Ensure-RaymanSelectedWorkerIsActive {
     return $active
   }
 
-  return (Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode $WorkspaceMode -SyncManifest $null)
+  return (Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode $WorkspaceMode -SyncManifest $null -ClientContext (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot))
 }
 
 function Format-RaymanWorkerCommandText {
@@ -988,16 +988,17 @@ function Get-RaymanWorkerLiveStatus {
     [object]$Worker
   )
 
+  $clientContext = Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot
   $statusTimeout = Get-RaymanWorkerStatusTimeoutSeconds -WorkspaceRoot $WorkspaceRoot
   try {
-    $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds $statusTimeout -WorkspaceRoot $WorkspaceRoot
+    $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds $statusTimeout -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
   } catch {
     $fallbackTimeout = Get-RaymanWorkerStatusFallbackTimeoutSeconds -WorkspaceRoot $WorkspaceRoot
     $isTimeout = ($_.Exception.Message -match 'timed out|HttpClient\.Timeout|request was canceled')
     if (-not $isTimeout -or $fallbackTimeout -le $statusTimeout) {
       throw
     }
-    $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds $fallbackTimeout -WorkspaceRoot $WorkspaceRoot
+    $status = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method GET -Path '/status' -TimeoutSeconds $fallbackTimeout -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
   }
   if ($null -ne $status) {
     [void](Merge-RaymanWorkerRegistry -WorkspaceRoot $WorkspaceRoot -Workers @([pscustomobject]@{
@@ -1024,13 +1025,14 @@ function Invoke-RaymanWorkerSyncAction {
     [string]$Mode
   )
 
+  $clientContext = Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot
   if ($Mode -eq 'staged') {
     $bundle = New-RaymanWorkerSyncBundle -WorkspaceRoot $WorkspaceRoot
     $syncManifest = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/sync' -Body ([pscustomobject]@{
           mode = 'staged'
           bundle_name = [System.IO.Path]::GetFileName([string]$bundle.bundle_path)
           bundle_base64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes([string]$bundle.bundle_path))
-        }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot
+        }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
     if ($null -ne $syncManifest) {
       $sourceFingerprint = if ($bundle.PSObject.Properties['manifest'] -and $bundle.manifest.PSObject.Properties['fingerprint']) {
         [string]$bundle.manifest.fingerprint
@@ -1045,7 +1047,7 @@ function Invoke-RaymanWorkerSyncAction {
       }
     }
     Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot) -Value $syncManifest
-    $active = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode 'staged' -SyncManifest $syncManifest
+    $active = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode 'staged' -SyncManifest $syncManifest -ClientContext $clientContext
     $cleanup = if (Get-Command Invoke-RaymanRuntimeCleanup -ErrorAction SilentlyContinue) {
       Invoke-RaymanRuntimeCleanup -WorkspaceRoot $WorkspaceRoot -Mode 'cache-clear' -KeepDays 14 -WriteSummary
     } else {
@@ -1062,24 +1064,7 @@ function Invoke-RaymanWorkerSyncAction {
     }
   }
 
-  $syncManifest = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/sync' -Body ([pscustomobject]@{
-        mode = 'attached'
-      }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
-  Write-RaymanWorkerJsonFile -Path (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $WorkspaceRoot) -Value $syncManifest
-  $active = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $Worker -WorkspaceMode 'attached' -SyncManifest $syncManifest
-  $cleanup = if (Get-Command Invoke-RaymanRuntimeCleanup -ErrorAction SilentlyContinue) {
-    Invoke-RaymanRuntimeCleanup -WorkspaceRoot $WorkspaceRoot -Mode 'cache-clear' -KeepDays 14 -WriteSummary
-  } else {
-    $null
-  }
-  return [pscustomobject]@{
-    schema = 'rayman.worker.sync.result.v1'
-    generated_at = (Get-Date).ToString('o')
-    mode = 'attached'
-    sync_manifest = $syncManifest
-    active = $active
-    cleanup = $cleanup
-  }
+  throw 'shared workers support staged sync only; use `rayman.ps1 worker sync --mode staged`.'
 }
 
 function Invoke-RaymanWorkerDebugAction {
@@ -1093,12 +1078,13 @@ function Invoke-RaymanWorkerDebugAction {
 
   $active = Get-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot
   $syncManifest = if ($null -ne $active -and $active.PSObject.Properties['sync_manifest']) { $active.sync_manifest } else { $null }
+  $clientContext = if ($null -ne $active -and $active.PSObject.Properties['client_context']) { $active.client_context } else { (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot) }
   $manifest = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/debug' -Body ([pscustomobject]@{
         mode = $Mode
         program = $Program
         process_id = $ProcessId
         sync_manifest = $syncManifest
-      }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot
+      }) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
 
   if ($null -ne $manifest -and $manifest.PSObject.Properties['source_file_map']) {
     $map = [ordered]@{}
@@ -1119,11 +1105,12 @@ function Invoke-RaymanWorkerUpgradeAction {
     [object]$Worker
   )
 
+  $clientContext = Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot
   $package = New-RaymanWorkerUpgradePackage -WorkspaceRoot $WorkspaceRoot
   $response = Invoke-RaymanWorkerControlRequest -Worker $Worker -Method POST -Path '/upgrade' -Body ([pscustomobject]@{
         package_name = [System.IO.Path]::GetFileName([string]$package.package_path)
         package_base64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes([string]$package.package_path))
-      }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot
+      }) -TimeoutSeconds 300 -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
 
   $status = $null
   $deadline = (Get-Date).AddSeconds(45)
@@ -1196,11 +1183,22 @@ if (-not $NoMain) {
       'use' {
         $worker = Resolve-RaymanWorkerSelection -WorkspaceRoot $WorkspaceRoot -WorkerId $workerId -WorkerName $workerName -AllowActive:$false
         Assert-RaymanWorkerActionAllowed -WorkspaceRoot $WorkspaceRoot -Action 'use' -Worker $worker
-        $result = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $worker -WorkspaceMode $mode -SyncManifest $null
+        $result = Set-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot -Worker $worker -WorkspaceMode $mode -SyncManifest $null -ClientContext (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot)
         break
       }
       'clear' {
         Set-RaymanWorkerAttachedSyncManifest -WorkspaceRoot $WorkspaceRoot | Out-Null
+        $active = Get-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot
+        $remoteClear = $null
+        if ($null -ne $active -and -not [string]::IsNullOrWhiteSpace([string]$active.worker_id)) {
+          try {
+            $worker = Resolve-RaymanWorkerSelection -WorkspaceRoot $WorkspaceRoot -WorkerId ([string]$active.worker_id) -AllowActive
+            if ($null -ne $worker) {
+              $clientContext = if ($active.PSObject.Properties['client_context']) { $active.client_context } else { (Get-RaymanWorkerClientContext -WorkspaceRoot $WorkspaceRoot) }
+              $remoteClear = Invoke-RaymanWorkerControlRequest -Worker $worker -Method POST -Path '/client/clear' -Body ([pscustomobject]@{}) -TimeoutSeconds 30 -WorkspaceRoot $WorkspaceRoot -ClientContext $clientContext
+            }
+          } catch {}
+        }
         Clear-RaymanActiveWorkerRecord -WorkspaceRoot $WorkspaceRoot
         $cleanup = if (Get-Command Invoke-RaymanRuntimeCleanup -ErrorAction SilentlyContinue) {
           Invoke-RaymanRuntimeCleanup -WorkspaceRoot $WorkspaceRoot -Mode 'cache-clear' -KeepDays 14 -WriteSummary
@@ -1211,6 +1209,7 @@ if (-not $NoMain) {
           schema = 'rayman.worker.clear.result.v1'
           generated_at = (Get-Date).ToString('o')
           workspace_root = $WorkspaceRoot
+          remote_clear = $remoteClear
           cleanup = $cleanup
         }
         break

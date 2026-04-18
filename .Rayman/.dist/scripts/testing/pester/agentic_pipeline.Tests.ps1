@@ -31,7 +31,9 @@ function script:New-AgenticWorkspace {
     '.Rayman\config\codex_multi_agent.json',
     '.Rayman\config\agentic_pipeline.json',
     '.Rayman\scripts\agents\dispatch.ps1',
+    '.Rayman\scripts\agents\context_audit.ps1',
     '.Rayman\scripts\agents\prompts_catalog.ps1',
+    '.Rayman\scripts\utils\event_hooks.ps1',
     '.Rayman\scripts\utils\request_attention.ps1',
     '.Rayman\scripts\utils\generate_context.ps1',
     '.Rayman\scripts\repair\ensure_complete_rayman.ps1'
@@ -319,14 +321,21 @@ Describe 'agentic pipeline helpers' {
 
       & $dispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs prompt review' -PromptKey 'review.initial.prompt.md' -DryRun | Out-Null
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_runs\last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+      $eventText = @((Get-ChildItem -LiteralPath (Join-Path $root '.Rayman\runtime\events') -Filter '*.jsonl' -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8
+          })) -join "`n"
 
       $summary.agentic_execution.backend_order[0] | Should -Be 'codex'
       $summary.interaction_mode | Should -Be 'detailed'
+      $summary.context_audit.blocked | Should -BeFalse
+      $summary.context_audit.effective_mode | Should -Be 'block'
       $summary.codex_capability_preamble | Should -Match '\[RaymanInteractionMode\]'
       @($summary.agentic_execution.optional_requests | ForEach-Object { $_.name }) | Should -Contain 'background_mode'
       @($summary.agentic_execution.optional_requests | ForEach-Object { $_.name }) | Should -Contain 'prompt_optimizer'
       @($summary.agentic_execution.optional_requests | Where-Object { $_.name -eq 'background_mode' } | Select-Object -First 1).support_mode | Should -Be 'disabled_until_supported'
       @($summary.agentic_execution.optional_requests | Where-Object { $_.name -eq 'background_mode' } | Select-Object -First 1).available | Should -BeFalse
+      $eventText | Should -Match '"event_type":"dispatch.start"'
+      $eventText | Should -Match '"event_type":"dispatch.finish"'
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -405,10 +414,16 @@ exit /b 0
 
       & $script:ReviewLoopScript -WorkspaceRoot $root -TaskKind 'review' -Task 'OpenAI docs review' -MaxRounds 1 | Out-Null
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\review_loop.last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+      $eventText = @((Get-ChildItem -LiteralPath (Join-Path $root '.Rayman\runtime\events') -Filter '*.jsonl' -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8
+          })) -join "`n"
 
       $summary.final_error_kind | Should -Be 'agentic_doc_gate_failed'
+      $summary.context_audit.blocked | Should -BeFalse
       $summary.rounds[0].error_kind | Should -Be 'agentic_doc_gate_failed'
       $summary.rounds[0].reflection_outcome | Should -Be 'blocked'
+      $eventText | Should -Match '"event_type":"review.reflection"'
+      $eventText | Should -Match '"event_type":"review.finish"'
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

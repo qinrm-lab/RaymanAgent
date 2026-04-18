@@ -1319,7 +1319,7 @@ wire_api = "responses"
       Assert-MockCalled Invoke-CodexAliasNativeLogin -Exactly 1
       [string]$script:repairSwitchLoginCall.Alias | Should -Be 'alpha'
       [string]$script:repairSwitchLoginCall.Mode | Should -Be 'web'
-      [bool]$script:repairSwitchLoginCall.LogoutFirst | Should -Be $true
+      [bool]$script:repairSwitchLoginCall.LogoutFirst | Should -Be $false
       [bool](Test-RaymanPathsEquivalent -LeftPath ([string]$script:repairSwitchLoginCall.TargetWorkspaceRoot) -RightPath $workspaceRoot) | Should -Be $true
       Assert-MockCalled Sync-WorkspaceTrust -Exactly 1 -ParameterFilter { $WorkspaceRoot -eq $workspaceRoot -and $Alias -eq 'alpha' }
     } finally {
@@ -3900,6 +3900,55 @@ exit 0
       Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath $workspaceRoot -Recurse -Force -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath $binRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'auto-applies the bound desktop-global alias from workspace bootstrap flows' {
+    $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_binding_auto_apply_state_' + [Guid]::NewGuid().ToString('N'))
+    $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_binding_auto_apply_workspace_' + [Guid]::NewGuid().ToString('N'))
+    $homeBackup = [Environment]::GetEnvironmentVariable('RAYMAN_HOME')
+    $autoApplyBackup = [Environment]::GetEnvironmentVariable('RAYMAN_CODEX_WORKSPACE_BINDING_AUTO_APPLY_ENABLED')
+    try {
+      [Environment]::SetEnvironmentVariable('RAYMAN_HOME', $stateRoot)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_WORKSPACE_BINDING_AUTO_APPLY_ENABLED', '1')
+      New-Item -ItemType Directory -Force -Path $workspaceRoot | Out-Null
+      Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
+      Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
+      Set-RaymanCodexAccountLoginDiagnostics -Alias 'alpha' -LoginMode 'web' -AuthScope 'desktop_global' -LaunchStrategy 'switch' -PromptClassification 'none' -StartedAt '2026-04-17T00:00:00Z' -FinishedAt '2026-04-17T00:00:05Z' -Success $true -DesktopTargetMode 'web' | Out-Null
+
+      Mock Invoke-RaymanCodexDesktopAliasActivation {
+        [pscustomobject]@{
+          attempted = $true
+          success = $true
+          reason = 'desktop_activation_applied'
+          status = [pscustomobject]@{
+            authenticated = $true
+            status = 'authenticated'
+          }
+        }
+      } -ParameterFilter { [string]$Alias -eq 'alpha' -and [string]$Mode -eq 'web' }
+      Mock Sync-WorkspaceTrust {
+        [pscustomobject]@{
+          changed = $false
+          trust_level = 'trusted'
+          config_path = 'mock-config.toml'
+        }
+      } -ParameterFilter { [string]$WorkspaceRoot -eq $workspaceRoot -and [string]$Alias -eq 'alpha' }
+
+      $result = Invoke-RaymanCodexWorkspaceBindingAutoApply -WorkspaceRoot $workspaceRoot -Reason 'pester'
+
+      [bool]$result.attempted | Should -Be $true
+      [bool]$result.success | Should -Be $true
+      [string]$result.alias | Should -Be 'alpha'
+      [string]$result.mode | Should -Be 'web'
+      [bool]$result.trust_synced | Should -Be $true
+      Assert-MockCalled Invoke-RaymanCodexDesktopAliasActivation -Times 1 -Exactly -ParameterFilter { [string]$Alias -eq 'alpha' -and [string]$Mode -eq 'web' }
+      Assert-MockCalled Sync-WorkspaceTrust -Times 1 -Exactly -ParameterFilter { [string]$WorkspaceRoot -eq $workspaceRoot -and [string]$Alias -eq 'alpha' }
+    } finally {
+      [Environment]::SetEnvironmentVariable('RAYMAN_HOME', $homeBackup)
+      [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_WORKSPACE_BINDING_AUTO_APPLY_ENABLED', $autoApplyBackup)
+      Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $workspaceRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
 

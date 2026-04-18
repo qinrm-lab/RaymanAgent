@@ -450,8 +450,8 @@ $results = New-Object System.Collections.Generic.List[object]
 $residualCacheHintEnabled = $false
 $residualCacheHintMessage = ''
 $residualCacheHintPossible = $false
-$expectedTag = 'V165'
-$expectedVersion = 'V165'
+$expectedTag = 'V164'
+$expectedVersion = 'V164'
 
 $allowNoGitByEnv = Get-EnvBoolCompat -Name 'RAYMAN_ALLOW_NO_GIT' -Default $false
 $allowNoGitEffective = ($AllowNoGit -or $allowNoGitByEnv)
@@ -588,9 +588,9 @@ if ($Mode -eq 'standard') {
     $versionIssues.Add('missing AGENTS.md/agents.md (resolved path not found)') | Out-Null
   } else {
     $agentsRaw = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8
-    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V165') {
+    if ($agentsRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V164') {
       $agentsRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $agentsPath
-      $versionIssues.Add(("{0} missing V165 marker" -f $agentsRel)) | Out-Null
+      $versionIssues.Add(("{0} missing V164 marker" -f $agentsRel)) | Out-Null
     }
   }
 }
@@ -599,8 +599,8 @@ if (-not (Test-Path -LiteralPath $agentsTemplatePath -PathType Leaf)) {
   $versionIssues.Add('missing .Rayman/agents.template.md') | Out-Null
 } else {
   $templateRaw = Get-Content -LiteralPath $agentsTemplatePath -Raw -Encoding UTF8
-  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V165') {
-    $versionIssues.Add('.Rayman/agents.template.md missing V165 marker') | Out-Null
+  if ($templateRaw -notmatch 'RAYMAN:MANDATORY_REQUIREMENTS_V164') {
+    $versionIssues.Add('.Rayman/agents.template.md missing V164 marker') | Out-Null
   }
 }
 

@@ -392,7 +392,7 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
     }
   }
 
-  It 'writes sync.last.json and prunes attached transient runtime data after sync' {
+  It 'rejects attached sync and leaves transient runtime cleanup to staged-only shared workers' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_sync_attached_' + [Guid]::NewGuid().ToString('N'))
     try {
       foreach ($path in @(
@@ -407,18 +407,6 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
       }
       Set-Content -LiteralPath (Join-Path $root '.Rayman\VERSION') -Encoding UTF8 -Value "v161`n"
 
-      Mock Invoke-RaymanWorkerControlRequest {
-        [pscustomobject]@{
-          schema = 'rayman.worker.sync_manifest.v1'
-          generated_at = (Get-Date).ToString('o')
-          mode = 'attached'
-          workspace_root = $root
-          staging_root = ''
-          cleanup_hint = ''
-          rollback_hint = ''
-        }
-      }
-
       $worker = [pscustomobject]@{
         worker_id = 'worker-a'
         worker_name = 'host-a'
@@ -427,15 +415,31 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
         control_url = 'http://127.0.0.1:47632/'
       }
 
-      $result = Invoke-RaymanWorkerSyncAction -WorkspaceRoot $root -Worker $worker -Mode 'attached'
-      $syncLast = Get-Content -LiteralPath (Get-RaymanWorkerSyncLastPath -WorkspaceRoot $root) -Raw -Encoding UTF8 | ConvertFrom-Json
+      { Invoke-RaymanWorkerSyncAction -WorkspaceRoot $root -Worker $worker -Mode 'attached' } | Should -Throw '*staged sync only*'
+      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\worker\staging\old-stage') | Should -Be $true
+      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\worker\sync-temp\old-sync') | Should -Be $true
+      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\bats_maui\fixture-a') | Should -Be $true
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 
-      $result.mode | Should -Be 'attached'
-      $result.cleanup.removed_count | Should -BeGreaterThan 0
-      $syncLast.mode | Should -Be 'attached'
-      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\worker\staging\old-stage') | Should -Be $false
-      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\worker\sync-temp\old-sync') | Should -Be $false
-      Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\bats_maui\fixture-a') | Should -Be $false
+  It 'rejects attached sync on shared workers before sending the request' {
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_sync_reject_attached_' + [Guid]::NewGuid().ToString('N'))
+    try {
+      New-Item -ItemType Directory -Force -Path $root | Out-Null
+      $worker = [pscustomobject]@{
+        worker_id = 'worker-a'
+        worker_name = 'host-a'
+        address = '127.0.0.1'
+        control_port = 47632
+        control_url = 'http://127.0.0.1:47632/'
+      }
+
+      Mock Invoke-RaymanWorkerControlRequest {}
+
+      { Invoke-RaymanWorkerSyncAction -WorkspaceRoot $root -Worker $worker -Mode 'attached' } | Should -Throw '*staged sync only*'
+      Assert-MockCalled Invoke-RaymanWorkerControlRequest -Times 0
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
