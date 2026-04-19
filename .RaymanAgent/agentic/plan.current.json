@@ -26,26 +26,13 @@
     "Review-loop success still requires `test-fix` to pass."
   ],
   "tool_budget": {
-    "max_selected_tools": 4,
-    "max_fallbacks": 3,
+    "max_selected_tools": 3,
+    "max_fallbacks": 2,
     "max_subagents": 2
   },
-  "allowed_subagents": [
-    "rayman_explorer",
-    "rayman_reviewer",
-    "rayman_docs_researcher",
-    "rayman_browser_debugger",
-    "rayman_winapp_debugger",
-    "rayman_worker"
-  ],
-  "selected_subagents": [
-    "rayman_reviewer",
-    "rayman_docs_researcher"
-  ],
+  "allowed_subagents": [],
+  "selected_subagents": [],
   "selected_tool_keys": [
-    "openai_docs_mcp",
-    "rayman_docs_researcher",
-    "rayman_reviewer",
     "local_shell"
   ],
   "stop_conditions": [
@@ -63,7 +50,7 @@
   "openai_optional": {
     "mode": "auto",
     "codex_available": true,
-    "openai_docs_active": true,
+    "openai_docs_active": false,
     "features": [
       {
         "name": "background_mode",

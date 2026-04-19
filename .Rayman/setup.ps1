@@ -3384,6 +3384,99 @@ if (Test-Path -LiteralPath $launchFile -PathType Leaf) {
             -Required)
 }
 
+# 4.25 生成或更新 .vscode/launch.json
+$launchFile = Join-Path $vscodeDir "launch.json"
+$raymanWorkerLaunchConfigs = @(
+    [ordered]@{
+        name = "Rayman Worker: Launch .NET (Active Worker)"
+        type = "coreclr"
+        request = "launch"
+        preLaunchTask = "Rayman: Worker Debug Prepare"
+        program = '${workspaceFolder}'
+        cwd = '${workspaceFolder}'
+        console = "internalConsole"
+        justMyCode = $true
+        requireExactSource = $false
+        pipeTransport = @{
+            pipeProgram = "powershell.exe"
+            pipeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                '${workspaceFolder}/.Rayman/scripts/worker/worker_pipe_transport.ps1',
+                "-WorkspaceRoot",
+                '${workspaceFolder}'
+            )
+            pipeCwd = '${workspaceFolder}'
+            debuggerPath = "vsdbg"
+            quoteArgs = $true
+        }
+        sourceFileMap = @{}
+    },
+    [ordered]@{
+        name = "Rayman Worker: Attach .NET (Active Worker)"
+        type = "coreclr"
+        request = "attach"
+        preLaunchTask = "Rayman: Worker Debug Prepare"
+        processId = '${input:raymanWorkerAttachProcessId}'
+        cwd = '${workspaceFolder}'
+        justMyCode = $true
+        requireExactSource = $false
+        pipeTransport = @{
+            pipeProgram = "powershell.exe"
+            pipeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                '${workspaceFolder}/.Rayman/scripts/worker/worker_pipe_transport.ps1',
+                "-WorkspaceRoot",
+                '${workspaceFolder}'
+            )
+            pipeCwd = '${workspaceFolder}'
+            debuggerPath = "vsdbg"
+            quoteArgs = $true
+        }
+        sourceFileMap = @{}
+    }
+)
+$raymanWorkerLaunchInputs = @(
+    [ordered]@{
+        id = "raymanWorkerAttachProcessId"
+        type = "promptString"
+        description = "Enter the remote process id running on the active Rayman Worker."
+        default = "0"
+    }
+)
+
+if (Test-Path -LiteralPath $launchFile -PathType Leaf) {
+    $launchDoc = Read-RaymanJsonConfigCompat -Path $launchFile -AsHashtable -WarningPrefix 'launch'
+    if ([bool]$launchDoc.ParseFailed) {
+        Write-Host "⚠️ 更新 .vscode/launch.json 失败，可能是 JSON 格式不正确。请手动修复。" -ForegroundColor Yellow
+    } else {
+        $launchObj = if ($null -ne $launchDoc.Obj) { $launchDoc.Obj } else { @{ version = '0.2.0'; configurations = @(); inputs = @() } }
+        if (-not $launchObj.ContainsKey('configurations')) { $launchObj['configurations'] = @() }
+        if (-not $launchObj.ContainsKey('inputs')) { $launchObj['inputs'] = @() }
+
+        $filteredConfigs = @($launchObj['configurations'] | Where-Object { [string]$_.name -notlike 'Rayman Worker:*' })
+        $filteredInputs = @($launchObj['inputs'] | Where-Object { [string]$_.id -ne 'raymanWorkerAttachProcessId' })
+        $launchObj['version'] = '0.2.0'
+        $launchObj['configurations'] = @($filteredConfigs + $raymanWorkerLaunchConfigs)
+        $launchObj['inputs'] = @($filteredInputs + $raymanWorkerLaunchInputs)
+
+        $launchObj | ConvertTo-Json -Depth 12 | Set-Content -Path $launchFile -Encoding UTF8
+        Write-Host "✅ 已更新 .vscode/launch.json (合并了现有调试配置)" -ForegroundColor Green
+    }
+} else {
+    @{
+        version = '0.2.0'
+        configurations = $raymanWorkerLaunchConfigs
+        inputs = $raymanWorkerLaunchInputs
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $launchFile -Encoding UTF8
+    Write-Host "✅ 已生成 .vscode/launch.json" -ForegroundColor Green
+}
+
 # 4.5 优化 VS Code 性能与工作区忽略配置 (settings.json & .gitignore)
 try {
     # 4.5.1 更新 .gitignore
