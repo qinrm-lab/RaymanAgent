@@ -35,12 +35,14 @@
     "prewarm_requested": { "type": "boolean" },
     "counts": {
       "type": "object",
-      "required": ["episodes", "task_summaries", "semantic_memories", "session_recalls"],
+      "required": ["episodes", "task_summaries", "semantic_memories", "session_recalls", "shared_sessions", "shared_session_messages"],
       "properties": {
         "episodes": { "type": "integer", "minimum": 0 },
         "task_summaries": { "type": "integer", "minimum": 0 },
         "semantic_memories": { "type": "integer", "minimum": 0 },
-        "session_recalls": { "type": "integer", "minimum": 0 }
+        "session_recalls": { "type": "integer", "minimum": 0 },
+        "shared_sessions": { "type": "integer", "minimum": 0 },
+        "shared_session_messages": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
     },

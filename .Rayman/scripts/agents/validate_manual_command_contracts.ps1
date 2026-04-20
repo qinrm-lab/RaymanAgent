@@ -18,6 +18,65 @@ $checks = New-Object 'System.Collections.Generic.List[object]'
 $failures = New-Object 'System.Collections.Generic.List[string]'
 $unitBackedCache = @{}
 
+function Test-ManualCommandCurrentHostIsWindows {
+  if (Get-Command Test-RaymanWindowsPlatform -ErrorAction SilentlyContinue) {
+    return [bool](Test-RaymanWindowsPlatform)
+  }
+  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+}
+
+function Resolve-UnitBackedPowerShellHost {
+  $preferWindowsInterop = -not (Test-ManualCommandCurrentHostIsWindows)
+  $candidates = if ($preferWindowsInterop) {
+    @('pwsh.exe', 'powershell.exe', 'pwsh', 'powershell')
+  } else {
+    @('pwsh', 'pwsh.exe', 'powershell.exe', 'powershell')
+  }
+
+  foreach ($candidate in $candidates) {
+    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $cmd -or [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
+      continue
+    }
+
+    $source = [string]$cmd.Source
+    return [pscustomobject]@{
+      source = $source
+      is_windows_host = ($source -match '(?i)\.exe$')
+    }
+  }
+
+  return $null
+}
+
+function Convert-UnitBackedPathForHost {
+  param(
+    [string]$Path,
+    [bool]$WindowsHost
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not $WindowsHost) {
+    return $Path
+  }
+  if (Test-ManualCommandCurrentHostIsWindows) {
+    return $Path
+  }
+
+  $wslPathCmd = Get-Command 'wslpath' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $wslPathCmd -or [string]::IsNullOrWhiteSpace([string]$wslPathCmd.Source)) {
+    return $Path
+  }
+
+  try {
+    $converted = (& $wslPathCmd.Source -w $Path | Select-Object -First 1)
+    if (-not [string]::IsNullOrWhiteSpace([string]$converted)) {
+      return [string]$converted.Trim()
+    }
+  } catch {}
+
+  return $Path
+}
+
 function Add-ManualCommandCheck {
   param(
     [string]$Name,
@@ -65,7 +124,7 @@ function Get-ManualCommandNormalizedText {
 function Get-ManualCommandSegmentsFromMarkdown {
   param([string]$Text)
 
-  $segments = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  $segments = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList @([System.StringComparer]::OrdinalIgnoreCase)
 
   foreach ($match in [regex]::Matches($Text, '(?s)```[^\r\n]*\r?\n(?<block>.*?)```')) {
     $block = [string]$match.Groups['block'].Value
@@ -167,11 +226,8 @@ function Invoke-UnitBackedManualCommandValidation {
     return $result
   }
 
-  $psHost = Get-Command 'pwsh' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($null -eq $psHost -or [string]::IsNullOrWhiteSpace([string]$psHost.Source)) {
-    $psHost = Get-Command 'powershell.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-  }
-  if ($null -eq $psHost -or [string]::IsNullOrWhiteSpace([string]$psHost.Source)) {
+  $psHost = Resolve-UnitBackedPowerShellHost
+  if ($null -eq $psHost -or [string]::IsNullOrWhiteSpace([string]$psHost.source)) {
     $result = [pscustomobject]@{
       ok = $false
       detail = 'PowerShell host not found for unit-backed validation.'
@@ -181,9 +237,13 @@ function Invoke-UnitBackedManualCommandValidation {
   }
 
   $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_manual_contract_' + [Guid]::NewGuid().ToString('N'))
-  $runnerPath = $tempRoot + '.ps1'
-  $stdoutPath = $tempRoot + '.stdout.txt'
-  $stderrPath = $tempRoot + '.stderr.txt'
+  $runnerPathLocal = $tempRoot + '.ps1'
+  $stdoutPathLocal = $tempRoot + '.stdout.txt'
+  $stderrPathLocal = $tempRoot + '.stderr.txt'
+  $targetPath = Convert-UnitBackedPathForHost -Path $fullPath -WindowsHost ([bool]$psHost.is_windows_host)
+  $runnerPath = Convert-UnitBackedPathForHost -Path $runnerPathLocal -WindowsHost ([bool]$psHost.is_windows_host)
+  $stdoutPath = Convert-UnitBackedPathForHost -Path $stdoutPathLocal -WindowsHost ([bool]$psHost.is_windows_host)
+  $stderrPath = Convert-UnitBackedPathForHost -Path $stderrPathLocal -WindowsHost ([bool]$psHost.is_windows_host)
   try {
     $runner = @"
 `$ErrorActionPreference = 'Stop'
@@ -193,18 +253,35 @@ function Invoke-UnitBackedManualCommandValidation {
 if (`$null -eq `$pesterModule) { throw 'Pester 5+ is not installed.' }
 Import-Module ([string]`$pesterModule.Path) -Force | Out-Null
 `$config = New-PesterConfiguration
-`$config.Run.Path = @('$fullPath')
+`$config.Run.Path = @('$targetPath')
 `$config.Run.PassThru = `$true
 `$config.Output.Verbosity = 'None'
 `$result = Invoke-Pester -Configuration `$config 6>`$null
 if ([int]`$result.FailedCount -gt 0) { exit 1 }
 exit 0
 "@
-    Set-Content -LiteralPath $runnerPath -Value $runner -Encoding UTF8
-    $proc = Start-Process -FilePath ([string]$psHost.Source) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runnerPath) -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    Set-Content -LiteralPath $runnerPathLocal -Value $runner -Encoding UTF8
+    $startProcessArgs = @{
+      FilePath = [string]$psHost.source
+      ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runnerPath)
+      PassThru = $true
+      Wait = $true
+      RedirectStandardOutput = $stdoutPath
+      RedirectStandardError = $stderrPath
+    }
+    $isWindowsHost = $false
+    if (Get-Command Test-RaymanWindowsPlatform -ErrorAction SilentlyContinue) {
+      $isWindowsHost = [bool](Test-RaymanWindowsPlatform)
+    } else {
+      $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    }
+    if ($isWindowsHost) {
+      $startProcessArgs.WindowStyle = 'Hidden'
+    }
+    $proc = Start-Process @startProcessArgs
     $detailSuffix = ''
-    if ([int]$proc.ExitCode -ne 0 -and (Test-Path -LiteralPath $stderrPath -PathType Leaf)) {
-      $stderrRaw = Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8
+    if ([int]$proc.ExitCode -ne 0 -and (Test-Path -LiteralPath $stderrPathLocal -PathType Leaf)) {
+      $stderrRaw = Get-Content -LiteralPath $stderrPathLocal -Raw -Encoding UTF8
       $stderr = if ($null -eq $stderrRaw) { '' } else { [string]$stderrRaw }
       $stderr = $stderr.Trim()
       if (-not [string]::IsNullOrWhiteSpace($stderr)) {
@@ -218,7 +295,7 @@ exit 0
     $unitBackedCache[$RelativePath] = $result
     return $result
   } finally {
-    foreach ($path in @($runnerPath, $stdoutPath, $stderrPath)) {
+    foreach ($path in @($runnerPathLocal, $stdoutPathLocal, $stderrPathLocal)) {
       if (Test-Path -LiteralPath $path -PathType Leaf) {
         Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
       }

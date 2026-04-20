@@ -860,8 +860,10 @@ class SharedSessionStore:
             raise ValueError("session_id and owner_id are required")
 
         now_dt = datetime.now(timezone.utc)
-        now = now_dt.replace(microsecond=0).isoformat()
-        expires_at = (now_dt + timedelta(seconds=timeout_seconds)).replace(microsecond=0).isoformat()
+        # Preserve sub-second precision so short lock windows do not expire early
+        # when acquisition happens near a second boundary.
+        now = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(seconds=timeout_seconds)).isoformat()
         existing = self.conn.execute("SELECT * FROM shared_session_locks WHERE session_id = ?", (session_id,)).fetchone()
         stale_recovered = False
 

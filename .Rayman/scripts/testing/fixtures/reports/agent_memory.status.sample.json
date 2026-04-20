@@ -16,7 +16,9 @@
     "episodes": 0,
     "task_summaries": 0,
     "semantic_memories": 0,
-    "session_recalls": 1
+    "session_recalls": 1,
+    "shared_sessions": 1,
+    "shared_session_messages": 2
   },
   "generated_at": "2026-03-23T16:13:24+00:00",
   "python_version": "3.13.5"

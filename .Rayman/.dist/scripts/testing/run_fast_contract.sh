@@ -61,14 +61,14 @@ else
   exit 2
 fi
 
-if command -v powershell.exe >/dev/null 2>&1; then
+if command -v pwsh >/dev/null 2>&1; then
+  PS_RUNNER=(pwsh -NoProfile -ExecutionPolicy Bypass -File)
+elif command -v pwsh.exe >/dev/null 2>&1; then
+  PS_RUNNER=(pwsh.exe -NoProfile -ExecutionPolicy Bypass -File)
+elif command -v powershell.exe >/dev/null 2>&1; then
   PS_RUNNER=(powershell.exe -NoProfile -ExecutionPolicy Bypass -File)
 elif command -v powershell >/dev/null 2>&1; then
   PS_RUNNER=(powershell -NoProfile -ExecutionPolicy Bypass -File)
-elif command -v pwsh.exe >/dev/null 2>&1; then
-  PS_RUNNER=(pwsh.exe -NoProfile -ExecutionPolicy Bypass -File)
-elif command -v pwsh >/dev/null 2>&1; then
-  PS_RUNNER=(pwsh -NoProfile -ExecutionPolicy Bypass -File)
 else
   echo "[rayman-fast-contract] pwsh/powershell not found" >&2
   exit 2
