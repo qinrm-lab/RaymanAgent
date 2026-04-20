@@ -279,23 +279,30 @@ Describe 'watch task generation contracts' {
 
     $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_WATCH_ENABLED = '1'"
     $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS = '1800'"
-    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS = '300'"
+    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS = '1800'"
+    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_RETRY_SECONDS = '1800'"
+    $envRaw | Should -Not -Match 'RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS'
     $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' = '1'"
-    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' = '300'"
+    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' = '1800'"
+    $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_RETRY_SECONDS' = '1800'"
+    $setupRaw | Should -Not -Match 'RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS'
     $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_CODEX_PROBE_URL' = 'https://api.openai.com/'"
     $winWatchRaw | Should -Match 'EnableEmbeddedNetworkResume'
     $winWatchRaw | Should -Match 'network-resume'
     $winWatchDistRaw | Should -Match 'EnableEmbeddedNetworkResume'
     $embeddedRaw | Should -Match 'network_resume\.status\.json'
-    $embeddedRaw | Should -Match 'transient_throttle_error'
-    $embeddedRaw | Should -Match 'ThrottleWaitSeconds'
-    $embeddedRaw | Should -Match "'exec', 'resume', '--last'"
+    $embeddedRaw | Should -Match 'pending_continuation\.json'
+    $embeddedRaw | Should -Match 'transient_provider_outage'
+    $embeddedRaw | Should -Match 'FirstSaveIdleSeconds'
+    $embeddedRaw | Should -Match 'Start-RaymanSharedSessionContinuationDetached'
+    $embeddedRaw | Should -Match 'InjectedPreamble'
     $embeddedDistRaw | Should -Match 'network_resume\.status\.json'
     $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0'
     $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>'
+    $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_RETRY_SECONDS=<秒>'
     $readmeRaw | Should -Match 'RAYMAN_NETWORK_RESUME_CODEX_PROBE_URL=<https-url>'
-    $readmeRaw | Should -Match 'high demand / rate limit / overload'
-    $readmeRaw | Should -Match '只会对 Codex 调用 `codex exec resume --last`'
+    $readmeRaw | Should -Match '500 / 502 / 503 / 504 / service unavailable / gateway timeout / upstream / backend overloaded'
+    $readmeRaw | Should -Match 'canonical shared session / handoff continuation'
     $readmeDistRaw | Should -Match 'RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0'
     $readmeDistRaw | Should -Match 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>'
   }
@@ -437,6 +444,8 @@ Describe 'watch task generation contracts' {
     $fastContractRaw | Should -Match 'RAYMAN_ALLOW_MISSING_BASE_REF=1'
     $fastContractRaw | Should -Match '\[\[\s*"\$\{RAYMAN_ALLOW_MISSING_BASE_REF\}"\s*==\s*"1"\s*\]\]'
     $fastContractRaw | Should -Match 'fast-contract-local-no-origin-main'
+    $fastContractRaw | Should -Match 'RUN_DIR="\$\{RUNTIME_DIR\}/runs/fast_contract/\$\{RUN_ID\}"'
+    $fastContractRaw | Should -Match 'publish_latest_artifact'
     $copilotRaw | Should -Match 'Rayman WinApp MCP'
     $copilotRaw | Should -Match 'project_doc'
     $copilotRaw | Should -Match '\.github/agents'

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -121,6 +122,43 @@ def validate_target(results, scope, name, schema_path, data_path):
     results.append(entry)
 
 
+def refresh_agent_memory_runtime_artifacts(workspace_root: Path) -> str:
+    script_path = workspace_root / ".Rayman" / "scripts" / "memory" / "manage_memory.py"
+    if not script_path.is_file():
+        return ""
+
+    commands = [
+        ("status", []),
+        ("search", ["--query", "", "--scope", "all", "--limit", "5", "--recent-limit", "2"]),
+        ("summarize", []),
+    ]
+    for action, extra_args in commands:
+        cmd = [
+            sys.executable,
+            str(script_path),
+            action,
+            "--workspace-root",
+            str(workspace_root),
+            "--json",
+            *extra_args,
+        ]
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if completed.returncode != 0:
+            details = (completed.stderr or completed.stdout or "").strip()
+            if not details:
+                details = "unknown refresh failure"
+            return f"agent_memory:{action} failed: {details}"
+
+    return ""
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate Rayman JSON contracts.")
     parser.add_argument(
@@ -143,6 +181,19 @@ def main():
 
     workspace_root = Path(args.workspace_root).resolve()
     results = []
+    if args.mode in ("all", "runtime"):
+        refresh_error = refresh_agent_memory_runtime_artifacts(workspace_root)
+        if refresh_error:
+            results.append(
+                {
+                    "scope": "runtime_prepare",
+                    "name": "agent_memory_runtime",
+                    "schema_path": "",
+                    "data_path": str(workspace_root / ".Rayman" / "runtime" / "memory"),
+                    "status": "FAIL",
+                    "error": refresh_error,
+                }
+            )
 
     for contract in CONTRACTS:
         schema_path = SCHEMA_DIR / contract["schema"]

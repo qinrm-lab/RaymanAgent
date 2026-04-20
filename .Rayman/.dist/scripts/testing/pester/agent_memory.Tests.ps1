@@ -8,6 +8,7 @@ BeforeAll {
   $script:RepairScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\repair\run_tests_and_fix.ps1'
   $script:SaveStateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\save_state.ps1'
   $script:ResumeStateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\resume_state.ps1'
+  $script:SharedSessionScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\shared_session.ps1'
   $script:RuntimeTemp = Join-Path $script:WorkspaceRoot '.Rayman\runtime\memory\test-fixtures'
   $script:GitPath = (Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
   $script:PowerShellCmd = @(
@@ -75,10 +76,13 @@ Describe 'agent memory' {
     [string]::IsNullOrWhiteSpace([string]$result.status_path) | Should -Be $false
     [string]$result.session_search_backend | Should -Match '^(fts5|lexical)$'
     ($result.counts.PSObject.Properties.Name -contains 'session_recalls') | Should -Be $true
+    ($result.counts.PSObject.Properties.Name -contains 'shared_sessions') | Should -Be $true
+    ($result.counts.PSObject.Properties.Name -contains 'shared_session_messages') | Should -Be $true
   }
 
   It 'ships Agent Memory schemas and fixtures into the contract validator' {
     $validatorRaw = Get-Content -LiteralPath (Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\validate_json_contracts.py') -Raw -Encoding UTF8
+    $searchFixture = Get-Content -LiteralPath (Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\fixtures\reports\agent_memory.search.sample.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $paths = @(
       '.Rayman\scripts\testing\schemas\agent_memory_status.v1.schema.json',
       '.Rayman\scripts\testing\schemas\agent_memory_search_result.v1.schema.json',
@@ -95,6 +99,10 @@ Describe 'agent memory' {
     $validatorRaw | Should -Match 'agent_memory_status'
     $validatorRaw | Should -Match 'agent_memory_search_result'
     $validatorRaw | Should -Match 'agent_memory_summarize_result'
+    $sharedRecall = @($searchFixture.recall_results | Where-Object { [string]$_.source_kind -eq 'shared_session_message' } | Select-Object -First 1)
+    [int]$searchFixture.shared_session_messages[0].id | Should -BeGreaterThan 0
+    @($sharedRecall).Count | Should -Be 1
+    [int]$sharedRecall[0].id | Should -BeGreaterThan 0
   }
 
   It 'replaces legacy memory wording in the repair summary template' {
@@ -196,6 +204,23 @@ Describe 'agent memory' {
       ($eventTypes -contains 'memory.summarize') | Should -Be $true
     } finally {
       [Environment]::SetEnvironmentVariable('RAYMAN_CODEX_ACCOUNT_ALIAS', $aliasBackup)
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'searches canonical shared session messages alongside summary recall rows' {
+    $root = New-AgentMemoryTestRoot
+    try {
+      & $script:SharedSessionScript -WorkspaceRoot $root -Action continue -Name 'Alpha Mesh' -Prompt 'canonical shared session rollback breadcrumb' -Json | ConvertFrom-Json | Out-Null
+      $status = & $script:ManageMemory -WorkspaceRoot $root -Action status -Json | ConvertFrom-Json
+      $search = & $script:ManageMemory -WorkspaceRoot $root -Action search -Query 'canonical shared session rollback breadcrumb' -Scope all -Json | ConvertFrom-Json
+
+      [int]$status.counts.shared_sessions | Should -Be 1
+      [int]$status.counts.shared_session_messages | Should -BeGreaterThan 0
+      @($search.shared_session_messages).Count | Should -BeGreaterThan 0
+      [string]$search.shared_session_messages[0].source_kind | Should -Be 'shared_session_message'
+      @($search.recall_results | Where-Object { [string]$_.source_kind -eq 'shared_session_message' }).Count | Should -BeGreaterThan 0
+    } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

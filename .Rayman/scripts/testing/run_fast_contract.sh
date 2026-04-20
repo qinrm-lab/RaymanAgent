@@ -3,17 +3,34 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RUNTIME_DIR="${ROOT}/.Rayman/runtime/test_lanes"
-LOG_DIR="${RUNTIME_DIR}/logs/fast_contract"
-REPORT_PATH="${RUNTIME_DIR}/fast_contract.report.json"
-JSON_CONTRACT_REPORT="${RUNTIME_DIR}/json_contracts.report.json"
-STEPS_FILE="${RUNTIME_DIR}/fast_contract.steps.tsv"
 TELEMETRY_DIR="${ROOT}/.Rayman/runtime/telemetry"
 TELEMETRY_FILE="${TELEMETRY_DIR}/rules_runs.tsv"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_fast_contract_$$"
+RUN_DIR="${RUNTIME_DIR}/runs/fast_contract/${RUN_ID}"
+LOG_DIR="${RUN_DIR}/logs"
+REPORT_PATH="${RUN_DIR}/fast_contract.report.json"
+JSON_CONTRACT_REPORT="${RUN_DIR}/json_contracts.report.json"
+STEPS_FILE="${RUN_DIR}/fast_contract.steps.tsv"
+LATEST_REPORT_PATH="${RUNTIME_DIR}/fast_contract.report.json"
+LATEST_JSON_CONTRACT_REPORT="${RUNTIME_DIR}/json_contracts.report.json"
+LATEST_STEPS_FILE="${RUNTIME_DIR}/fast_contract.steps.tsv"
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${TELEMETRY_DIR}"
 : > "${STEPS_FILE}"
+
+publish_latest_artifact() {
+  local source_path="$1"
+  local target_path="$2"
+  local target_dir
+  local temp_path
+
+  target_dir="$(dirname "${target_path}")"
+  mkdir -p "${target_dir}"
+  temp_path="${target_path}.tmp.${RUN_ID}"
+  cp -f "${source_path}" "${temp_path}"
+  mv -f "${temp_path}" "${target_path}"
+}
 
 if [[ ! -f "${TELEMETRY_FILE}" ]]; then
   echo -e "ts_iso\trun_id\tprofile\tstage\tscope\tstatus\texit_code\tduration_ms\tcommand" > "${TELEMETRY_FILE}"
@@ -187,6 +204,10 @@ report_path.parent.mkdir(parents=True, exist_ok=True)
 report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 print(json.dumps(report, indent=2, ensure_ascii=False))
 PY
+
+publish_latest_artifact "${REPORT_PATH}" "${LATEST_REPORT_PATH}"
+publish_latest_artifact "${JSON_CONTRACT_REPORT}" "${LATEST_JSON_CONTRACT_REPORT}"
+publish_latest_artifact "${STEPS_FILE}" "${LATEST_STEPS_FILE}"
 
 write_rule_record "final" "$(if [[ ${fail_count} -eq 0 ]]; then echo OK; else echo FAIL; fi)" "${fail_count}" "0" "fast-contract"
 

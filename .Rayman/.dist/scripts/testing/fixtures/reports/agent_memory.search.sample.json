@@ -49,6 +49,33 @@
       "semantic_score": 0.8
     }
   ],
+  "shared_session_messages": [
+    {
+      "id": 11,
+      "source_kind": "shared_session_message",
+      "message_source_kind": "vendor_import",
+      "kind": "shared_session_message",
+      "scope": "session",
+      "task_kind": "",
+      "content": "Codex Desktop linked session tail kept the rollback breadcrumb visible.",
+      "summary_text": "Rollback restore kept snapshot semantics unchanged.",
+      "session_id": "ws-2ef990f130b3-task-alpha",
+      "session_name": "Alpha",
+      "session_status": "active",
+      "message_id": "vendor-codex-desktop-abc123",
+      "role": "assistant",
+      "vendor_name": "codex-desktop",
+      "vendor_session_id": "sess_123",
+      "queue_state": "active",
+      "artifact_paths": [
+        ".codex/sessions/2026/04/16/rollout-alpha.jsonl"
+      ],
+      "updated_at": "2026-04-16T02:35:00+00:00",
+      "score": 0.77,
+      "lexical_score": 0.41,
+      "semantic_score": 0.77
+    }
+  ],
   "recall_results": [
     {
       "id": 1,
@@ -72,6 +99,31 @@
       "score": 0.8,
       "lexical_score": 0.42,
       "semantic_score": 0.8
+    },
+    {
+      "id": 11,
+      "source_kind": "shared_session_message",
+      "message_source_kind": "vendor_import",
+      "kind": "shared_session_message",
+      "scope": "session",
+      "task_kind": "",
+      "content": "Codex Desktop linked session tail kept the rollback breadcrumb visible.",
+      "summary_text": "Rollback restore kept snapshot semantics unchanged.",
+      "session_id": "ws-2ef990f130b3-task-alpha",
+      "session_name": "Alpha",
+      "session_status": "active",
+      "message_id": "vendor-codex-desktop-abc123",
+      "role": "assistant",
+      "vendor_name": "codex-desktop",
+      "vendor_session_id": "sess_123",
+      "queue_state": "active",
+      "artifact_paths": [
+        ".codex/sessions/2026/04/16/rollout-alpha.jsonl"
+      ],
+      "updated_at": "2026-04-16T02:35:00+00:00",
+      "score": 0.77,
+      "lexical_score": 0.41,
+      "semantic_score": 0.77
     },
     {
       "id": 2,
