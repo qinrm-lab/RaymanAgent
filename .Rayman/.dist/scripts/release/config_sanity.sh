@@ -60,9 +60,11 @@ detect_workspace_kind(){
 }
 
 workspace_kind="$(detect_workspace_kind "$(pwd)")"
+settings_present=1
 
 [[ -f "${solution_file}" ]] || fail "missing: ${solution_file}"
 if [[ ! -f "${settings_file}" ]]; then
+  settings_present=0
   if [[ "${workspace_kind}" == "source" ]]; then
     warn "missing optional generated asset in source workspace: ${settings_file}"
   else
@@ -105,7 +107,8 @@ else
   exit 0
 fi
 
-"${pybin}" - <<'PY' "${settings_file}"
+if [[ "${settings_present}" == "1" ]]; then
+  "${pybin}" - <<'PY' "${settings_file}"
 import json
 import sys
 from typing import Any, List, Tuple
@@ -144,6 +147,7 @@ if isinstance(edits, dict):
 
 print("settings.json sanity OK")
 PY
+fi
 
 "${pybin}" - <<'PY' "${mcp_file}" "$(pwd)"
 import json

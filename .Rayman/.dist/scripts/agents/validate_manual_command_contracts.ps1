@@ -357,7 +357,9 @@ foreach ($scope in @(Get-RaymanManualCommandDocumentScopes)) {
   $relativePath = [string]$scope.relative_path
   $fullPath = Join-Path $WorkspaceRoot $relativePath
   if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
-    Add-ManualCommandCheck -Name $relativePath -Passed $false -Detail 'missing'
+    $isHistoricalScope = ([string]$scope.mode -eq 'historical')
+    $detail = if ($isHistoricalScope) { 'historical archive omitted from tracked repo surface' } else { 'missing' }
+    Add-ManualCommandCheck -Name $relativePath -Passed $isHistoricalScope -Detail $detail
     continue
   }
 

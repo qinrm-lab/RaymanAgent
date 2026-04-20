@@ -540,6 +540,6 @@ Describe 'repo hygiene ignore contracts' {
     $gitignoreRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.gitignore') -Raw -Encoding UTF8
 
     $gitignoreRaw | Should -Match '\.Rayman/runtime/'
-    $gitignoreRaw | Should -Match '(?m)^/testResults\.xml$'
+    $gitignoreRaw | Should -Match '(?m)^/testResults\.xml\r?$'
   }
 }

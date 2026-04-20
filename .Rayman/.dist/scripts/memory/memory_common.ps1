@@ -31,6 +31,21 @@ function Ensure-RaymanMemoryDir([string]$Path) {
     }
 }
 
+function Write-RaymanMemoryUtf8NoBom {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    if (Get-Command Write-RaymanUtf8NoBom -ErrorAction SilentlyContinue) {
+        Write-RaymanUtf8NoBom -Path $Path -Content $Content
+        return
+    }
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Get-RaymanMemoryObjectValue {
     param(
         [object]$Object,
@@ -252,7 +267,7 @@ function Write-RaymanSessionRecall {
     }
 
     try {
-        $payload | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $payloadPath -Encoding UTF8
+        Write-RaymanMemoryUtf8NoBom -Path $payloadPath -Content ((($payload | ConvertTo-Json -Depth 12).TrimEnd()) + "`n")
         return Invoke-RaymanMemoryAction -WorkspaceRoot $paths.WorkspaceRoot -Action 'session-refresh' -InputJsonFile $payloadPath -Quiet
     } finally {
         if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
@@ -310,7 +325,7 @@ function Write-RaymanEpisodeMemory {
     }
 
     try {
-        $payload | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $payloadPath -Encoding UTF8
+        Write-RaymanMemoryUtf8NoBom -Path $payloadPath -Content ((($payload | ConvertTo-Json -Depth 12).TrimEnd()) + "`n")
         return Invoke-RaymanMemoryAction -WorkspaceRoot $paths.WorkspaceRoot -Action 'record' -InputJsonFile $payloadPath -Quiet
     } finally {
         if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
@@ -331,13 +346,14 @@ function New-RaymanMemoryPendingMarker {
     $paths = Get-RaymanMemoryPaths -WorkspaceRoot $WorkspaceRoot
     Ensure-RaymanMemoryDir -Path $paths.PendingRoot
     $markerPath = Join-Path $paths.PendingRoot (([string]$TaskKey).Replace('/', '_') + '.json')
-    [ordered]@{
+    $markerJson = [ordered]@{
         task_key = $TaskKey
         task_kind = $TaskKind
         run_id = $RunId
         reason = $Reason
         created_at = (Get-Date).ToString('o')
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $markerPath -Encoding UTF8
+    } | ConvertTo-Json -Depth 6
+    Write-RaymanMemoryUtf8NoBom -Path $markerPath -Content (([string]$markerJson).TrimEnd() + "`n")
     return $markerPath
 }
 

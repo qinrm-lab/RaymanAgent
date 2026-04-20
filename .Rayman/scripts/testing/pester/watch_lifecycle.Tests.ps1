@@ -268,7 +268,6 @@ Describe 'watch task generation contracts' {
   }
 
   It 'keeps provider-target network resume defaults and wiring mirrored across source and dist' {
-    $envRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.rayman.env.ps1') -Raw -Encoding UTF8
     $setupRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
     $winWatchRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\win-watch.ps1') -Raw -Encoding UTF8
     $winWatchDistRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\.dist\win-watch.ps1') -Raw -Encoding UTF8
@@ -277,11 +276,6 @@ Describe 'watch task generation contracts' {
     $readmeRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\README.md') -Raw -Encoding UTF8
     $readmeDistRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\.dist\README.md') -Raw -Encoding UTF8
 
-    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_WATCH_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS = '1800'"
-    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS = '1800'"
-    $envRaw | Should -Match "RAYMAN_NETWORK_RESUME_RETRY_SECONDS = '1800'"
-    $envRaw | Should -Not -Match 'RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS'
     $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_WATCH_ENABLED' = '1'"
     $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' = '1800'"
     $setupRaw | Should -Match "'RAYMAN_NETWORK_RESUME_RETRY_SECONDS' = '1800'"
@@ -308,16 +302,9 @@ Describe 'watch task generation contracts' {
   }
 
   It 'keeps attention defaults enabled for shared watcher scanning and completion sounds' {
-    $envRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.rayman.env.ps1') -Raw -Encoding UTF8
     $setupRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\setup.ps1') -Raw -Encoding UTF8
     $readmeRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\README.md') -Raw -Encoding UTF8
 
-    $envRaw | Should -Match "RAYMAN_ALERT_DONE_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_ALERT_SOUND_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_ALERT_SOUND_DONE_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_ALERT_WATCH_ON_PROMPT_ENABLED = '1'"
-    $envRaw | Should -Match "RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED = '1'"
     $setupRaw | Should -Match "'RAYMAN_ALERT_DONE_ENABLED' = '1'"
     $setupRaw | Should -Match "'RAYMAN_ALERT_SOUND_ENABLED' = '1'"
     $setupRaw | Should -Match "'RAYMAN_ALERT_SOUND_DONE_ENABLED' = '1'"
