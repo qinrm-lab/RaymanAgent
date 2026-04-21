@@ -29,6 +29,7 @@ function script:Get-RaymanFunctionBlock {
 BeforeAll {
   $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
   $script:RaymanRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\rayman.ps1') -Raw -Encoding UTF8
+  . (Join-Path $script:RepoRoot '.Rayman\common.ps1')
   . (Join-Path $script:RepoRoot '.Rayman\scripts\utils\command_catalog.ps1')
 
   foreach ($functionName in @(
@@ -49,6 +50,23 @@ BeforeAll {
   )) {
     Invoke-Expression (Get-RaymanFunctionBlock -RawText $script:RaymanRaw -FunctionName $functionName)
   }
+}
+
+function script:Get-RaymanMenuPowerShellHost {
+  $candidates = if (Test-RaymanCatalogWindowsHost) {
+    @('powershell.exe', 'powershell', 'pwsh.exe', 'pwsh')
+  } else {
+    @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')
+  }
+
+  foreach ($candidate in $candidates) {
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+      return $command
+    }
+  }
+
+  return $null
 }
 
 Describe 'rayman interactive menu helpers' {
@@ -86,15 +104,16 @@ version	pwsh-only	release	Show managed version state and consistency.	0
 
     $entries = @(Get-RaymanInteractiveMenuEntries -WorkspaceRoot $script:RepoRoot)
     $commands = @($entries | ForEach-Object { [string]$_.Command })
+    $windowsHost = [bool](Test-RaymanCatalogWindowsHost)
 
       ($commands -contains 'package-dist') | Should -Be $true
       ($commands -contains 'health-check') | Should -Be $true
       ($commands -contains 'one-click-health') | Should -Be $true
       ($commands -contains 'codex') | Should -Be $true
-      ($commands -contains 'workspace-install') | Should -Be $true
-      ($commands -contains 'workspace-register') | Should -Be $true
+      ($commands -contains 'workspace-install') | Should -Be $windowsHost
+      ($commands -contains 'workspace-register') | Should -Be $windowsHost
       ($commands -contains 'interaction-mode') | Should -Be $true
-      ($commands -contains 'sound-check') | Should -Be $true
+      ($commands -contains 'sound-check') | Should -Be $windowsHost
       ($commands -contains 'version') | Should -Be $true
       ($commands -contains 'newversion') | Should -Be $true
       ($commands -contains 'req-ts-backfill') | Should -Be $false
@@ -133,10 +152,7 @@ interaction-mode	pwsh-only	core	Show or change the workspace interaction mode fo
 '@
       Set-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Encoding UTF8 -Value '# temp'
 
-      $psHost = (Get-Command powershell.exe -ErrorAction SilentlyContinue | Select-Object -First 1)
-      if ($null -eq $psHost) {
-        $psHost = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1)
-      }
+      $psHost = Get-RaymanMenuPowerShellHost
       if ($null -eq $psHost -or [string]::IsNullOrWhiteSpace([string]$psHost.Source)) {
         Set-ItResult -Skipped -Because 'PowerShell host not found'
         return
@@ -220,7 +236,8 @@ codex	all	automation	Manage Codex aliases.	1
   It 'suppresses wrapper done alerts for codex flows in both pwsh and shell launchers' {
     $shellRaw = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.Rayman\rayman') -Raw -Encoding UTF8
 
-    $script:RaymanRaw | Should -Match '(?m)^\s+''codex'' \{ return \$true \}$'
+    (Test-RaymanCliDoneAlertSuppressed -CommandName 'codex') | Should -Be $true
+    (Test-RaymanCliDoneAlertSuppressed -CommandName 'copy-self-check') | Should -Be $true
     $shellRaw | Should -Match 'copy-self-check\|codex'
     $shellRaw | Should -Not -Match 'copy-check\|codex'
   }

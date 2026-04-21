@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 BeforeAll {
   . (Join-Path $PSScriptRoot '..\..\..\common.ps1')
   . (Join-Path $PSScriptRoot '..\..\codex\manage_accounts.ps1') -NoMain
+  $script:CodexAccountsIsWindowsHost = [bool](Test-RaymanWindowsPlatform)
 }
 
 function script:New-TestCommandWrapper {
@@ -14,7 +15,6 @@ function script:New-TestCommandWrapper {
   )
 
   $implPath = Join-Path $Root ('{0}.impl.ps1' -f $Name)
-  $wrapperPath = Join-Path $Root ('{0}.cmd' -f $Name)
   Set-Content -LiteralPath $implPath -Encoding UTF8 -Value $ScriptBody
   $pwsh = Get-Command 'pwsh' -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($null -eq $pwsh) {
@@ -25,11 +25,23 @@ function script:New-TestCommandWrapper {
   }
 
   $quotedImpl = $implPath.Replace("'", "''")
-  Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
+  if (Test-RaymanWindowsPlatform) {
+    $wrapperPath = Join-Path $Root ('{0}.cmd' -f $Name)
+    Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
 @echo off
 "$($pwsh.Source)" -NoProfile -ExecutionPolicy Bypass -Command "& '$quotedImpl' @args" -- %*
 exit /b %ERRORLEVEL%
 "@
+  } else {
+    $wrapperPath = Join-Path $Root $Name
+    $quotedPwsh = ([string]$pwsh.Source).Replace('"', '\"')
+    $quotedImplForShell = ([string]$implPath).Replace('"', '\"')
+    Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
+#!/usr/bin/env bash
+"$quotedPwsh" -NoProfile -ExecutionPolicy Bypass -File "$quotedImplForShell" "\$@"
+"@
+    & chmod +x -- $wrapperPath
+  }
 
   return $wrapperPath
 }
@@ -156,7 +168,7 @@ function script:Write-CodexDesktopWorkspaceSession {
 
 function script:Get-TestPathWithoutCodex {
   $paths = New-Object System.Collections.Generic.List[string]
-  foreach ($name in @('cmd.exe', 'powershell.exe')) {
+  foreach ($name in @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe', 'cmd.exe')) {
     $command = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $command) {
       continue
@@ -168,7 +180,7 @@ function script:Get-TestPathWithoutCodex {
     }
   }
 
-  return ([string[]]$paths -join ';')
+  return ([string[]]$paths -join [System.IO.Path]::PathSeparator)
 }
 
 Describe 'Rayman Codex account helpers' {
@@ -199,6 +211,7 @@ Describe 'Rayman Codex account helpers' {
     [Environment]::SetEnvironmentVariable('RAYMAN_VSCODE_EXTENSIONS_ROOT', $null)
     $script:testNoNpmGlobalBinRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_no_npm_' + [Guid]::NewGuid().ToString('N'))
     [Environment]::SetEnvironmentVariable('RAYMAN_NPM_GLOBAL_BIN_ROOT', $script:testNoNpmGlobalBinRoot)
+    [Environment]::SetEnvironmentVariable('PATH', (Get-TestPathWithoutCodex))
     $script:RaymanCodexCompatibilityCache = @{}
     $script:RaymanCodexLoginOverrideSupportCache = @{}
     Mock Resolve-RaymanCodexLoginConfigOverrides {
@@ -252,7 +265,7 @@ Describe 'Rayman Codex account helpers' {
       [string]$result.trust_level | Should -Be 'trusted'
       [bool]$state.present | Should -Be $true
       [string]$state.trust_level | Should -Be 'trusted'
-      $configRaw | Should -Match '\[projects\."E:/rayman/software/RaymanAgent"\]'
+      $configRaw | Should -Match ([regex]::Escape((Get-RaymanCodexWorkspaceTrustHeader -WorkspaceRoot 'E:\rayman\software\RaymanAgent')))
       $configRaw | Should -Match 'trust_level = "trusted"'
 
       $second = Set-RaymanCodexWorkspaceTrust -Alias 'work' -WorkspaceRoot 'E:\rayman\software\RaymanAgent'
@@ -348,6 +361,11 @@ Describe 'Rayman Codex account helpers' {
   }
 
   It 'falls back to the newest VS Code bundled codex command when PATH does not contain codex' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'VS Code bundled codex fallback is Windows-only.'
+      return
+    }
+
     $extensionsRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_vscode_ext_' + [Guid]::NewGuid().ToString('N'))
     try {
       $olderWrapper = New-VsCodeBundledCodexWrapper -ExtensionsRoot $extensionsRoot -ExtensionName 'openai.chatgpt-26.5000.10000-win32-x64' -ScriptBody @'
@@ -387,6 +405,11 @@ exit 0
   }
 
   It 'prefers a PATH codex command over the VS Code bundled fallback' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'PATH codex fallback precedence is validated on Windows.'
+      return
+    }
+
     $binRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_path_first_bin_' + [Guid]::NewGuid().ToString('N'))
     $extensionsRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_path_first_ext_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -418,6 +441,11 @@ exit 0
   }
 
   It 'prefers npm-global codex over a VS Code bundled codex that appears on PATH' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'npm-global versus VS Code bundled codex precedence is Windows-only.'
+      return
+    }
+
     $extensionsRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_prefer_npm_ext_' + [Guid]::NewGuid().ToString('N'))
     $npmBinRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_prefer_npm_bin_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -450,6 +478,11 @@ exit 0
   }
 
   It 'prefers a sibling codex.cmd over codex.ps1 on Windows PATH to avoid extra PowerShell host windows' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Sibling codex.cmd precedence only applies on Windows.'
+      return
+    }
+
     $binRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_cmd_sibling_bin_' + [Guid]::NewGuid().ToString('N'))
     try {
       New-Item -ItemType Directory -Force -Path $binRoot | Out-Null
@@ -657,6 +690,11 @@ exit 0
   }
 
   It 'supports web login through the unified native login dispatcher' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Desktop-global web login dispatch is Windows-only.'
+      return
+    }
+
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_login_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_login_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_login_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -730,6 +768,11 @@ exit 0
   }
 
   It 'reuses a saved ChatGPT token from the alias home before opening browser login' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Saved ChatGPT desktop token reuse is Windows-only.'
+      return
+    }
+
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_saved_web_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_saved_web_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_saved_web_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -982,6 +1025,11 @@ requires_openai_auth = true
   }
 
   It 'activates Yunyi login desktop-globally and syncs canonical state without leaking the raw key into metadata' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Desktop-global Yunyi activation is Windows-only.'
+      return
+    }
+
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_login_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_login_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_login_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -1106,6 +1154,11 @@ requires_openai_auth = true
   }
 
   It 'restores desktop auth cache when Yunyi desktop activation validation fails' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Desktop-global Yunyi validation recovery is Windows-only.'
+      return
+    }
+
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_restore_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_restore_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_restore_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -1170,6 +1223,11 @@ requires_openai_auth = true
   }
 
   It 'activates saved Yunyi desktop state during alias switch without prompting' {
+    if (-not $script:CodexAccountsIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'Saved Yunyi desktop activation is Windows-only.'
+      return
+    }
+
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_switch_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_switch_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_yunyi_switch_desktop_' + [Guid]::NewGuid().ToString('N'))

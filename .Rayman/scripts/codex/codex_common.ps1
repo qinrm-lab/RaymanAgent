@@ -3780,7 +3780,12 @@ function Resolve-RaymanCodexWorkspacePath {
     }
 
     $candidate = ([string]$WorkspaceRoot).Trim()
-    if ($candidate -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
+    if (Get-Command Convert-RaymanPathForCurrentHost -ErrorAction SilentlyContinue) {
+        $convertedCandidate = Convert-RaymanPathForCurrentHost -PathValue $candidate
+        if (-not [string]::IsNullOrWhiteSpace([string]$convertedCandidate)) {
+            $candidate = [string]$convertedCandidate
+        }
+    } elseif ($candidate -match '^/mnt/([A-Za-z])(?:/(.*))?$') {
         $drive = ([string]$Matches[1]).ToUpperInvariant()
         $rest = if ($Matches.Count -gt 2) { [string]$Matches[2] } else { '' }
         if ([string]::IsNullOrWhiteSpace($rest)) {

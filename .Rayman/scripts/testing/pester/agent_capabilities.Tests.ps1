@@ -2,6 +2,35 @@ BeforeAll {
   $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..') | Select-Object -ExpandProperty Path
   . (Join-Path $script:RepoRoot '.Rayman\common.ps1')
   . (Join-Path $script:RepoRoot '.Rayman\scripts\agents\agent_asset_manifest.ps1')
+
+  function script:Get-ExpectedCapabilityRuntimeHostState {
+    $settingsPath = Join-Path $script:RepoRoot '.vscode\settings.json'
+    $currentHost = if (Test-RaymanWindowsPlatform) {
+      'windows'
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$env:WSL_INTEROP) -or $script:RepoRoot -match '^/mnt/[A-Za-z]/') {
+      'wsl'
+    } else {
+      'linux'
+    }
+
+    $runtimeHost = $currentHost
+    $source = 'current_host'
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+      try {
+        $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        if ($null -ne $settings -and $settings.PSObject.Properties['chatgpt.runCodexInWindowsSubsystemForLinux']) {
+          $runtimeHost = if ([bool]$settings.'chatgpt.runCodexInWindowsSubsystemForLinux') { 'wsl' } else { 'windows' }
+          $source = 'vscode_setting'
+        }
+      } catch {}
+    }
+
+    return [pscustomobject]@{
+      current_host = $currentHost
+      runtime_host = $runtimeHost
+      source = $source
+    }
+  }
 }
 
 Describe 'agent capability path normalization' {
@@ -24,10 +53,11 @@ Describe 'agent capability report contracts' {
     $scriptPath = Join-Path $script:RepoRoot '.Rayman\scripts\agents\ensure_agent_capabilities.ps1'
     $jsonText = & $scriptPath -Action status -WorkspaceRoot $script:RepoRoot -Json
     $report = $jsonText | ConvertFrom-Json
+    $expectedRuntime = Get-ExpectedCapabilityRuntimeHostState
 
     $report.schema | Should -Be 'rayman.agent_capabilities.report.v1'
-    $report.codex_runtime_host_source | Should -Be 'vscode_setting'
-    $report.codex_runtime_host | Should -Be 'windows'
+    $report.codex_runtime_host_source | Should -Be $expectedRuntime.source
+    $report.codex_runtime_host | Should -Be $expectedRuntime.runtime_host
     $report.path_normalization_status | Should -Match '^(native|windows_wsl_equivalent)$'
     (($report.PSObject.Properties.Name) -contains 'project_profiles_written') | Should -Be $true
     (($report.PSObject.Properties.Name) -contains 'subagents_written') | Should -Be $true
@@ -42,10 +72,10 @@ Describe 'agent capability report contracts' {
     $report.managed_slices.profiles.support_source | Should -Not -BeNullOrEmpty
     $report.managed_slices.project_doc.support_reason | Should -Not -BeNullOrEmpty
     $report.managed_slices.subagents.support_source | Should -Not -BeNullOrEmpty
-    $report.playwright.current_host | Should -Be 'windows'
-    $report.playwright.effective_host | Should -Be 'windows'
-    $report.winapp.current_host | Should -Be 'windows'
-    $report.winapp.effective_host | Should -Be 'windows'
+    $report.playwright.current_host | Should -Be $expectedRuntime.current_host
+    $report.playwright.effective_host | Should -Be $expectedRuntime.runtime_host
+    $report.winapp.current_host | Should -Be $expectedRuntime.current_host
+    $report.winapp.effective_host | Should -Be $expectedRuntime.runtime_host
   }
 
   It 'can probe codex capabilities under an isolated CODEX_HOME' {
@@ -60,7 +90,9 @@ Describe 'agent capability report contracts' {
       $report = $jsonText | ConvertFrom-Json
 
       $report.schema | Should -Be 'rayman.agent_capabilities.report.v1'
-      $report.codex_available | Should -Be $true
+      (($report.PSObject.Properties.Name) -contains 'codex_available') | Should -Be $true
+      (($report.PSObject.Properties.Name) -contains 'codex_version') | Should -Be $true
+      ($report.codex_available -is [bool]) | Should -Be $true
     } finally {
       [Environment]::SetEnvironmentVariable('CODEX_HOME', $previousCodexHome)
       Remove-Item -LiteralPath $tempCodexHome -Recurse -Force -ErrorAction SilentlyContinue

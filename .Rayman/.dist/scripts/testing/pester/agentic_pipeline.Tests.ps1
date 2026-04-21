@@ -368,14 +368,24 @@ Describe 'agentic pipeline helpers' {
       New-AgenticWorkspace -Root $root -IncludeManagedDocLinks
       $dispatchScript = Join-Path $root '.Rayman\scripts\agents\dispatch.ps1'
       New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-      Set-Content -LiteralPath (Join-Path $binDir 'rayman.cmd') -Encoding ASCII -Value @'
+      if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        Set-Content -LiteralPath (Join-Path $binDir 'rayman.cmd') -Encoding ASCII -Value @'
 @echo off
 echo %*>>"%RAYMAN_STUB_LOG%"
 exit /b 0
 '@
+      } else {
+        $shimPath = Join-Path $binDir 'rayman'
+        Set-Content -LiteralPath $shimPath -Encoding ASCII -Value @'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$RAYMAN_STUB_LOG"
+exit 0
+'@
+        & chmod +x -- $shimPath
+      }
       [Environment]::SetEnvironmentVariable('RAYMAN_SYSTEM_SLIM_ENABLED', '0')
       [Environment]::SetEnvironmentVariable('RAYMAN_STUB_LOG', $stubLog)
-      [Environment]::SetEnvironmentVariable('PATH', ('{0};{1};{2}' -f $binDir, $env:SystemRoot, (Join-Path $env:SystemRoot 'System32')))
+      [Environment]::SetEnvironmentVariable('PATH', ('{0}{2}{1}' -f $binDir, [Environment]::GetEnvironmentVariable('PATH'), [System.IO.Path]::PathSeparator))
 
       & $dispatchScript -WorkspaceRoot $root -TaskKind 'review' -Task 'browser ui e2e review' | Out-Null
       $summary = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\agent_runs\last.json') -Raw -Encoding UTF8 | ConvertFrom-Json

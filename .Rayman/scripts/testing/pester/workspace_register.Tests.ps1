@@ -2,6 +2,7 @@ BeforeAll {
   $script:WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
   . (Join-Path $script:WorkspaceRoot '.Rayman\scripts\workspace\register_workspace.ps1') -NoMain
   . (Join-Path $script:WorkspaceRoot '.Rayman\scripts\workspace\registered_workspace_bootstrap.ps1') -NoMain
+  $script:WorkspaceRegisterIsWindowsHost = [bool](Test-RaymanWindowsPlatform)
 
   function script:Initialize-TestWorkspaceRegisterSource {
     param([string]$Root)
@@ -65,6 +66,11 @@ Describe 'workspace register' {
   }
 
   It 'writes source state, launchers, and the VS Code user task' {
+    if (-not $script:WorkspaceRegisterIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'workspace-register requires Windows.'
+      return
+    }
+
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_workspace_register_' + [Guid]::NewGuid().ToString('N'))
     $localAppData = Join-Path $tempRoot 'LocalAppData'
     $appData = Join-Path $tempRoot 'AppData'
@@ -151,6 +157,11 @@ Describe 'workspace register' {
   }
 
   It 'supports no-vscode and no-path without writing those surfaces' {
+    if (-not $script:WorkspaceRegisterIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'workspace-register requires Windows.'
+      return
+    }
+
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_workspace_register_flags_' + [Guid]::NewGuid().ToString('N'))
     $localAppData = Join-Path $tempRoot 'LocalAppData'
     $appData = Join-Path $tempRoot 'AppData'
@@ -208,7 +219,11 @@ Describe 'workspace register' {
 
       $result.success | Should -Be $false
       $result.status | Should -Be 'failed'
-      $result.error | Should -Match 'RaymanAgent source workspace'
+      if ($script:WorkspaceRegisterIsWindowsHost) {
+        $result.error | Should -Match 'RaymanAgent source workspace'
+      } else {
+        $result.error | Should -Be 'workspace-register requires Windows.'
+      }
     } finally {
       [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $originalLocalAppData)
       [Environment]::SetEnvironmentVariable('APPDATA', $originalAppData)
@@ -217,6 +232,11 @@ Describe 'workspace register' {
   }
 
   It 'writes a launcher that delegates to the registered workspace bootstrap helper' {
+    if (-not $script:WorkspaceRegisterIsWindowsHost) {
+      Set-ItResult -Skipped -Because 'workspace-register requires Windows.'
+      return
+    }
+
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_workspace_launcher_' + [Guid]::NewGuid().ToString('N'))
     $localAppData = Join-Path $tempRoot 'LocalAppData'
     $sourceRoot = Join-Path $tempRoot 'RaymanAgent'
