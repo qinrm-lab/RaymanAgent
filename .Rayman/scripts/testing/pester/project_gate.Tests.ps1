@@ -906,7 +906,7 @@ if ($commandText -match 'validate_requirements\.sh') {
     exit 0
   }
 
-  [Console]::Error.WriteLine('找不到 base ref：origin/main')
+  [Console]::Error.WriteLine('missing-base-ref: origin/main')
   exit 42
 }
 
@@ -942,7 +942,7 @@ exit 19
         $failLog = Get-Content -LiteralPath $requirementsFail.log_path -Raw -Encoding UTF8
 
         $requirementsFail.status | Should -Be 'FAIL'
-        $failLog | Should -Match '找不到 base ref|missing-base-ref'
+        $failLog | Should -Match 'missing-base-ref'
 
         $reportBypass = Invoke-ProjectGateJsonInChildPowerShell -WorkspaceRoot $root -Lane 'fast' -Environment @{
           RAYMAN_ALLOW_MISSING_BASE_REF = '1'

@@ -1397,6 +1397,7 @@ wire_api = "responses"
       New-Item -ItemType Directory -Force -Path $desktopHome | Out-Null
       $account = Ensure-RaymanCodexAccount -Alias 'alpha'
       Set-RaymanCodexAccountYunyiMetadata -Alias 'alpha' -BaseUrl 'https://api.yunyi.example.com/v1' -SuccessAt '2026-03-30T00:02:00Z' -ConfigReady $false -ReuseReason 'last_yunyi_record' -BaseUrlSource 'record:last_yunyi_base_url' | Out-Null
+      $expectedCodexHome = if (Test-RaymanCodexWindowsHost) { $desktopHome } else { [string]$account.codex_home }
 
       Mock Ensure-CodexCliReady {}
       Mock Get-CodexYunyiBaseUrlChoice {
@@ -1407,7 +1408,7 @@ wire_api = "responses"
         Set-Content -LiteralPath (Join-Path $desktopHome 'auth.json') -Encoding UTF8 -Value '{"OPENAI_API_KEY":"yy-demo-token-123456","auth_mode":"apikey"}'
         return [pscustomobject]@{ success = $true; exit_code = 0; output = 'Logged in using an API key'; stdout = @('Logged in using an API key'); stderr = @(); command = 'codex login --with-api-key'; error = '' }
       } -ParameterFilter {
-        $CodexHome -eq $desktopHome -and
+        $CodexHome -eq $expectedCodexHome -and
         $EnvironmentOverrides.ContainsKey('OPENAI_BASE_URL') -and [string]$EnvironmentOverrides['OPENAI_BASE_URL'] -eq 'https://api.yunyi.example.com/v1'
       }
       Mock Invoke-RaymanCodexDesktopStatusValidation {
