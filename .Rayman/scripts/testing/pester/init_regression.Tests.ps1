@@ -131,31 +131,15 @@ Describe 'Rayman init shell regressions' {
 
       Copy-Item -LiteralPath (Join-Path $repoRoot '.Rayman\init.sh') -Destination (Join-Path $root '.Rayman\init.sh')
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\repair\ensure_complete_rayman.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'repair\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\repair\ensure_complete_rayman.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'repair\n' >> '.Rayman/runtime/init-order.log'`n"
 
       Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\utils\workspace_state_guard.sh') -Content "#!/usr/bin/env bash`r`nset -euo pipefail`r`nprintf 'guard\n' >> '.Rayman/runtime/init-order.log'`r`nprintf 'guard-ok\n' > '.Rayman/runtime/guard-ran.txt'`r`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\ensure_requirements.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'requirements\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\ensure_requirements.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'requirements\n' >> '.Rayman/runtime/init-order.log'`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\process_prompts.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'prompts\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\process_prompts.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'prompts\n' >> '.Rayman/runtime/init-order.log'`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\pwa\ensure_playwright_wsl.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'playwright\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\pwa\ensure_playwright_wsl.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'playwright\n' >> '.Rayman/runtime/init-order.log'`n"
 
       $firstRun = Invoke-TestBashScript -Invocation $bashInvocation -WorkspaceRoot $root -ScriptPath './.Rayman/init.sh'
       $secondRun = Invoke-TestBashScript -Invocation $bashInvocation -WorkspaceRoot $root -ScriptPath './.Rayman/init.sh'

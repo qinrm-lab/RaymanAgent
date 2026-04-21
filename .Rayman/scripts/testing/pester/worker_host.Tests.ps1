@@ -43,6 +43,11 @@ Describe 'worker host auth guards' {
   }
 
   It 'allows LAN requests without a token when auth is not configured' {
+    if (-not (Test-RaymanWorkerWindowsHost)) {
+      Set-ItResult -Skipped -Because 'Rayman Worker host currently supports Windows only.'
+      return
+    }
+
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_host_failfast_' + [Guid]::NewGuid().ToString('N'))
     $lanBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED')
     $tokenBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN')

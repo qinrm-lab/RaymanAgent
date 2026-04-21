@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Alias('WorkspaceRoot')][string]$RepeatErrorGuardWorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
   [Alias('GuardStage')][string]$RepeatErrorGuardStage = 'manual',
   [Alias('AsJson')][switch]$RepeatErrorGuardAsJson,

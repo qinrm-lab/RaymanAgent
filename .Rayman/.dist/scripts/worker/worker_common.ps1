@@ -1500,7 +1500,9 @@ function Invoke-RaymanWorkerNativeCommandCapture {
       PassThru = $true
       RedirectStandardOutput = $stdoutPath
       RedirectStandardError = $stderrPath
-      WindowStyle = 'Hidden'
+    }
+    if (Test-RaymanWorkerWindowsHost) {
+      $params['WindowStyle'] = 'Hidden'
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
       $params['WorkingDirectory'] = $WorkingDirectory

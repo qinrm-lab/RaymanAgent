@@ -1,5 +1,9 @@
 /.Rayman/rayman text eol=lf
+/.Rayman/init.sh text eol=lf
+/.Rayman/**/*.sh text eol=lf
 /.Rayman/.dist/rayman text eol=lf
+/.Rayman/.dist/init.sh text eol=lf
+/.Rayman/.dist/**/*.sh text eol=lf
 /.Rayman/README.md text eol=lf
 /.Rayman/commands.txt text eol=lf
 /.Rayman/.dist/README.md text eol=lf
