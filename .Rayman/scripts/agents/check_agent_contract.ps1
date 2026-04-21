@@ -154,13 +154,23 @@ if (-not (Test-Path -LiteralPath $manualCommandValidator -PathType Leaf)) {
           Select-Object -First 3
       )
       if ($failedChecks.Count -gt 0) {
-        $failedNames = @(
+        $failedSummaries = @(
           $failedChecks |
-            ForEach-Object { [string]$_.name } |
+            ForEach-Object {
+              $name = [string]$_.name
+              $detailText = if ($_.PSObject.Properties['detail']) { [string]$_.detail } else { '' }
+              if ([string]::IsNullOrWhiteSpace($name)) {
+                return
+              }
+              if ([string]::IsNullOrWhiteSpace($detailText)) {
+                return $name
+              }
+              return ("{0} => {1}" -f $name, $detailText)
+            } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
         )
-        if ($failedNames.Count -gt 0) {
-          $detail = "{0}; failed={1}" -f $detail, ($failedNames -join ' || ')
+        if ($failedSummaries.Count -gt 0) {
+          $detail = "{0}; failed={1}" -f $detail, ($failedSummaries -join ' || ')
         }
       }
     }
