@@ -1,7 +1,3 @@
-if ($null -ne (Get-PSDrive -Name 'TestDrive' -ErrorAction SilentlyContinue)) {
-  Remove-PSDrive -Name 'TestDrive' -Force -ErrorAction SilentlyContinue
-}
-
 BeforeAll {
   $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
   . (Join-Path $script:RepoRoot '.Rayman\scripts\watch\codex_desktop_bootstrap.ps1') -NoMain

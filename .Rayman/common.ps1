@@ -2198,7 +2198,11 @@ function Test-RaymanWindowsPlatform {
 }
 
 function Resolve-RaymanPowerShellHost {
-    $candidates = @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+    $candidates = if (Test-RaymanWindowsPlatform) {
+        @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+    } else {
+        @('pwsh', 'powershell', 'pwsh.exe', 'powershell.exe')
+    }
     foreach ($name in $candidates) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
@@ -2299,29 +2303,59 @@ function Invoke-RaymanNativeCommandCapture {
     $proc = $null
 
     try {
-        $params = @{
-            FilePath = [string]$FilePath
-            ArgumentList = @($ArgumentList)
-            Wait = $true
-            PassThru = $true
-            RedirectStandardOutput = $stdoutPath
-            RedirectStandardError = $stderrPath
-        }
-        if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
-            $params['WorkingDirectory'] = $WorkingDirectory
-        }
+        $stdoutText = ''
+        $stderrText = ''
         if (Test-RaymanWindowsPlatform) {
-            $params['WindowStyle'] = 'Hidden'
+            $params = @{
+                FilePath = [string]$FilePath
+                ArgumentList = @($ArgumentList)
+                Wait = $true
+                PassThru = $true
+                RedirectStandardOutput = $stdoutPath
+                RedirectStandardError = $stderrPath
+                WindowStyle = 'Hidden'
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
+                $params['WorkingDirectory'] = $WorkingDirectory
+            }
+
+            $proc = Start-Process @params
+            if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+                $stdoutText = [string](Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
+            if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+                $stderrText = [string](Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
+        } else {
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = [string]$FilePath
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
+                $startInfo.WorkingDirectory = $WorkingDirectory
+            }
+            foreach ($arg in @($ArgumentList)) {
+                [void]$startInfo.ArgumentList.Add([string]$arg)
+            }
+
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $startInfo
+            $null = $proc.Start()
+            $stdoutText = [string]$proc.StandardOutput.ReadToEnd()
+            $stderrText = [string]$proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
         }
 
-        $proc = Start-Process @params
         $result.started = $true
         $result.exit_code = [int]$proc.ExitCode
-        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-            $result.stdout = @([string[]](Get-Content -LiteralPath $stdoutPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+        $stdoutText = $stdoutText.TrimEnd("`r", "`n")
+        $stderrText = $stderrText.TrimEnd("`r", "`n")
+        if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
+            $result.stdout = @([string[]]($stdoutText -split "`r?`n"))
         }
-        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-            $result.stderr = @([string[]](Get-Content -LiteralPath $stderrPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+            $result.stderr = @([string[]]($stderrText -split "`r?`n"))
         }
         $joinedOutput = @($result.stdout + $result.stderr) -join [Environment]::NewLine
         $result.output = [string]$joinedOutput

@@ -68,15 +68,12 @@ Describe 'vscode folder open bootstrap fingerprinting' {
       New-Item -ItemType Directory -Force -Path (Join-Path $root '.Rayman') | Out-Null
       Write-RaymanWorkspaceInstallAutoUpgradeLock -WorkspaceRoot $root -Mode 'auto_on_open' -SourceWorkspaceRoot $script:RepoRoot -PublishedVersion 'v-lock' -PublishedFingerprint 'fingerprint-lock' | Out-Null
 
-      $pwsh = Get-Command powershell.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($null -eq $pwsh -or [string]::IsNullOrWhiteSpace([string]$pwsh.Source)) {
-        $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-      }
-      if ($null -eq $pwsh -or [string]::IsNullOrWhiteSpace([string]$pwsh.Source)) {
+      $pwsh = Resolve-RaymanPowerShellHost
+      if ([string]::IsNullOrWhiteSpace([string]$pwsh)) {
         throw 'PowerShell host not available for bootstrap test.'
       }
 
-      & $pwsh.Source -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RepoRoot '.Rayman\scripts\watch\vscode_folder_open_bootstrap.ps1') -WorkspaceRoot $root
+      & $pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RepoRoot '.Rayman\scripts\watch\vscode_folder_open_bootstrap.ps1') -WorkspaceRoot $root
       $LASTEXITCODE | Should -Be 0
 
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\runtime\vscode_bootstrap.last.json') -Raw -Encoding UTF8 | ConvertFrom-Json

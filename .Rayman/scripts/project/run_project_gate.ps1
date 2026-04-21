@@ -400,7 +400,7 @@ function Invoke-RaymanShellCommandCheck {
   $arguments = @()
   $tempScriptPath = $null
   try {
-    if (Test-RaymanWindowsPlatform) {
+    if ((Test-RaymanWindowsPlatform) -or $WorkspaceKind -eq 'source') {
       $runnerPath = Resolve-RaymanPowerShellHost
       if ([string]::IsNullOrWhiteSpace($runnerPath)) {
         return (New-RaymanProjectGateCheck -Key $Key -Name $Name -Status FAIL -Detail 'PowerShell host not found' -Action $Action -Command $CommandText -LogPath $logPath -ExitCode 2)
