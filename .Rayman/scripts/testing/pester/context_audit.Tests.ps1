@@ -5,9 +5,10 @@ BeforeAll {
   $script:WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
   $script:ContextAuditScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\agents\context_audit.ps1'
   $script:PowerShellCmd = @(
+    (Get-Command pwsh.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+    (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
     (Get-Command powershell.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-    (Get-Command powershell -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-    (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
+    (Get-Command powershell -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
 }
 
