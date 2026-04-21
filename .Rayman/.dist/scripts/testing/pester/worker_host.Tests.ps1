@@ -60,16 +60,25 @@ Describe 'worker host auth guards' {
 
       { Assert-RaymanWorkerAuthorized -WorkspaceRoot $root -Headers @{} } | Should -Not -Throw
 
-      $workerProcess = Start-Process -FilePath (Get-Command powershell.exe -ErrorAction Stop).Source -ArgumentList @(
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        (Join-Path $script:WorkspaceRoot '.Rayman\scripts\worker\worker_host.ps1'),
-        '-WorkspaceRoot',
-        $root,
-        '-NoBeacon'
-      ) -WindowStyle Hidden -PassThru
+      $startProcessParams = @{
+        FilePath = (Resolve-RaymanPowerShellHost)
+        ArgumentList = @(
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          (Join-Path $script:WorkspaceRoot '.Rayman\scripts\worker\worker_host.ps1'),
+          '-WorkspaceRoot',
+          $root,
+          '-NoBeacon'
+        )
+        PassThru = $true
+      }
+      if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $startProcessParams.WindowStyle = 'Hidden'
+      }
+
+      $workerProcess = Start-Process @startProcessParams
 
       $statusPath = Get-RaymanWorkerHostStatusPath -WorkspaceRoot $root
       $deadline = (Get-Date).AddSeconds(20)

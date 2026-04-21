@@ -32,7 +32,7 @@ BeforeAll {
   }
 }
 
-Describe 'workspace install' {
+Describe 'workspace install' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
   It 'copies only distributable .Rayman content to the target and records install state' {
     $sourceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_workspace_install_' + [Guid]::NewGuid().ToString('N'))
     try {

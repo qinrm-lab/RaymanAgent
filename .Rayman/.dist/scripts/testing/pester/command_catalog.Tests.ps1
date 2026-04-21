@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 BeforeAll {
   $script:WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+  . (Join-Path $script:WorkspaceRoot '.Rayman\common.ps1')
   . (Join-Path $script:WorkspaceRoot '.Rayman\scripts\utils\command_catalog.ps1')
   $script:CurrentVersion = (Get-Content -LiteralPath (Join-Path $script:WorkspaceRoot '.Rayman\VERSION') -Raw -Encoding UTF8).Trim().ToLowerInvariant()
 }
@@ -118,7 +119,7 @@ Describe 'command catalog' {
 
   It 'prints parity results in text mode without throwing' {
     $scriptPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\verify_cli_parity.ps1'
-    $psHost = (Get-Command powershell.exe -ErrorAction Stop | Select-Object -First 1).Source
+    $psHost = Resolve-RaymanPowerShellHost
     $output = & $psHost -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkspaceRoot $script:WorkspaceRoot 2>&1
     $exitCode = $LASTEXITCODE
 

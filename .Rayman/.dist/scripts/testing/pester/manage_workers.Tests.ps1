@@ -757,7 +757,7 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
     }
   }
 
-  It 'clears previous worker logs before running the one-command workflow' {
+  It 'clears previous worker logs before running the one-command workflow' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_all_logs_' + [Guid]::NewGuid().ToString('N'))
     try {
       foreach ($path in @(
@@ -784,7 +784,8 @@ exit 0
         Set-Content -LiteralPath (Join-Path (Join-Path $root 'log') $name) -Encoding UTF8 -Value 'OLD_LOG_MARKER'
       }
 
-      $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'all.ps1') -SkipInstall 2>&1 | ForEach-Object { [string]$_ })
+      $psHost = Resolve-RaymanPowerShellHost
+      $output = @(& $psHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'all.ps1') -SkipInstall 2>&1 | ForEach-Object { [string]$_ })
       $summaryRaw = Get-Content -LiteralPath (Join-Path $root 'log\all-summary.log') -Raw -Encoding UTF8
       $diagRaw = Get-Content -LiteralPath (Join-Path $root 'log\2.log') -Raw -Encoding UTF8
       $repairRaw = Get-Content -LiteralPath (Join-Path $root 'log\repair-encoding.log') -Raw -Encoding UTF8
