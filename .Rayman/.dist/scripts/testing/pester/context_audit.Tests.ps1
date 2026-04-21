@@ -56,6 +56,38 @@ function script:Get-ContextAuditEventTypes {
   return @($types.ToArray())
 }
 
+function script:Wait-ContextAuditEventType {
+  param(
+    [string]$Root,
+    [string]$EventType,
+    [int]$TimeoutMs = 4000
+  )
+
+  $deadline = [DateTime]::UtcNow.AddMilliseconds([double]$TimeoutMs)
+  do {
+    if (@(Get-ContextAuditEventTypes -Root $Root) -contains $EventType) {
+      return $true
+    }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  return (@(Get-ContextAuditEventTypes -Root $Root) -contains $EventType)
+}
+
+function script:Convert-ContextAuditCommandResult {
+  param([object[]]$RawOutput)
+
+  $text = (($RawOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+  $jsonStart = $text.IndexOf('{')
+  $jsonEnd = $text.LastIndexOf('}')
+  if ($jsonStart -lt 0 -or $jsonEnd -lt $jsonStart) {
+    throw 'context audit command returned no JSON payload'
+  }
+
+  $json = $text.Substring($jsonStart, ($jsonEnd - $jsonStart + 1))
+  return ($json | ConvertFrom-Json)
+}
+
 Describe 'context audit' {
   It 'warns on oversized managed context and writes artifacts' {
     $root = New-ContextAuditTestRoot
@@ -71,7 +103,7 @@ Describe 'context audit' {
       Test-Path -LiteralPath ([string]$result.artifacts.json_path) -PathType Leaf | Should -Be $true
       Test-Path -LiteralPath ([string]$result.artifacts.markdown_path) -PathType Leaf | Should -Be $true
       ((Get-Content -LiteralPath ([string]$result.artifacts.markdown_path) -Raw -Encoding UTF8) -match 'oversized') | Should -Be $true
-      (@(Get-ContextAuditEventTypes -Root $root) -contains 'context.audit') | Should -Be $true
+      (Wait-ContextAuditEventType -Root $root -EventType 'context.audit') | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -90,14 +122,13 @@ Describe 'context audit' {
         & $script:PowerShellCmd -NoProfile -ExecutionPolicy Bypass -File $script:ContextAuditScript -WorkspaceRoot $root -Mode block -InvocationSource dispatch -Json 2>&1
       )
       $exitCode = $LASTEXITCODE
-      $json = (($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
-      $result = $json | ConvertFrom-Json
+      $result = Convert-ContextAuditCommandResult -RawOutput $raw
 
       $exitCode | Should -Be 8
       $result.blocked | Should -Be $true
       [int]$result.blocking_issue_count | Should -BeGreaterThan 0
       @($result.issues | Where-Object { [string]$_.severity -eq 'block' }).Count | Should -BeGreaterThan 0
-      (@(Get-ContextAuditEventTypes -Root $root) -contains 'context.audit') | Should -Be $true
+      (Wait-ContextAuditEventType -Root $root -EventType 'context.audit') | Should -Be $true
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

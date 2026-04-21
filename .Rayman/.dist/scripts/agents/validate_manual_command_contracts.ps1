@@ -77,6 +77,53 @@ function Convert-UnitBackedPathForHost {
   return $Path
 }
 
+function Get-ManualCommandCapturedOutputTail {
+  param(
+    [string]$Path,
+    [int]$MaxLines = 24,
+    [int]$MaxChars = 1600
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return ''
+  }
+
+  $raw = $null
+  try {
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+  } catch {
+    try {
+      $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    } catch {
+      return ''
+    }
+  }
+
+  $text = if ($null -eq $raw) { '' } else { [string]$raw }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return ''
+  }
+
+  $text = $text -replace '\x1b\[[0-9;?]*[ -/]*[@-~]', ''
+  $lines = @(
+    $text -split "`r?`n" |
+      ForEach-Object { ([string]$_).Trim() } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  )
+  if ($lines.Count -eq 0) {
+    return ''
+  }
+  if ($lines.Count -gt $MaxLines) {
+    $lines = $lines[($lines.Count - $MaxLines)..($lines.Count - 1)]
+  }
+
+  $tail = ($lines -join ' | ').Trim()
+  if ($tail.Length -gt $MaxChars) {
+    $tail = '...' + $tail.Substring($tail.Length - $MaxChars)
+  }
+  return $tail
+}
+
 function Add-ManualCommandCheck {
   param(
     [string]$Name,
@@ -289,12 +336,18 @@ exit 0
     }
     $proc = Start-Process @startProcessArgs
     $detailSuffix = ''
-    if ([int]$proc.ExitCode -ne 0 -and (Test-Path -LiteralPath $stderrPathLocal -PathType Leaf)) {
-      $stderrRaw = Get-Content -LiteralPath $stderrPathLocal -Raw -Encoding UTF8
-      $stderr = if ($null -eq $stderrRaw) { '' } else { [string]$stderrRaw }
-      $stderr = $stderr.Trim()
+    if ([int]$proc.ExitCode -ne 0) {
+      $detailParts = New-Object System.Collections.Generic.List[string]
+      $stdout = Get-ManualCommandCapturedOutputTail -Path $stdoutPathLocal
+      $stderr = Get-ManualCommandCapturedOutputTail -Path $stderrPathLocal
+      if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+        $detailParts.Add(('stdout={0}' -f $stdout)) | Out-Null
+      }
       if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-        $detailSuffix = ('; stderr={0}' -f $stderr)
+        $detailParts.Add(('stderr={0}' -f $stderr)) | Out-Null
+      }
+      if ($detailParts.Count -gt 0) {
+        $detailSuffix = ('; {0}' -f (($detailParts | ForEach-Object { $_ }) -join '; '))
       }
     }
     $result = [pscustomobject]@{
