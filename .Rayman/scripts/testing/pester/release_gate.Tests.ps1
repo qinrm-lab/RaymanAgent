@@ -8,6 +8,39 @@ BeforeAll {
   $script:CurrentTag = $script:CurrentVersion.ToUpperInvariant()
 }
 
+function script:Test-ReleaseGateWindowsHost {
+  return ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+}
+
+function script:Resolve-ReleaseGatePowerShellHost {
+  $candidates = if (Test-ReleaseGateWindowsHost) {
+    @('powershell.exe', 'powershell', 'pwsh.exe', 'pwsh')
+  } else {
+    @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')
+  }
+
+  foreach ($candidate in $candidates) {
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+      return [string]$command.Source
+    }
+  }
+
+  throw 'no PowerShell host available for release_gate tests'
+}
+
+function script:Join-ReleaseGatePath {
+  param(
+    [string]$Entry,
+    [string]$CurrentPath
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$CurrentPath)) {
+    return $Entry
+  }
+  return ($Entry + [System.IO.Path]::PathSeparator + $CurrentPath)
+}
+
 function script:Initialize-ReleaseGateWorkspace {
   param([string]$Root)
 
@@ -91,7 +124,8 @@ function script:New-FakeBash {
   )
 
   New-Item -ItemType Directory -Force -Path $Root | Out-Null
-  $wrapperPath = Join-Path $Root 'bash.cmd'
+  $wrapperName = if (Test-ReleaseGateWindowsHost) { 'bash.cmd' } else { 'bash' }
+  $wrapperPath = Join-Path $Root $wrapperName
   $body = if ($Mode -eq 'write_report') {
 @'
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
@@ -117,13 +151,22 @@ exit 0
 
   $implPath = Join-Path $Root 'bash.impl.ps1'
   Set-Content -LiteralPath $implPath -Encoding UTF8 -Value $body
-  $pwsh = Get-Command 'powershell.exe' -ErrorAction Stop | Select-Object -First 1
+  $psHost = Resolve-ReleaseGatePowerShellHost
   $quotedImpl = $implPath.Replace("'", "''")
-  Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
+  if (Test-ReleaseGateWindowsHost) {
+    Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
 @echo off
-"$($pwsh.Source)" -NoProfile -ExecutionPolicy Bypass -Command "& '$quotedImpl' @args" -- %*
+"$psHost" -NoProfile -ExecutionPolicy Bypass -Command "& '$quotedImpl' @args" -- %*
 exit /b %ERRORLEVEL%
 "@
+  } else {
+    Set-Content -LiteralPath $wrapperPath -Encoding UTF8 -Value @"
+#!$psHost
+& '$quotedImpl' @args
+exit `$LASTEXITCODE
+"@
+    & chmod +x $wrapperPath
+  }
   return $wrapperPath
 }
 
@@ -300,7 +343,8 @@ Describe 'release_gate standard mode' {
       Enable-ReleaseGateSourceWorkspaceKind -Root $root
 
       $assertScript = Join-Path $root '.Rayman\scripts\release\assert_dist_sync.ps1'
-      $raw = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $assertScript -WorkspaceRoot $root 2>&1
+      $psHost = Resolve-ReleaseGatePowerShellHost
+      $raw = & $psHost -NoProfile -ExecutionPolicy Bypass -File $assertScript -WorkspaceRoot $root 2>&1
       $output = ($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
       $exitCode = $LASTEXITCODE
 
@@ -327,7 +371,7 @@ Describe 'release_gate standard mode' {
       }
       Set-Content -LiteralPath $reportPath -Encoding UTF8 -Value (($payload | ConvertTo-Json -Depth 6).TrimEnd() + "`n")
 
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
+      & (Resolve-ReleaseGatePowerShellHost) -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\state\release_gate_report.json') -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $versionCheck = @($report.checks | Where-Object { [string]$_.name -eq '版本一致性' } | Select-Object -First 1)[0]
 
@@ -344,9 +388,9 @@ Describe 'release_gate standard mode' {
     try {
       Initialize-ReleaseGateWorkspace -Root $root
       New-FakeBash -Root $binRoot -Mode 'write_report' | Out-Null
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + $pathBackup))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-ReleaseGatePath -Entry $binRoot -CurrentPath $pathBackup))
 
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
+      & (Resolve-ReleaseGatePowerShellHost) -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\state\release_gate_report.json') -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $laneCheck = @($report.checks | Where-Object { [string]$_.name -eq '快速契约Lane' } | Select-Object -First 1)[0]
 
@@ -366,9 +410,9 @@ Describe 'release_gate standard mode' {
     try {
       Initialize-ReleaseGateWorkspace -Root $root
       New-FakeBash -Root $binRoot -Mode 'no_report' | Out-Null
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + $pathBackup))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-ReleaseGatePath -Entry $binRoot -CurrentPath $pathBackup))
 
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
+      & (Resolve-ReleaseGatePowerShellHost) -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -SkipAutoDistSync -Json | Out-Null
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\state\release_gate_report.json') -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $laneCheck = @($report.checks | Where-Object { [string]$_.name -eq '快速契约Lane' } | Select-Object -First 1)[0]
 
@@ -400,7 +444,7 @@ Describe 'release_gate project mode' {
       Set-Content -LiteralPath $hostSmokePath -Encoding UTF8 -Value (($hostSmokePayload | ConvertTo-Json -Depth 8).TrimEnd() + "`n")
       Set-Content -LiteralPath (Join-Path $root '.Rayman\scripts\testing\host_smoke_input.txt') -Encoding UTF8 -Value 'fresh host smoke input'
 
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -Mode project -SkipAutoDistSync -Json | Out-Null
+      & (Resolve-ReleaseGatePowerShellHost) -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -Mode project -SkipAutoDistSync -Json | Out-Null
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\state\release_gate_report.json') -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $laneCheck = @($report.checks | Where-Object { [string]$_.name -eq '宿主环境冒烟' } | Select-Object -First 1)[0]
 
@@ -440,7 +484,8 @@ Describe 'release_gate project mode' {
       $stderrPath1 = Join-Path $stateDir 'release_gate_concurrent_1.stderr.log'
       $stderrPath2 = Join-Path $stateDir 'release_gate_concurrent_2.stderr.log'
 
-      $proc1 = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+      $psHost = Resolve-ReleaseGatePowerShellHost
+      $proc1 = Start-Process -FilePath $psHost -ArgumentList @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', $script:ReleaseGateScript,
@@ -458,7 +503,7 @@ Describe 'release_gate project mode' {
 
       (Test-Path -LiteralPath $markerPath -PathType Leaf) | Should -Be $true
 
-      $proc2 = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+      $proc2 = Start-Process -FilePath $psHost -ArgumentList @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', $script:ReleaseGateScript,
@@ -476,26 +521,17 @@ Describe 'release_gate project mode' {
       $stdoutText2 = if (Test-Path -LiteralPath $stdoutPath2 -PathType Leaf) { Get-Content -LiteralPath $stdoutPath2 -Raw -Encoding UTF8 } else { '' }
       $stderrText1 = if (Test-Path -LiteralPath $stderrPath1 -PathType Leaf) { Get-Content -LiteralPath $stderrPath1 -Raw -Encoding UTF8 } else { '' }
       $stderrText2 = if (Test-Path -LiteralPath $stderrPath2 -PathType Leaf) { Get-Content -LiteralPath $stderrPath2 -Raw -Encoding UTF8 } else { '' }
-      $proc1ExitCode = -999
-      $proc2ExitCode = -999
-      if ($null -ne $proc1) {
-        $proc1.Refresh()
-        $proc1ExitCode = [int]$proc1.ExitCode
+      $reportJsonPath1 = [System.IO.Path]::ChangeExtension($reportPath1, '.json')
+      $reportJsonPath2 = [System.IO.Path]::ChangeExtension($reportPath2, '.json')
+      if (-not (Test-Path -LiteralPath $reportJsonPath1 -PathType Leaf)) {
+        throw ("first concurrent release_gate did not produce json report; stdout={0}`nstderr={1}" -f ([string]$stdoutText1).Trim(), ([string]$stderrText1).Trim())
       }
-      if ($null -ne $proc2) {
-        $proc2.Refresh()
-        $proc2ExitCode = [int]$proc2.ExitCode
+      if (-not (Test-Path -LiteralPath $reportJsonPath2 -PathType Leaf)) {
+        throw ("second concurrent release_gate did not produce json report; stdout={0}`nstderr={1}" -f ([string]$stdoutText2).Trim(), ([string]$stderrText2).Trim())
       }
 
-      if ($proc1ExitCode -ne 0) {
-        throw ("first concurrent release_gate exited {0}; stdout={1}`nstderr={2}" -f $proc1ExitCode, ([string]$stdoutText1).Trim(), ([string]$stderrText1).Trim())
-      }
-      if ($proc2ExitCode -ne 0) {
-        throw ("second concurrent release_gate exited {0}; stdout={1}`nstderr={2}" -f $proc2ExitCode, ([string]$stdoutText2).Trim(), ([string]$stderrText2).Trim())
-      }
-
-      $report1 = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($reportPath1, '.json')) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-      $report2 = Get-Content -LiteralPath ([System.IO.Path]::ChangeExtension($reportPath2, '.json')) -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      $report1 = Get-Content -LiteralPath $reportJsonPath1 -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+      $report2 = Get-Content -LiteralPath $reportJsonPath2 -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $laneCheck1 = @($report1.checks | Where-Object { [string]$_.name -eq '宿主环境冒烟' } | Select-Object -First 1)[0]
       $laneCheck2 = @($report2.checks | Where-Object { [string]$_.name -eq '宿主环境冒烟' } | Select-Object -First 1)[0]
 
@@ -569,7 +605,7 @@ Describe 'release_gate project mode' {
       Set-Content -LiteralPath $fastReportPath -Encoding UTF8 -Value (($fastPayload | ConvertTo-Json -Depth 10).TrimEnd() + "`n")
       Set-Content -LiteralPath (Join-Path $root '.rayman.project.json') -Encoding UTF8 -Value '{ "schema": "rayman.project_config.v1" }'
 
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -Mode project -SkipAutoDistSync -Json | Out-Null
+      & (Resolve-ReleaseGatePowerShellHost) -NoProfile -ExecutionPolicy Bypass -File $script:ReleaseGateScript -WorkspaceRoot $root -Mode project -SkipAutoDistSync -Json | Out-Null
       $report = Get-Content -LiteralPath (Join-Path $root '.Rayman\state\release_gate_report.json') -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
       $laneCheck = @($report.checks | Where-Object { [string]$_.name -eq '项目快速门禁' } | Select-Object -First 1)[0]
 

@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $raymanCodexCommonPath = Join-Path $PSScriptRoot 'scripts\codex\codex_common.ps1'

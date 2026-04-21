@@ -422,7 +422,7 @@ $env:RAYMAN_WORKER_AUTH_TOKEN = 'workspace-secret'
   }
 
   It 'times out worker native capture instead of hanging the host' {
-    $powershellHost = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $powershellHost = Resolve-RaymanPowerShellHost
 
     $result = Invoke-RaymanWorkerNativeCommandCapture -FilePath $powershellHost -ArgumentList @(
       '-NoProfile',

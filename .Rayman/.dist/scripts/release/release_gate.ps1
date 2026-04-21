@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path),
   [string]$ReportPath = "",
   [ValidateSet('standard','project')][string]$Mode = 'standard',

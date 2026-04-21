@@ -213,7 +213,7 @@ try {
 $expectedBash = Get-ExpectedCommandMap -Kind bash
 $expectedPwsh = Get-ExpectedCommandMap -Kind pwsh
 $expectedRecommended = Get-ExpectedCommandMap -Kind recommended
-$expectedFull = Get-ExpectedCommandMap -Kind pwsh
+$expectedFull = New-CommandMapFromCatalog -Commands @(Import-RaymanCommandCatalog -WorkspaceRoot $WorkspaceRoot)
 
 $bashInvocation = New-RaymanHostSmokeBashInvocation -WorkspaceRoot $WorkspaceRoot -CommandText 'bash ./.Rayman/rayman help'
 if ($null -eq $bashInvocation) {
