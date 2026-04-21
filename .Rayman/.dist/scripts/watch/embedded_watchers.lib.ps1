@@ -712,12 +712,9 @@ function Get-RaymanNetworkResumeRetryDueAt {
 
   $baseTime = ConvertTo-RaymanNullableDateTime -Value $(if ($Pending.PSObject.Properties['last_attempt_at']) { [string]$Pending.last_attempt_at } else { '' })
   if ($null -eq $baseTime) {
-    $baseTime = ConvertTo-RaymanNullableDateTime -Value $(if ($Pending.PSObject.Properties['first_saved_at']) { [string]$Pending.first_saved_at } else { '' })
-  }
-  if ($null -eq $baseTime) {
     return $null
   }
-  return ([datetime]$baseTime).AddSeconds([int][Math]::Max(60, $RetrySeconds))
+  return ([datetime]$baseTime).AddSeconds([int][Math]::Max(0, $RetrySeconds))
 }
 
 function Format-RaymanNetworkResumeSharedSessionPreamble {
@@ -1653,8 +1650,8 @@ function Get-RaymanNetworkResumeFailureClassification {
       return [pscustomobject]@{
         is_resume_candidate = $true
         is_network = $false
-        trigger_kind = 'provider_outage'
-        classification = 'transient_provider_outage'
+        trigger_kind = 'throttle'
+        classification = 'transient_throttle_error'
         failure_kind = 'throttle'
         matched = $pattern
       }
@@ -1689,10 +1686,10 @@ function Get-RaymanNetworkResumeFailureClassification {
     if ($normalized.Contains($pattern)) {
       return [pscustomobject]@{
         is_resume_candidate = $true
-        is_network = $false
-        trigger_kind = 'provider_outage'
+        is_network = $true
+        trigger_kind = 'network'
         classification = 'transient_provider_outage'
-        failure_kind = 'server'
+        failure_kind = 'network'
         matched = $pattern
       }
     }
@@ -1732,8 +1729,8 @@ function Get-RaymanNetworkResumeFailureClassification {
       return [pscustomobject]@{
         is_resume_candidate = $true
         is_network = $true
-        trigger_kind = 'provider_outage'
-        classification = 'transient_provider_outage'
+        trigger_kind = 'network'
+        classification = 'transient_network_error'
         failure_kind = 'network'
         matched = $pattern
       }
@@ -1999,6 +1996,7 @@ function Write-RaymanNetworkResumeStatus {
     poll_ms = [int]$State.PollMs
     probe_timeout_ms = [int]$State.ProbeTimeoutMs
     retry_seconds = [int]$State.RetrySeconds
+    max_attempts = $(if ($State.PSObject.Properties['MaxAttempts']) { [int]$State.MaxAttempts } else { 0 })
     first_save_idle_seconds = [int]$State.FirstSaveIdleSeconds
     provider_unreachable_since = $(if ($null -ne $State.ProviderUnreachableSince) { ([datetime]$State.ProviderUnreachableSince).ToString('o') } else { '' })
     throttled_since = $(if ($null -ne $State.ThrottledSince) { ([datetime]$State.ThrottledSince).ToString('o') } else { '' })
@@ -2128,11 +2126,11 @@ function Get-RaymanNetworkResumeConfiguredRetrySeconds {
 
   $parsed = 0
   if (-not [string]::IsNullOrWhiteSpace($retryRaw) -and [int]::TryParse($retryRaw, [ref]$parsed)) {
-    if ($parsed -lt 60) { return 60 }
+    if ($parsed -lt 5) { return 5 }
     if ($parsed -gt 86400) { return 86400 }
     return $parsed
   }
-  return 1800
+  return 300
 }
 
 function New-RaymanNetworkResumeWatchState {
@@ -2151,10 +2149,11 @@ function New-RaymanNetworkResumeWatchState {
     StatusPath = (Get-RaymanNetworkResumeStatePath -WorkspaceRoot $resolvedRoot)
     PendingPath = (Get-RaymanNetworkResumePendingStatePath -WorkspaceRoot $resolvedRoot)
     PollMs = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_POLL_MS' -Default 5000 -Min 1000 -Max 60000)
-    ThresholdSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS' -Default $retrySeconds -Min 60 -Max 86400)
-    ThrottleWaitSeconds = $retrySeconds
+    ThresholdSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS' -Default 1800 -Min 60 -Max 86400)
+    ThrottleWaitSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' -Default $retrySeconds -Min 30 -Max 86400)
     ProbeTimeoutMs = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_PROBE_TIMEOUT_MS' -Default 5000 -Min 1000 -Max 60000)
     RetrySeconds = $retrySeconds
+    MaxAttempts = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS' -Default 3 -Min 1 -Max 20)
     FirstSaveIdleSeconds = (Get-RaymanNetworkResumeFirstSaveIdleSeconds)
     ProviderUnreachableSince = $null
     ThrottledSince = $null
@@ -2589,23 +2588,44 @@ function Invoke-RaymanNetworkResumeCycle {
     }
   }
 
-  if ($null -ne $candidate -and [bool]$candidate.available) {
+  $candidateAvailable = ($null -ne $candidate -and [bool]$candidate.available)
+  $candidateReason = if ($null -ne $candidate -and $candidate.PSObject.Properties['reason']) { [string]$candidate.reason } else { '' }
+  $candidateTriggerKind = if ($candidateAvailable -and $candidate.PSObject.Properties['trigger_kind']) { [string]$candidate.trigger_kind } else { 'none' }
+  $pendingFailureKind = if ($null -ne $pending -and $pending.PSObject.Properties['failure_kind']) { [string]$pending.failure_kind } else { '' }
+  $pendingFailureStartedAt = if ($null -ne $pending -and $pending.PSObject.Properties['failure_started_at']) {
+    ConvertTo-RaymanNullableDateTime -Value ([string]$pending.failure_started_at)
+  } else {
+    $null
+  }
+  $allowPendingReuse = ($null -ne $pending) -and ($candidateReason -in @('last_run_missing', 'last_run_succeeded'))
+
+  if (-not $candidateAvailable -and -not $allowPendingReuse) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.run_id) -and [string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
+      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
+    } else {
+      Reset-RaymanNetworkResumeState -State $State
+      $State.LastCandidateRunId = [string]$candidate.run_id
+    }
+    $State.SuppressedReason = $candidateReason
+    Write-RaymanNetworkResumeStatus -State $State -Status $candidateReason -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Error $candidateReason | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = $candidateReason
+    }
+  }
+
+  if ($candidateAvailable) {
     if ([string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
       Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
     }
-    $State.LastCandidateRunId = [string]$candidate.run_id
-    $State.TriggerKind = if ($candidate.PSObject.Properties['failure_classification'] -and $candidate.failure_classification.PSObject.Properties['failure_kind']) {
-      [string]$candidate.failure_classification.failure_kind
-    } elseif ($candidate.PSObject.Properties['trigger_kind']) {
-      [string]$candidate.trigger_kind
-    } else {
-      ''
+    if (-not [string]::IsNullOrWhiteSpace($State.TriggerKind) -and $State.TriggerKind -ne $candidateTriggerKind) {
+      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
     }
-    $State.ProviderUnreachableSince = if ($candidate.PSObject.Properties['failure_started_at'] -and $null -ne $candidate.failure_started_at) { [datetime]$candidate.failure_started_at } else { Get-Date }
+    $State.LastCandidateRunId = [string]$candidate.run_id
+    $State.TriggerKind = $candidateTriggerKind
   } elseif ($null -ne $pending) {
     $State.LastCandidateRunId = if ($pending.PSObject.Properties['run_id']) { [string]$pending.run_id } else { '' }
-    $State.TriggerKind = if ($pending.PSObject.Properties['failure_kind']) { [string]$pending.failure_kind } else { 'provider_outage' }
-    $State.ProviderUnreachableSince = ConvertTo-RaymanNullableDateTime -Value $(if ($pending.PSObject.Properties['failure_started_at']) { [string]$pending.failure_started_at } else { '' })
+    $State.TriggerKind = if ($pendingFailureKind -eq 'throttle') { 'throttle' } else { 'network' }
   } else {
     Reset-RaymanNetworkResumeState -State $State
   }
@@ -2616,31 +2636,167 @@ function Invoke-RaymanNetworkResumeCycle {
     $State.IdleSince = $null
   }
 
-  if ($null -ne $candidate -and [bool]$candidate.available) {
-    $saveGateMet = $false
-    if ($null -ne $State.IdleSince) {
-      $idleSeconds = [int][Math]::Max(0, [Math]::Floor(((Get-Date) - [datetime]$State.IdleSince).TotalSeconds))
-      $saveGateMet = ($idleSeconds -ge [int]$State.FirstSaveIdleSeconds)
+  $probeConfig = if ($candidateAvailable -and $candidate.PSObject.Properties['probe'] -and $null -ne $candidate.probe -and [bool]$candidate.probe.valid) {
+    $candidate.probe
+  } elseif ($null -ne $pending) {
+    Get-RaymanNetworkResumeProbeConfiguration -Backend $(if ($pending.PSObject.Properties['backend']) { [string]$pending.backend } else { '' })
+  } else {
+    $null
+  }
+
+  $wasReachable = $State.LastProviderReachable
+  $probeResult = $null
+  if ($null -ne $probeConfig -and [bool]$probeConfig.valid -and $null -ne $probeConfig.probe_uri) {
+    $probeResult = Test-RaymanNetworkResumeProviderReachable -ProbeUri $probeConfig.probe_uri -TimeoutMs ([int]$State.ProbeTimeoutMs)
+    $State.LastProviderReachable = [bool]$probeResult.reachable
+  } else {
+    $State.LastProviderReachable = $null
+  }
+
+  $nativeResumeSupported = if ($candidateAvailable -and $candidate.PSObject.Properties['native_resume_supported']) {
+    [bool]$candidate.native_resume_supported
+  } elseif ($null -ne $pending -and $pending.PSObject.Properties['native_resume_supported']) {
+    [bool]$pending.native_resume_supported
+  } else {
+    $false
+  }
+  if (-not $nativeResumeSupported) {
+    Reset-RaymanNetworkResumeState -State $State
+    $State.SuppressedReason = 'unsupported_native_resume'
+    Write-RaymanNetworkResumeStatus -State $State -Status 'unsupported_native_resume' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -ProbeResult $probeResult -Error 'unsupported_native_resume' | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = 'unsupported_native_resume'
+    }
+  }
+
+  $readyToAttempt = $false
+  if ($State.TriggerKind -eq 'throttle' -and $null -ne $probeResult -and [bool]$probeResult.reachable) {
+    $State.ProviderUnreachableSince = $null
+    if ($null -eq $State.ThrottledSince) {
+      $State.ThrottledSince = if ($candidateAvailable -and $candidate.PSObject.Properties['failure_started_at'] -and $null -ne $candidate.failure_started_at) {
+        [datetime]$candidate.failure_started_at
+      } elseif ($null -ne $pendingFailureStartedAt) {
+        [datetime]$pendingFailureStartedAt
+      } else {
+        Get-Date
+      }
     }
 
-    if ($null -eq $pending) {
-      if (-not $saveGateMet) {
-        $State.SuppressedReason = 'initial_save_waiting_idle'
-        Write-RaymanNetworkResumeStatus -State $State -Status 'pending_save_waiting_idle' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Extra @{
-          initial_save_idle_required_seconds = [int]$State.FirstSaveIdleSeconds
-          initial_save_idle_remaining_seconds = if ($null -eq $State.IdleSince) { [int]$State.FirstSaveIdleSeconds } else { [int][Math]::Max(0, [int]$State.FirstSaveIdleSeconds - [int][Math]::Floor(((Get-Date) - [datetime]$State.IdleSince).TotalSeconds)) }
-        } | Out-Null
-        return [pscustomobject]@{
-          should_exit = $false
-          status = 'pending_save_waiting_idle'
+    if ($null -eq $State.IdleSince) {
+      $State.ArmedAt = $null
+      $State.SuppressedReason = 'idle_unavailable'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'idle_unavailable'
+      }
+    }
+
+    $throttleOverlapStart = if ([datetime]$State.ThrottledSince -gt [datetime]$State.IdleSince) { [datetime]$State.ThrottledSince } else { [datetime]$State.IdleSince }
+    $throttleOverlapSeconds = [int][Math]::Max(0, [Math]::Floor(((Get-Date) - $throttleOverlapStart).TotalSeconds))
+    if ($throttleOverlapSeconds -lt [int]$State.ThrottleWaitSeconds) {
+      $State.ArmedAt = $null
+      $State.SuppressedReason = 'throttle_wait'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'throttle_wait' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
+        overlap_started_at = $throttleOverlapStart.ToString('o')
+        overlap_seconds = $throttleOverlapSeconds
+      } | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'throttle_wait'
+      }
+    }
+
+    if ($null -eq $State.ArmedAt) {
+      $State.ArmedAt = Get-Date
+    }
+    $State.SuppressedReason = ''
+    $readyToAttempt = $true
+  } else {
+    $State.TriggerKind = 'network'
+    $State.ThrottledSince = $null
+
+    if ($null -eq $probeResult -or -not [bool]$probeResult.reachable) {
+      if ($null -eq $State.ProviderUnreachableSince) {
+        if ($candidateAvailable -and $candidateTriggerKind -eq 'network' -and $candidate.PSObject.Properties['failure_started_at'] -and $null -ne $candidate.failure_started_at) {
+          $State.ProviderUnreachableSince = [datetime]$candidate.failure_started_at
+        } elseif ($null -ne $pendingFailureStartedAt) {
+          $State.ProviderUnreachableSince = [datetime]$pendingFailureStartedAt
+        } else {
+          $State.ProviderUnreachableSince = Get-Date
         }
       }
 
+      if ($null -eq $State.IdleSince) {
+        $State.ArmedAt = $null
+        $State.SuppressedReason = 'idle_unavailable'
+        Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
+        return [pscustomobject]@{
+          should_exit = $false
+          status = 'idle_unavailable'
+        }
+      }
+
+      $overlapStart = if ([datetime]$State.ProviderUnreachableSince -gt [datetime]$State.IdleSince) { [datetime]$State.ProviderUnreachableSince } else { [datetime]$State.IdleSince }
+      $overlapSeconds = [int][Math]::Max(0, [Math]::Floor(((Get-Date) - $overlapStart).TotalSeconds))
+      if ($overlapSeconds -ge [int]$State.ThresholdSeconds) {
+        if ($null -eq $State.ArmedAt) {
+          $State.ArmedAt = Get-Date
+        }
+        $State.SuppressedReason = ''
+        Write-RaymanNetworkResumeStatus -State $State -Status 'armed' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
+          overlap_started_at = $overlapStart.ToString('o')
+          overlap_seconds = $overlapSeconds
+        } | Out-Null
+        return [pscustomobject]@{
+          should_exit = $false
+          status = 'armed'
+        }
+      }
+
+      $State.ArmedAt = $null
+      $State.SuppressedReason = 'threshold_not_met'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_unreachable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
+        overlap_started_at = $overlapStart.ToString('o')
+        overlap_seconds = $overlapSeconds
+      } | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'provider_unreachable'
+      }
+    }
+
+    $recoveredEdge = ($wasReachable -eq $false)
+    if (-not $recoveredEdge) {
+      $State.ProviderUnreachableSince = $null
+      $State.ArmedAt = $null
+      $State.SuppressedReason = 'provider_reachable'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_reachable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'provider_reachable'
+      }
+    }
+
+    if ($null -eq $State.ArmedAt) {
+      $State.ProviderUnreachableSince = $null
+      $State.SuppressedReason = 'restored_before_threshold'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'restored_before_threshold' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'restored_before_threshold'
+      }
+    }
+
+    $readyToAttempt = $true
+  }
+
+  if ($candidateAvailable) {
+    if ($null -eq $pending) {
       $savedPending = Save-RaymanNetworkResumePendingStateFromCandidate -WorkspaceRoot $workspaceRoot -Candidate $candidate
       if ($null -ne $savedPending) {
         $pending = $savedPending
-        $State.ArmedAt = ConvertTo-RaymanNullableDateTime -Value ([string]$pending.first_saved_at)
-        $State.SuppressedReason = 'pending_saved'
         Write-RaymanDiag -Scope 'network-resume' -Message ("saved pending continuation; run_id={0}; backend={1}; state_key={2}" -f [string]$pending.run_id, [string]$pending.backend, [string]$pending.state_key) -WorkspaceRoot $workspaceRoot
       }
     } else {
@@ -2667,18 +2823,6 @@ function Invoke-RaymanNetworkResumeCycle {
       }
     }
 
-    if (-not [bool]$candidate.available) {
-      if (-not [string]::IsNullOrWhiteSpace([string]$candidate.run_id) -and [string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
-        Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
-      }
-      $State.SuppressedReason = [string]$candidate.reason
-      Write-RaymanNetworkResumeStatus -State $State -Status [string]$candidate.reason -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Error [string]$candidate.reason | Out-Null
-      return [pscustomobject]@{
-        should_exit = $false
-        status = [string]$candidate.reason
-      }
-    }
-
     $State.SuppressedReason = 'pending_not_saved'
     Write-RaymanNetworkResumeStatus -State $State -Status 'pending_not_saved' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Error 'pending_not_saved' | Out-Null
     return [pscustomobject]@{
@@ -2689,42 +2833,32 @@ function Invoke-RaymanNetworkResumeCycle {
 
   $State.LastResumeAttemptAt = ConvertTo-RaymanNullableDateTime -Value $(if ($pending.PSObject.Properties['last_attempt_at']) { [string]$pending.last_attempt_at } else { '' })
   $State.AttemptCount = if ($pending.PSObject.Properties['attempt_count']) { [int]$pending.attempt_count } else { 0 }
-  $State.ArmedAt = ConvertTo-RaymanNullableDateTime -Value $(if ($pending.PSObject.Properties['first_saved_at']) { [string]$pending.first_saved_at } else { '' })
-
-  $probeConfig = if ($null -ne $candidate -and $candidate.PSObject.Properties['probe'] -and $null -ne $candidate.probe -and [bool]$candidate.probe.valid) {
-    $candidate.probe
-  } else {
-    Get-RaymanNetworkResumeProbeConfiguration -Backend $(if ($pending.PSObject.Properties['backend']) { [string]$pending.backend } else { '' })
+  if ($pending.PSObject.Properties['first_saved_at']) {
+    $State.ArmedAt = ConvertTo-RaymanNullableDateTime -Value ([string]$pending.first_saved_at)
   }
 
-  $probeResult = $null
-  if ($null -ne $probeConfig -and [bool]$probeConfig.valid -and $null -ne $probeConfig.probe_uri) {
-    $probeResult = Test-RaymanNetworkResumeProviderReachable -ProbeUri $probeConfig.probe_uri -TimeoutMs ([int]$State.ProbeTimeoutMs)
-    $State.LastProviderReachable = [bool]$probeResult.reachable
-  } else {
-    $State.LastProviderReachable = $null
+  if ($State.PSObject.Properties['MaxAttempts'] -and [int]$State.AttemptCount -ge [int]$State.MaxAttempts) {
+    $State.ProviderUnreachableSince = $null
+    $State.ArmedAt = $null
+    $State.SuppressedReason = 'max_attempts_reached'
+    Write-RaymanNetworkResumeStatus -State $State -Status 'max_attempts_reached' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'max_attempts_reached' | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = 'max_attempts_reached'
+    }
   }
 
   $retryDueAt = Get-RaymanNetworkResumeRetryDueAt -Pending $pending -RetrySeconds ([int]$State.RetrySeconds)
-  if ($null -eq $retryDueAt -or (Get-Date) -lt $retryDueAt) {
+  if ($null -ne $retryDueAt -and (Get-Date) -lt $retryDueAt) {
     $State.SuppressedReason = 'retry_window_wait'
     $statusText = if ($null -ne $probeResult -and [bool]$probeResult.reachable) { 'provider_recovered_waiting_retry_window' } else { 'pending_saved' }
     Write-RaymanNetworkResumeStatus -State $State -Status $statusText -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
       retry_window_seconds = [int]$State.RetrySeconds
-      retry_wait_remaining_seconds = if ($null -ne $retryDueAt) { [int][Math]::Max(0, [Math]::Floor(($retryDueAt - (Get-Date)).TotalSeconds)) } else { 0 }
+      retry_wait_remaining_seconds = [int][Math]::Max(0, [Math]::Floor(($retryDueAt - (Get-Date)).TotalSeconds))
     } | Out-Null
     return [pscustomobject]@{
       should_exit = $false
       status = $statusText
-    }
-  }
-
-  if ($null -eq $probeResult -or -not [bool]$probeResult.reachable) {
-    $State.SuppressedReason = 'provider_unreachable'
-    Write-RaymanNetworkResumeStatus -State $State -Status 'provider_unreachable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'provider_unreachable' | Out-Null
-    return [pscustomobject]@{
-      should_exit = $false
-      status = 'provider_unreachable'
     }
   }
 
@@ -2757,8 +2891,10 @@ function Invoke-RaymanNetworkResumeCycle {
         }
       }
       if ($null -ne $nativeResult -and [bool]$nativeResult.success) {
+        $completedTriggerKind = [string]$State.TriggerKind
         $null = Remove-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
         Reset-RaymanNetworkResumeState -State $State
+        $State.TriggerKind = $completedTriggerKind
         $State.ClearedReason = 'resume_started'
         $State.SuppressedReason = 'resume_started'
         Write-RaymanDiag -Scope 'network-resume' -Message ("native resume succeeded; run_id={0}; source={1}; command={2}" -f [string]$pending.run_id, $candidateSource, [string]$nativeResult.command) -WorkspaceRoot $workspaceRoot
@@ -2789,8 +2925,10 @@ function Invoke-RaymanNetworkResumeCycle {
     Write-RaymanDiag -Scope 'network-resume' -Message ("attempt shared-session continuation; run_id={0}; backend={1}; attempt={2}" -f [string]$pending.run_id, [string]$pending.backend, [int]$pending.attempt_count) -WorkspaceRoot $workspaceRoot
     $sharedResult = Start-RaymanSharedSessionContinuationDetached -WorkspaceRoot $workspaceRoot -Pending $pending
     if ($null -ne $sharedResult -and [bool]$sharedResult.success) {
+      $completedTriggerKind = [string]$State.TriggerKind
       $null = Remove-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
       Reset-RaymanNetworkResumeState -State $State
+      $State.TriggerKind = $completedTriggerKind
       $State.ClearedReason = 'resume_started'
       $State.SuppressedReason = 'resume_started'
       Write-RaymanDiag -Scope 'network-resume' -Message ("shared-session continuation started; run_id={0}; command={1}" -f [string]$pending.run_id, [string]$sharedResult.command) -WorkspaceRoot $workspaceRoot

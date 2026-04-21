@@ -84,6 +84,138 @@ function Get-PropValue([object]$Object, [string]$Name, $Default = $null) {
   return $prop.Value
 }
 
+function Get-ReleaseGateReportSnapshot {
+  param([string]$ReportPath)
+
+  $snapshot = [ordered]@{
+    exists = $false
+    generated_at_utc = $null
+    file_mtime_utc = $null
+    timestamp_utc = $null
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$ReportPath) -or -not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+    return [pscustomobject]$snapshot
+  }
+
+  $snapshot.exists = $true
+  try {
+    $snapshot.file_mtime_utc = (Get-Item -LiteralPath $ReportPath -Force).LastWriteTimeUtc
+  } catch {}
+
+  $report = Get-JsonOrNull -Path $ReportPath
+  if ($null -ne $report) {
+    $snapshot.generated_at_utc = Get-ReportGeneratedAtUtc -Report $report
+  }
+  if ($null -ne $snapshot.generated_at_utc) {
+    $snapshot.timestamp_utc = $snapshot.generated_at_utc
+  } else {
+    $snapshot.timestamp_utc = $snapshot.file_mtime_utc
+  }
+
+  return [pscustomobject]$snapshot
+}
+
+function Get-ReleaseGateSnapshotKey {
+  param([string]$ReportPath)
+
+  if ([string]::IsNullOrWhiteSpace([string]$ReportPath)) {
+    return ''
+  }
+
+  try {
+    return ([System.IO.Path]::GetFullPath([string]$ReportPath).Trim().ToLowerInvariant())
+  } catch {
+    return ([string]$ReportPath).Trim().ToLowerInvariant()
+  }
+}
+
+function Get-ReleaseGateDirectorySnapshotMap {
+  param([string]$ReportDirectory)
+
+  $snapshots = @{}
+  if ([string]::IsNullOrWhiteSpace([string]$ReportDirectory) -or -not (Test-Path -LiteralPath $ReportDirectory -PathType Container)) {
+    return $snapshots
+  }
+
+  foreach ($item in @(Get-ChildItem -LiteralPath $ReportDirectory -Filter '*.json' -File -Force -ErrorAction SilentlyContinue)) {
+    if ($null -eq $item) { continue }
+    $key = Get-ReleaseGateSnapshotKey -ReportPath ([string]$item.FullName)
+    if ([string]::IsNullOrWhiteSpace($key)) { continue }
+    $snapshots[$key] = Get-ReleaseGateReportSnapshot -ReportPath ([string]$item.FullName)
+  }
+
+  return $snapshots
+}
+
+function Get-ReleaseGateSnapshotFromMap {
+  param(
+    [hashtable]$SnapshotMap,
+    [string]$ReportPath
+  )
+
+  if ($null -eq $SnapshotMap) {
+    return $null
+  }
+
+  $key = Get-ReleaseGateSnapshotKey -ReportPath $ReportPath
+  if ([string]::IsNullOrWhiteSpace($key) -or -not $SnapshotMap.ContainsKey($key)) {
+    return $null
+  }
+
+  return $SnapshotMap[$key]
+}
+
+function Get-ReleaseGateObservedAutoRefreshStateText {
+  param(
+    [object]$InitialSnapshot,
+    [object]$CurrentSnapshot,
+    [string]$EvaluationStatus,
+    [datetime]$GateStartedAt
+  )
+
+  if ($null -eq $CurrentSnapshot -or -not [bool](Get-PropValue -Object $CurrentSnapshot -Name 'exists' -Default $false)) {
+    return ''
+  }
+
+  $currentTimestamp = Get-PropValue -Object $CurrentSnapshot -Name 'timestamp_utc' -Default $null
+  if ($null -eq $currentTimestamp) {
+    return ''
+  }
+
+  $gateStartedUtc = $GateStartedAt.ToUniversalTime()
+  $initialExists = if ($null -ne $InitialSnapshot) {
+    [bool](Get-PropValue -Object $InitialSnapshot -Name 'exists' -Default $false)
+  } else {
+    $false
+  }
+  $initialTimestamp = if ($null -ne $InitialSnapshot) {
+    Get-PropValue -Object $InitialSnapshot -Name 'timestamp_utc' -Default $null
+  } else {
+    $null
+  }
+
+  $refreshedDuringGate = $false
+  if ($initialExists -and $null -ne $initialTimestamp) {
+    $refreshedDuringGate = ($currentTimestamp -gt $initialTimestamp.AddSeconds(1))
+  } else {
+    $refreshedDuringGate = ($currentTimestamp -ge $gateStartedUtc.AddSeconds(-1))
+  }
+
+  if (-not $refreshedDuringGate) {
+    return ''
+  }
+
+  if ($EvaluationStatus -eq 'PASS') {
+    return 'refreshed_and_passed'
+  }
+  if ($EvaluationStatus -eq 'STALE') {
+    return 'still_stale_after_refresh'
+  }
+
+  return 'refreshed_and_failed'
+}
+
 function Get-FirstMatches([string[]]$Items, [int]$Limit = 5) {
   if ($null -eq $Items) { return @() }
   if ($Items.Count -le $Limit) { return $Items }
@@ -430,6 +562,8 @@ $runtimeDir = Join-Path $raymanDir 'runtime'
 if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
   New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 }
+$initialTestLaneSnapshots = Get-ReleaseGateDirectorySnapshotMap -ReportDirectory (Join-Path $runtimeDir 'test_lanes')
+$initialProjectGateSnapshots = Get-ReleaseGateDirectorySnapshotMap -ReportDirectory (Join-Path $runtimeDir 'project_gates')
 
 if (Test-Path -LiteralPath $winAppCorePath -PathType Leaf) {
   . $winAppCorePath
@@ -1368,6 +1502,28 @@ if (-not (Test-Path -LiteralPath $singleRepoRiskPath -PathType Leaf)) {
 $testLaneDir = Join-Path $runtimeDir 'test_lanes'
 $laneDefinitions = @(
   [pscustomobject]@{
+    Name = '宿主环境冒烟'
+    FileName = 'host_smoke.report.json'
+    Schema = 'rayman.testing.host_smoke.v1'
+    SuccessProperty = ''
+    OverallProperty = 'overall'
+    RequireGeneratedAt = $true
+    FreshnessPaths = @(
+      '.Rayman/scripts/testing'
+      '.Rayman/scripts/worker'
+      '.Rayman/rayman.ps1'
+    )
+    MissingInProject = 'WARN'
+    MissingInStandard = 'WARN'
+    FailInProject = 'WARN'
+    FailInStandard = 'FAIL'
+    WarnInProject = 'WARN'
+    WarnInStandard = 'WARN'
+    Action = '执行 pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD"'
+    AutoRefreshInProject = $true
+    AutoRefreshInStandard = $true
+  }
+  [pscustomobject]@{
     Name = '快速契约Lane'
     FileName = 'fast_contract.report.json'
     Schema = 'rayman.testing.fast_contract.v1'
@@ -1417,33 +1573,11 @@ $laneDefinitions = @(
     WarnInStandard = 'WARN'
     Action = '执行 bash ./.Rayman/scripts/testing/run_bats_tests.sh'
   }
-  [pscustomobject]@{
-    Name = '宿主环境冒烟'
-    FileName = 'host_smoke.report.json'
-    Schema = 'rayman.testing.host_smoke.v1'
-    SuccessProperty = ''
-    OverallProperty = 'overall'
-    RequireGeneratedAt = $true
-    FreshnessPaths = @(
-      '.Rayman/scripts/testing'
-      '.Rayman/scripts/worker'
-      '.Rayman/rayman.ps1'
-    )
-    MissingInProject = 'WARN'
-    MissingInStandard = 'WARN'
-    FailInProject = 'WARN'
-    FailInStandard = 'FAIL'
-    WarnInProject = 'WARN'
-    WarnInStandard = 'WARN'
-    Action = '执行 pwsh -NoProfile -ExecutionPolicy Bypass -File ./.Rayman/scripts/testing/run_host_smoke.ps1 -WorkspaceRoot "$PWD"'
-    AutoRefreshInProject = $true
-    AutoRefreshInStandard = $true
-  }
 )
-
 foreach ($lane in $laneDefinitions) {
   $laneReportPath = Join-Path $testLaneDir ([string]$lane.FileName)
   $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  $initialLaneSnapshot = Get-ReleaseGateSnapshotFromMap -SnapshotMap $initialTestLaneSnapshots -ReportPath $laneReportPath
   $autoRunAttempt = $null
   $shouldAutoRunLane = Get-ReleaseGateAutoRefreshEnabled -Definition $lane -Mode $Mode
   if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
@@ -1535,6 +1669,11 @@ foreach ($lane in $laneDefinitions) {
   if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
     $detailParts.Add(("auto_run=attempted, started={0}, exit={1}, reason={2}" -f [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)) | Out-Null
     $detailParts.Add(("auto_refresh={0}" -f (Get-ReleaseGateAutoRefreshStateText -Attempt $autoRunAttempt -EvaluationStatus ([string]$laneEval.status) -ReportExists (Test-Path -LiteralPath $laneReportPath -PathType Leaf)))) | Out-Null
+  } else {
+    $observedAutoRefreshState = Get-ReleaseGateObservedAutoRefreshStateText -InitialSnapshot $initialLaneSnapshot -CurrentSnapshot (Get-ReleaseGateReportSnapshot -ReportPath $laneReportPath) -EvaluationStatus ([string]$laneEval.status) -GateStartedAt $releaseGateStartedAt
+    if (-not [string]::IsNullOrWhiteSpace($observedAutoRefreshState)) {
+      $detailParts.Add(("auto_refresh={0}" -f $observedAutoRefreshState)) | Out-Null
+    }
   }
   $laneDetail = ($detailParts -join '; ')
 
@@ -1610,10 +1749,10 @@ $projectGateDefinitions = @(
     AutoRefreshInStandard = $true
   }
 )
-
 foreach ($lane in $projectGateDefinitions) {
   $laneReportPath = Join-Path $projectGateDir ([string]$lane.FileName)
   $laneReportRel = Get-DisplayRelativePath -BasePath $WorkspaceRoot -FullPath $laneReportPath
+  $initialLaneSnapshot = Get-ReleaseGateSnapshotFromMap -SnapshotMap $initialProjectGateSnapshots -ReportPath $laneReportPath
   $autoRunAttempt = $null
   $shouldAutoRunLane = Get-ReleaseGateAutoRefreshEnabled -Definition $lane -Mode $Mode
   if (-not (Test-Path -LiteralPath $laneReportPath -PathType Leaf)) {
@@ -1688,6 +1827,11 @@ foreach ($lane in $projectGateDefinitions) {
   if ($null -ne $autoRunAttempt -and [bool]$autoRunAttempt.attempted) {
     $detailParts.Add(("auto_run=attempted, started={0}, exit={1}, reason={2}" -f [string]([bool]$autoRunAttempt.started).ToString().ToLowerInvariant(), [int]$autoRunAttempt.exit_code, [string]$autoRunAttempt.reason)) | Out-Null
     $detailParts.Add(("auto_refresh={0}" -f (Get-ReleaseGateAutoRefreshStateText -Attempt $autoRunAttempt -EvaluationStatus ([string]$laneEval.status) -ReportExists (Test-Path -LiteralPath $laneReportPath -PathType Leaf)))) | Out-Null
+  } else {
+    $observedAutoRefreshState = Get-ReleaseGateObservedAutoRefreshStateText -InitialSnapshot $initialLaneSnapshot -CurrentSnapshot (Get-ReleaseGateReportSnapshot -ReportPath $laneReportPath) -EvaluationStatus ([string]$laneEval.status) -GateStartedAt $releaseGateStartedAt
+    if (-not [string]::IsNullOrWhiteSpace($observedAutoRefreshState)) {
+      $detailParts.Add(("auto_refresh={0}" -f $observedAutoRefreshState)) | Out-Null
+    }
   }
   $laneDetail = ($detailParts -join '; ')
 
