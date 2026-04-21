@@ -313,7 +313,27 @@ Import-Module ([string]`$pesterModule.Path) -Force | Out-Null
 `$config.Run.PassThru = `$true
 `$config.Output.Verbosity = 'None'
 `$result = Invoke-Pester -Configuration `$config 6>`$null
-if ([int]`$result.FailedCount -gt 0) { exit 1 }
+if ([int]`$result.FailedCount -gt 0) {
+  foreach (`$failed in @(`$result.Failed | Select-Object -First 8)) {
+    `$failedPath = [string]`$failed.ExpandedPath
+    if ([string]::IsNullOrWhiteSpace(`$failedPath)) {
+      `$failedPath = [string]`$failed.Path
+    }
+    `$failedMessage = ''
+    if (`$failed.PSObject.Properties['ErrorRecord'] -and `$null -ne `$failed.ErrorRecord) {
+      `$failedMessage = [string]`$failed.ErrorRecord.Exception.Message
+    }
+    if ([string]::IsNullOrWhiteSpace(`$failedMessage) -and `$failed.PSObject.Properties['StandardOutput'] -and `$null -ne `$failed.StandardOutput) {
+      `$failedMessage = [string]`$failed.StandardOutput
+    }
+    `$failedMessage = (`$failedMessage -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace(`$failedPath)) {
+      `$failedPath = [string]`$failed.Name
+    }
+    Write-Output ('FAILED_TEST: {0} :: {1}' -f `$failedPath, `$failedMessage)
+  }
+  exit 1
+}
 exit 0
 "@
     Set-Content -LiteralPath $runnerPathLocal -Value $runner -Encoding UTF8
