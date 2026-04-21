@@ -178,6 +178,9 @@ function Resolve-ManualCommandCatalogExpectation {
   if (-not $catalogMap.ContainsKey($rootCommand)) {
     return [pscustomobject]@{
       ok = $false
+      platform = ''
+      root_command = $rootCommand
+      surface = $surface
       detail = ("missing catalog entry: {0}" -f $rootCommand)
     }
   }
@@ -187,12 +190,18 @@ function Resolve-ManualCommandCatalogExpectation {
   if ($surface -eq 'bash' -and $platform -ne 'all') {
     return [pscustomobject]@{
       ok = $false
+      platform = $platform
+      root_command = $rootCommand
+      surface = $surface
       detail = ("command requires rayman.ps1 surface: {0}" -f $normalized)
     }
   }
 
   return [pscustomobject]@{
     ok = $true
+    platform = $platform
+    root_command = $rootCommand
+    surface = $surface
     detail = ("catalog={0}/{1}" -f $rootCommand, $platform)
   }
 }
@@ -334,6 +343,20 @@ function Invoke-ManualCommandVerification {
       $catalogCheck = Resolve-ManualCommandCatalogExpectation -CommandText $normalized
       if ($null -ne $catalogCheck -and -not [bool]$catalogCheck.ok) {
         return $catalogCheck
+      }
+      $psHost = Resolve-UnitBackedPowerShellHost
+      if (
+        $null -ne $catalogCheck -and
+        [bool]$catalogCheck.ok -and
+        [string]$catalogCheck.platform -eq 'windows-only' -and
+        -not (Test-ManualCommandCurrentHostIsWindows) -and
+        ($null -eq $psHost -or -not [bool]$psHost.is_windows_host)
+      ) {
+        $targetPath = Join-Path $WorkspaceRoot ([string]$Rule.verification_target)
+        return [pscustomobject]@{
+          ok = (Test-Path -LiteralPath $targetPath -PathType Leaf)
+          detail = ("{0}; pester={1}; skip=non-windows-host" -f [string]$catalogCheck.detail, [string]$Rule.verification_target)
+        }
       }
       $unitCheck = Invoke-UnitBackedManualCommandValidation -RelativePath ([string]$Rule.verification_target)
       if ($null -ne $catalogCheck -and [bool]$catalogCheck.ok) {
