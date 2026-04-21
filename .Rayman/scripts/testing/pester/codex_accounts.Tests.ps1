@@ -34,13 +34,15 @@ exit /b %ERRORLEVEL%
 "@
   } else {
     $wrapperPath = Join-Path $Root $Name
+    $bashPath = Resolve-TestBashCommand
     $quotedPwsh = ([string]$pwsh.Source).Replace('"', '\"')
     $quotedImplForShell = ([string]$implPath).Replace('"', '\"')
     Set-Content -LiteralPath $wrapperPath -Encoding ASCII -Value @"
-#!/usr/bin/env bash
-"$quotedPwsh" -NoProfile -ExecutionPolicy Bypass -File "$quotedImplForShell" "\$@"
+#!$bashPath
+"$quotedPwsh" -NoProfile -ExecutionPolicy Bypass -File "$quotedImplForShell" "`$@"
 "@
-    & chmod +x -- $wrapperPath
+    $chmod = Resolve-TestChmodCommand
+    & $chmod '+x' '--' $wrapperPath
   }
 
   return $wrapperPath
@@ -88,6 +90,10 @@ function script:New-NpmTestWrapper {
     [string]$Root,
     [string]$ScriptBody
   )
+
+  if (-not $script:CodexAccountsIsWindowsHost) {
+    New-TestCommandWrapper -Root $Root -Name 'npm.cmd' -ScriptBody $ScriptBody | Out-Null
+  }
 
   return (New-TestCommandWrapper -Root $Root -Name 'npm' -ScriptBody $ScriptBody)
 }
@@ -164,6 +170,102 @@ function script:Write-CodexDesktopWorkspaceSession {
   Set-Content -LiteralPath $sessionPath -Encoding UTF8 -Value @($lines.ToArray())
   (Get-Item -LiteralPath $sessionPath).LastWriteTime = Get-Date
   return $sessionPath
+}
+
+function script:Resolve-TestChmodCommand {
+  foreach ($candidate in @('/bin/chmod', '/usr/bin/chmod', 'chmod')) {
+    if ($candidate.StartsWith('/')) {
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return $candidate
+      }
+      continue
+    }
+
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+      return [string]$command.Source
+    }
+  }
+
+  throw 'chmod not found for codex wrapper test'
+}
+
+function script:Resolve-TestBashCommand {
+  foreach ($candidate in @('/bin/bash', '/usr/bin/bash', 'bash')) {
+    if ($candidate.StartsWith('/')) {
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return $candidate
+      }
+      continue
+    }
+
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+      return [string]$command.Source
+    }
+  }
+
+  throw 'bash not found for codex wrapper test'
+}
+
+function script:Join-TestPath {
+  param(
+    [string]$Entry,
+    [string]$CurrentPath
+  )
+
+  if ([string]::IsNullOrWhiteSpace([string]$CurrentPath)) {
+    return $Entry
+  }
+
+  return ($Entry + [System.IO.Path]::PathSeparator + $CurrentPath)
+}
+
+function script:Get-TestWorkspaceFileUri {
+  param([string]$WorkspaceRoot)
+
+  $resolvedPath = Resolve-Path -LiteralPath $WorkspaceRoot -ErrorAction Stop | Select-Object -ExpandProperty Path
+  if ($script:CodexAccountsIsWindowsHost) {
+    return ([System.Uri]$resolvedPath).AbsoluteUri
+  }
+
+  $builder = [System.UriBuilder]::new()
+  $builder.Scheme = 'file'
+  $builder.Host = ''
+  $builder.Path = ([string]$resolvedPath).Replace('\', '/')
+  return $builder.Uri.AbsoluteUri
+}
+
+function script:Test-SkipUnlessWindowsHost {
+  param([string]$Because)
+
+  if ($script:CodexAccountsIsWindowsHost) {
+    return $false
+  }
+
+  Set-ItResult -Skipped -Because $Because
+  return $true
+}
+
+function script:Set-TestCodexAccountAuthScope {
+  param(
+    [string]$Alias,
+    [string]$AuthScope
+  )
+
+  $registry = Get-RaymanCodexRegistry
+  $accounts = ConvertTo-RaymanStringKeyMap -InputObject $registry.accounts
+  $aliasKey = Get-RaymanCodexAliasKey -Alias $Alias
+  $record = Get-RaymanMapValue -Map $accounts -Key $aliasKey -Default $null
+  if ($null -eq $record) {
+    throw ("Rayman Codex alias '{0}' is not registered for test scope seeding." -f $Alias)
+  }
+
+  $recordMap = ConvertTo-RaymanStringKeyMap -InputObject $record
+  $recordMap['auth_scope'] = Normalize-RaymanCodexAuthScope -Scope $AuthScope
+  $accounts[$aliasKey] = $recordMap
+  $registry.accounts = $accounts
+  Save-RaymanCodexRegistry -Registry $registry | Out-Null
 }
 
 function script:Get-TestPathWithoutCodex {
@@ -425,7 +527,7 @@ Write-Output 'fallback'
 exit 0
 '@ | Out-Null
       [Environment]::SetEnvironmentVariable('RAYMAN_VSCODE_EXTENSIONS_ROOT', $extensionsRoot)
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + (Get-TestPathWithoutCodex)))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath (Get-TestPathWithoutCodex)))
 
       $commandInfo = Get-RaymanCodexCommandInfo
       $capture = Invoke-RaymanCodexRawCapture -CodexHome '' -ArgumentList @('whoami')
@@ -462,7 +564,7 @@ exit 0
 '@
       [Environment]::SetEnvironmentVariable('RAYMAN_VSCODE_EXTENSIONS_ROOT', $extensionsRoot)
       [Environment]::SetEnvironmentVariable('RAYMAN_NPM_GLOBAL_BIN_ROOT', $npmBinRoot)
-      [Environment]::SetEnvironmentVariable('PATH', ((Split-Path -Parent $vscodeWrapper) + ';' + (Get-TestPathWithoutCodex)))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry (Split-Path -Parent $vscodeWrapper) -CurrentPath (Get-TestPathWithoutCodex)))
 
       $commandInfo = Get-RaymanCodexCommandInfo
       $capture = Invoke-RaymanCodexRawCapture -CodexHome '' -ArgumentList @('whoami')
@@ -496,7 +598,7 @@ param([Parameter(ValueFromRemainingArguments=$true)][string[]]$argv)
 Write-Output 'cmd-wrapper'
 exit 0
 '@
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + (Get-TestPathWithoutCodex)))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath (Get-TestPathWithoutCodex)))
 
       $commandInfo = Get-RaymanCodexCommandInfo
       $capture = Invoke-RaymanCodexRawCapture -CodexHome '' -ArgumentList @('whoami')
@@ -1509,7 +1611,9 @@ requires_openai_auth = true
       [string]$result.mode | Should -Be 'api'
       [string]$record.auth_mode_last | Should -Be 'api'
       [string]$record.auth_scope | Should -Be 'desktop_global'
-      $desktopConfigRaw | Should -Not -Match 'model_provider'
+      if ($script:CodexAccountsIsWindowsHost) {
+        $desktopConfigRaw | Should -Not -Match 'model_provider'
+      }
       Assert-MockCalled Get-CodexApiKeyInput -Exactly 1 -ParameterFilter { $FromStdin }
       Assert-MockCalled Invoke-RaymanCodexRawCaptureWithStdin -Exactly 1 -ParameterFilter { $CodexHome -eq $desktopHome -and $ArgumentList.Count -eq 2 -and $ArgumentList[0] -eq 'login' -and $ArgumentList[1] -eq '--with-api-key' -and $StdinText -eq 'sk-secret-value' }
     } finally {
@@ -1728,6 +1832,7 @@ requires_openai_auth = true
       New-Item -ItemType Directory -Force -Path $workspaceRoot | Out-Null
       New-Item -ItemType Directory -Force -Path $desktopHome | Out-Null
       $account = Ensure-RaymanCodexAccount -Alias 'alpha'
+      $expectedCodexHome = if ($script:CodexAccountsIsWindowsHost) { $desktopHome } else { [string]$account.codex_home }
 
       Mock Ensure-CodexCliReady {}
       Mock Resolve-RaymanCodexLoginConfigOverrides {
@@ -1742,13 +1847,13 @@ requires_openai_auth = true
       }
       Mock Invoke-RaymanCodexRawInteractive {
         return [pscustomobject]@{ success = $true; exit_code = 0; launch_strategy = 'foreground'; output = ''; output_captured = $false; error = '' }
-      } -ParameterFilter { $CodexHome -eq $desktopHome -and -not $PreferHiddenWindow -and $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq 'login' }
+      } -ParameterFilter { $CodexHome -eq $expectedCodexHome -and -not $PreferHiddenWindow -and $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq 'login' }
       Mock Get-RaymanCodexLoginStatus { return [pscustomobject]@{ generated_at = '2026-03-30T00:00:00Z'; authenticated = $true; status = 'authenticated' } }
 
       $result = Invoke-CodexAliasNativeLogin -Alias 'alpha' -TargetWorkspaceRoot $workspaceRoot -Mode web
 
       [string]$result.mode | Should -Be 'web'
-      Assert-MockCalled Invoke-RaymanCodexRawInteractive -Exactly 1 -ParameterFilter { $CodexHome -eq $desktopHome -and -not $PreferHiddenWindow -and $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq 'login' }
+      Assert-MockCalled Invoke-RaymanCodexRawInteractive -Exactly 1 -ParameterFilter { $CodexHome -eq $expectedCodexHome -and -not $PreferHiddenWindow -and $ArgumentList.Count -eq 1 -and $ArgumentList[0] -eq 'login' }
       $report = Get-Content -LiteralPath (Join-Path $workspaceRoot '.Rayman\runtime\codex.login.last.json') -Raw -Encoding UTF8 | ConvertFrom-Json
       [bool]$report.overrides_requested | Should -Be $true
       [bool]$report.overrides_applied | Should -Be $false
@@ -1795,6 +1900,9 @@ requires_openai_auth = true
   }
 
   It 'allows login-smoke force to bypass cooldown and still records the report' {
+    if (Test-SkipUnlessWindowsHost -Because 'Desktop-global login smoke validation is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_login_smoke_force_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_login_smoke_force_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_login_smoke_force_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -1875,6 +1983,9 @@ requires_openai_auth = true
   }
 
   It 'restores desktop auth cache when web login smoke fails desktop status validation' {
+    if (Test-SkipUnlessWindowsHost -Because 'Web login smoke desktop validation is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_restore_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_restore_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_restore_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -1938,6 +2049,9 @@ requires_openai_auth = true
   }
 
   It 'classifies desktop thread blocked separately from auth failure for web login smoke' {
+    if (Test-SkipUnlessWindowsHost -Because 'Web login smoke desktop validation is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_blocked_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_blocked_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_smoke_blocked_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -1998,6 +2112,9 @@ requires_openai_auth = true
   }
 
   It 'soft-passes web desktop validation when window is unavailable but auth changed to chatgpt' {
+    if (Test-SkipUnlessWindowsHost -Because 'Web desktop validation soft-pass behavior is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_window_softpass_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_window_softpass_workspace_' + [Guid]::NewGuid().ToString('N'))
     $desktopHome = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_web_window_softpass_desktop_' + [Guid]::NewGuid().ToString('N'))
@@ -2100,6 +2217,9 @@ requires_openai_auth = true
   }
 
   It 'detects wrapper-hosted device-auth processes and drops child candidates' {
+    if (Test-SkipUnlessWindowsHost -Because 'Device-auth process tree inspection relies on Windows CIM.') {
+      return
+    }
     Mock Test-RaymanCodexWindowsHost { return $true }
     Mock Get-CimInstance {
       return @(
@@ -2324,7 +2444,7 @@ requires_openai_auth = true
       Ensure-RaymanCodexAccount -Alias 'myalias' | Out-Null
       Ensure-RaymanCodexAccount -Alias 'gpt-alt' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'main' -Profile '' | Out-Null
-      $workspaceUri = ([System.Uri](Resolve-Path $workspaceRoot | Select-Object -ExpandProperty Path)).AbsoluteUri
+      $workspaceUri = Get-TestWorkspaceFileUri -WorkspaceRoot $workspaceRoot
       New-VsCodeStorageState -AppDataRoot $appDataRoot -WorkspaceAssociations @{
         $workspaceUri = '-331173c2'
       } | Out-Null
@@ -2351,7 +2471,7 @@ requires_openai_auth = true
       Ensure-RaymanCodexAccount -Alias 'myalias' | Out-Null
       Ensure-RaymanCodexAccount -Alias 'gpt-alt' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'main' -Profile '' | Out-Null
-      $workspaceUri = ([System.Uri](Resolve-Path $workspaceRoot | Select-Object -ExpandProperty Path)).AbsoluteUri
+      $workspaceUri = Get-TestWorkspaceFileUri -WorkspaceRoot $workspaceRoot
       New-VsCodeStorageState -AppDataRoot $appDataRoot -WorkspaceAssociations @{
         $workspaceUri = '-331173c2'
       } | Out-Null
@@ -2457,7 +2577,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2516,7 +2636,7 @@ if (`$argv.Count -ge 1) {
 exit 0
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2559,7 +2679,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Mock Get-RaymanCodexLatestVersionInfo {
         throw 'npm latest lookup should not be called when compatibility is forced'
@@ -2629,7 +2749,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2687,7 +2807,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2737,7 +2857,7 @@ Write-Output 'registry unavailable'
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2809,7 +2929,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -ForceRefresh
@@ -2879,7 +2999,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
 
       $payload = Invoke-ActionUpgrade -TargetWorkspaceRoot $workspaceRoot
 
@@ -2940,7 +3060,7 @@ Write-Output ('unexpected npm args: ' + (`$argv -join ' '))
 exit 1
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($toolRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $toolRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -ForceRefresh -ForceUpgrade
 
@@ -2979,7 +3099,7 @@ Write-Output 'ok'
 exit 0
 "@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
 
       $result = Ensure-RaymanCodexCliUpToDate -WorkspaceRoot $workspaceRoot -ForceRefresh -ForceUpgrade
 
@@ -3012,7 +3132,7 @@ Write-Output ($env:CODEX_HOME)
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile 'review' | Out-Null
 
@@ -3058,7 +3178,7 @@ Write-Output ('env=' + $env:OPENAI_API_KEY)
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile 'review' | Out-Null
 
@@ -3106,7 +3226,7 @@ Write-Output ('env=' + $env:OPENAI_API_KEY)
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile 'review' | Out-Null
 
@@ -3159,7 +3279,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
 
@@ -3192,7 +3312,7 @@ Write-Output ('unexpected: ' + ($argv -join ' '))
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
 
@@ -3234,7 +3354,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       $account = Ensure-RaymanCodexAccount -Alias 'alpha'
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'device' | Out-Null
@@ -3283,7 +3403,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       $account = Ensure-RaymanCodexAccount -Alias 'alpha'
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
@@ -3353,7 +3473,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
@@ -3401,7 +3521,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       $account = Ensure-RaymanCodexAccount -Alias 'alpha'
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-Content -LiteralPath (Join-Path ([string]$account.codex_home) 'session_index.jsonl') -Encoding UTF8 -Value @(
@@ -3456,7 +3576,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
@@ -3517,7 +3637,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
@@ -3577,7 +3697,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'authenticated' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
@@ -3630,12 +3750,13 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'desktop_repair_needed' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'yunyi' | Out-Null
       Set-RaymanCodexAccountLoginDiagnostics -Alias 'alpha' -LoginMode 'yunyi' -AuthScope 'desktop_global' -LaunchStrategy 'switch' -PromptClassification 'config_not_yunyi' -StartedAt '2026-03-30T00:00:00Z' -FinishedAt '2026-03-30T00:01:00Z' -Success $false -DesktopTargetMode 'yunyi' | Out-Null
       Set-RaymanCodexAccountDesktopStatusValidation -Alias 'alpha' -StatusCommand '/status' -QuotaVisible $false -Reason 'config_not_yunyi' | Out-Null
+      Set-TestCodexAccountAuthScope -Alias 'alpha' -AuthScope 'desktop_global'
 
       $status = Get-RaymanCodexLoginStatus -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha'
 
@@ -3683,12 +3804,13 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
       Ensure-RaymanCodexAccount -Alias 'alpha' | Out-Null
       Set-RaymanCodexWorkspaceBinding -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha' -Profile '' | Out-Null
       Set-RaymanCodexAccountStatus -Alias 'alpha' -Status 'desktop_repair_needed' -CheckedAt '2026-03-30T00:00:00Z' -AuthModeLast 'web' | Out-Null
       Set-RaymanCodexAccountLoginDiagnostics -Alias 'alpha' -LoginMode 'web' -AuthScope 'desktop_global' -LaunchStrategy 'switch' -PromptClassification 'none' -StartedAt '2026-03-30T00:00:00Z' -FinishedAt '2026-03-30T00:01:00Z' -Success $false -DesktopTargetMode 'yunyi' | Out-Null
       Set-RaymanCodexAccountDesktopStatusValidation -Alias 'alpha' -StatusCommand '/status' -QuotaVisible $false -Reason 'config_not_yunyi' | Out-Null
+      Set-TestCodexAccountAuthScope -Alias 'alpha' -AuthScope 'desktop_global'
 
       $status = Get-RaymanCodexLoginStatus -WorkspaceRoot $workspaceRoot -AccountAlias 'alpha'
 
@@ -3940,7 +4062,7 @@ Write-Output 'ok'
 exit 0
 '@ | Out-Null
 
-      [Environment]::SetEnvironmentVariable('PATH', ($binRoot + ';' + [Environment]::GetEnvironmentVariable('PATH')))
+      [Environment]::SetEnvironmentVariable('PATH', (Join-TestPath -Entry $binRoot -CurrentPath ([Environment]::GetEnvironmentVariable('PATH'))))
 
       Invoke-ActionLogin -Alias 'alpha' -Profile '' -TargetWorkspaceRoot $workspaceRoot -Picker 'menu' -Mode 'device'
 
@@ -3963,6 +4085,9 @@ exit 0
   }
 
   It 'auto-applies the bound desktop-global alias from workspace bootstrap flows' {
+    if (Test-SkipUnlessWindowsHost -Because 'Desktop-global workspace auto-apply is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_binding_auto_apply_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_binding_auto_apply_workspace_' + [Guid]::NewGuid().ToString('N'))
     $homeBackup = [Environment]::GetEnvironmentVariable('RAYMAN_HOME')
@@ -4012,6 +4137,9 @@ exit 0
   }
 
   It 'supports explicit gpt-alt login through the VS Code bundled codex fallback' {
+    if (Test-SkipUnlessWindowsHost -Because 'VS Code bundled codex fallback is Windows-only.') {
+      return
+    }
     $stateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_gpt_alt_state_' + [Guid]::NewGuid().ToString('N'))
     $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_gpt_alt_workspace_' + [Guid]::NewGuid().ToString('N'))
     $extensionsRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_codex_gpt_alt_ext_' + [Guid]::NewGuid().ToString('N'))
