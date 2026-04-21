@@ -38,6 +38,23 @@ def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def write_stream_text(stream: Any, text: str) -> None:
+    payload = f"{text}\n"
+    try:
+        stream.write(payload)
+        stream.flush()
+    except UnicodeEncodeError:
+        buffer = getattr(stream, "buffer", None)
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        escaped = payload.encode(encoding, errors="backslashreplace")
+        if buffer is not None:
+            buffer.write(escaped)
+            buffer.flush()
+            return
+        stream.write(escaped.decode(encoding, errors="ignore"))
+        stream.flush()
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -1491,12 +1508,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def emit(result: Dict[str, Any], as_json: bool) -> None:
     if as_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        write_stream_text(sys.stdout, json.dumps(result, ensure_ascii=True, indent=2))
         return
     if "message" in result:
-        print(result["message"])
+        write_stream_text(sys.stdout, str(result["message"]))
     else:
-        print(json.dumps(result, ensure_ascii=False))
+        write_stream_text(sys.stdout, json.dumps(result, ensure_ascii=False))
 
 
 def main() -> int:

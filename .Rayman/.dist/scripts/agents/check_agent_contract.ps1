@@ -143,7 +143,29 @@ if (-not (Test-Path -LiteralPath $manualCommandValidator -PathType Leaf)) {
       throw ("manual command validator JSON missing properties: {0}" -f ($missingProps -join ', '))
     }
 
-    Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail ("checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count)
+    $detail = "checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count
+    if (
+      -not [bool]$validatorResult.passed -and
+      $validatorResult.PSObject.Properties['checks']
+    ) {
+      $failedChecks = @(
+        @($validatorResult.checks) |
+          Where-Object { -not [bool]$_.passed } |
+          Select-Object -First 3
+      )
+      if ($failedChecks.Count -gt 0) {
+        $failedNames = @(
+          $failedChecks |
+            ForEach-Object { [string]$_.name } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($failedNames.Count -gt 0) {
+          $detail = "{0}; failed={1}" -f $detail, ($failedNames -join ' || ')
+        }
+      }
+    }
+
+    Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail $detail
   } catch {
     Add-Check -Name 'manual-command-contracts' -Passed $false -Detail $_.Exception.Message
   }
