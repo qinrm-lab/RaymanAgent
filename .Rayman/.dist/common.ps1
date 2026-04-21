@@ -2349,8 +2349,10 @@ function Invoke-RaymanNativeCommandCapture {
 
         $result.started = $true
         $result.exit_code = [int]$proc.ExitCode
-        $stdoutText = $stdoutText.TrimEnd("`r", "`n")
-        $stderrText = $stderrText.TrimEnd("`r", "`n")
+        if ($null -eq $stdoutText) { $stdoutText = '' }
+        if ($null -eq $stderrText) { $stderrText = '' }
+        $stdoutText = ([string]$stdoutText).TrimEnd("`r", "`n")
+        $stderrText = ([string]$stderrText).TrimEnd("`r", "`n")
         if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
             $result.stdout = @([string[]]($stdoutText -split "`r?`n"))
         }

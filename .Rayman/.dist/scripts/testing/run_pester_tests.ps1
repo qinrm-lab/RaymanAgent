@@ -56,27 +56,62 @@ if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
 
 Import-Module ([string]$pesterModule.Path) -Force | Out-Null
 
-$config = New-PesterConfiguration
-$config.Run.Path = $testsPath
-$config.Run.PassThru = $true
-$config.Output.Verbosity = 'Detailed'
-$config.TestResult.Enabled = $true
-$config.TestResult.OutputFormat = 'NUnitXml'
-$config.TestResult.OutputPath = $xmlPath
+$testFiles = @(Get-ChildItem -LiteralPath $testsPath -Filter '*.Tests.ps1' -File | Sort-Object FullName)
+if ($testFiles.Count -eq 0) {
+  throw "No Pester test files found under: $testsPath"
+}
 
-$result = Invoke-Pester -Configuration $config
+$aggregate = [ordered]@{
+  TotalCount = 0
+  PassedCount = 0
+  FailedCount = 0
+  SkippedCount = 0
+  InconclusiveCount = 0
+  Duration = [timespan]::Zero
+}
+$failedContainers = New-Object System.Collections.Generic.List[string]
+
+foreach ($testFile in $testFiles) {
+  try {
+    Set-Location -LiteralPath $WorkspaceRoot
+    if (Get-PSDrive -Name 'TestDrive' -ErrorAction SilentlyContinue) {
+      Remove-PSDrive -Name 'TestDrive' -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
+
+  $config = New-PesterConfiguration
+  $config.Run.Path = @([string]$testFile.FullName)
+  $config.Run.PassThru = $true
+  $config.Output.Verbosity = 'Detailed'
+  $config.TestResult.Enabled = $true
+  $config.TestResult.OutputFormat = 'NUnitXml'
+  $config.TestResult.OutputPath = $xmlPath
+
+  $fileResult = Invoke-Pester -Configuration $config
+  $aggregate.TotalCount += [int]$fileResult.TotalCount
+  $aggregate.PassedCount += [int]$fileResult.PassedCount
+  $aggregate.FailedCount += [int]$fileResult.FailedCount
+  $aggregate.SkippedCount += [int]$fileResult.SkippedCount
+  $aggregate.InconclusiveCount += [int]$fileResult.InconclusiveCount
+  $aggregate.Duration += $fileResult.Duration
+
+  if ([int]$fileResult.FailedCount -gt 0) {
+    $failedContainers.Add([string]$testFile.FullName) | Out-Null
+  }
+}
 
 $report = [pscustomobject]@{
   schema = 'rayman.testing.pester.v1'
   workspace_root = $WorkspaceRoot
-  success = ([int]$result.FailedCount -eq 0)
-  total = [int]$result.TotalCount
-  passed = [int]$result.PassedCount
-  failed = [int]$result.FailedCount
-  skipped = [int]$result.SkippedCount
-  inconclusive = [int]$result.InconclusiveCount
-  duration_seconds = [double]$result.Duration.TotalSeconds
+  success = ([int]$aggregate.FailedCount -eq 0)
+  total = [int]$aggregate.TotalCount
+  passed = [int]$aggregate.PassedCount
+  failed = [int]$aggregate.FailedCount
+  skipped = [int]$aggregate.SkippedCount
+  inconclusive = [int]$aggregate.InconclusiveCount
+  duration_seconds = [double]$aggregate.Duration.TotalSeconds
   xml_path = $xmlPath
+  failed_paths = @($failedContainers.ToArray())
 }
 $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
 $report | ConvertTo-Json -Depth 5
