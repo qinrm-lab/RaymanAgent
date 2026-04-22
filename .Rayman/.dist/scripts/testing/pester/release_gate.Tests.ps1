@@ -14,7 +14,7 @@ function script:Test-ReleaseGateWindowsHost {
 
 function script:Resolve-ReleaseGatePowerShellHost {
   $candidates = if (Test-ReleaseGateWindowsHost) {
-    @('powershell.exe', 'powershell', 'pwsh.exe', 'pwsh')
+    @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
   } else {
     @('pwsh', 'pwsh.exe', 'powershell', 'powershell.exe')
   }
