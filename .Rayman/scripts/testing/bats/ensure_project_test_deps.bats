@@ -103,10 +103,22 @@ SH
 }
 
 make_mnt_workspace() {
-  local root
-  root="$(mktemp -d "${BATS_TMP_MNT_PARENT}/ensure_deps_XXXXXX")"
-  write_maui_fixture "${root}"
-  echo "${root}"
+  local parent root
+  for parent in \
+    "${RAYMAN_BATS_WSL_MNT_PARENT:-}" \
+    /mnt/c/rayman-bats-maui \
+    /mnt/d/rayman-bats-maui \
+    /mnt/e/rayman-bats-maui; do
+    [[ -n "${parent}" ]] || continue
+    if mkdir -p "${parent}" 2>/dev/null; then
+      root="$(mktemp -d "${parent}/ensure_deps_XXXXXX")"
+      write_maui_fixture "${root}"
+      echo "${root}"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 make_tmp_workspace() {
@@ -137,7 +149,10 @@ teardown_file() {
 
 @test "MAUI dependency ensure prefers Windows bridge for workload restore on WSL" {
   local fixture stub_root
-  fixture="$(make_mnt_workspace)"
+  fixture="$(make_mnt_workspace || true)"
+  if [[ -z "${fixture}" ]]; then
+    skip "writable /mnt/<drive> path not available"
+  fi
   track_cleanup_path "${fixture}"
   stub_root="$(mktemp -d "${BATS_TMP_MNT_PARENT}/stub_bridge_XXXXXX")"
   track_cleanup_path "${stub_root}"
@@ -154,7 +169,8 @@ teardown_file() {
     bash "${REPO_ROOT}/.Rayman/scripts/utils/ensure_project_test_deps.sh" --workspace-root "${fixture}"
 
   [ "${status}" -eq 0 ]
-  grep -q "ensure_project_test_deps.ps1" "${POWERSHELL_STUB_LOG}"
+  [ -s "${POWERSHELL_STUB_LOG}" ]
+  grep -q -- "-CallerHostType wsl-bridge" "${POWERSHELL_STUB_LOG}"
 }
 
 @test "MAUI dependency ensure falls back to local workload restore when bridge is unavailable" {

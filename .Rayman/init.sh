@@ -7,16 +7,40 @@ RAYMAN_DIR="${WORKSPACE_ROOT}/.Rayman"
 info(){ echo "[rayman-init] $*"; }
 warn(){ echo "[rayman-init][warn] $*" >&2; }
 
+rewrite_shell_script_with_lf() {
+  local script_path="$1"
+  local tmp_file="${script_path}.rayman-lf.$$"
+
+  if command -v perl >/dev/null 2>&1; then
+    if perl -e 'use strict; use warnings; my ($in, $out) = @ARGV; open my $fh, q{<:raw}, $in or die $!; local $/; my $content = <$fh>; close $fh; $content =~ s/\r\n/\n/g; $content =~ s/\r/\n/g; open my $ofh, q{>:raw}, $out or die $!; print {$ofh} $content; close $ofh; rename $out, $in or die $!;' "${script_path}" "${tmp_file}"; then
+      return 0
+    fi
+    rm -f "${tmp_file}" 2>/dev/null || true
+  fi
+
+  tr -d '\r' < "${script_path}" > "${tmp_file}"
+  mv "${tmp_file}" "${script_path}"
+}
+
+shell_script_has_cr() {
+  local script_path="$1"
+
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'use strict; use warnings; my ($path) = @ARGV; open my $fh, q{<:raw}, $path or die $!; local $/; my $content = <$fh>; close $fh; exit(index($content, "\r") >= 0 ? 0 : 1);' "${script_path}"
+    return $?
+  fi
+
+  LC_ALL=C grep -q $'\r' "${script_path}"
+}
+
 normalize_managed_shell_scripts() {
   local normalized=0
   local script_path=""
 
   while IFS= read -r -d '' script_path; do
     chmod +x "${script_path}" 2>/dev/null || true
-    if LC_ALL=C grep -q $'\r' "${script_path}"; then
-      local tmp_file="${script_path}.rayman-lf.$$"
-      tr -d '\r' < "${script_path}" > "${tmp_file}"
-      mv "${tmp_file}" "${script_path}"
+    if shell_script_has_cr "${script_path}"; then
+      rewrite_shell_script_with_lf "${script_path}"
       chmod +x "${script_path}" 2>/dev/null || true
       normalized=$((normalized + 1))
     fi
