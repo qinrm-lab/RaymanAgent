@@ -462,6 +462,15 @@ function Invoke-ReleaseGateLaneAutoRun {
     }
   }
 
+  $workspaceCommandPrefix = ''
+  if (-not [string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) {
+    $escapedWorkspaceRoot = ([string]$WorkspaceRoot).Replace("'", "''")
+    $workspaceCommandPrefix = "Set-Location -LiteralPath '$escapedWorkspaceRoot'; "
+  }
+  if (-not [string]::IsNullOrWhiteSpace($workspaceCommandPrefix)) {
+    $commandText = $workspaceCommandPrefix + $commandText
+  }
+
   if ($null -ne $Runner) {
     $result = & $Runner $commandText
     if ($null -ne $result) {
