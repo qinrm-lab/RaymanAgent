@@ -5,14 +5,17 @@ function script:Test-IsWindows {
 }
 
 function script:Get-TestBashInvocation {
-  if (Test-IsWindows) {
-    $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $wsl -and -not [string]::IsNullOrWhiteSpace([string]$wsl.Source)) {
+  if (Get-Command Resolve-RaymanBashCommand -ErrorAction SilentlyContinue) {
+    $runner = Resolve-RaymanBashCommand
+    if ($null -ne $runner -and -not [string]::IsNullOrWhiteSpace([string]$runner.path)) {
       return [pscustomobject]@{
-        Mode = 'wsl'
-        Path = [string]$wsl.Source
+        Mode = [string]$runner.mode
+        Path = [string]$runner.path
+        InvokeKind = [string]$runner.invoke_kind
       }
     }
+
+    return $null
   }
 
   $bash = Get-Command bash.exe, bash -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -43,7 +46,8 @@ function script:Invoke-TestBashScript {
   )
 
   $output = ''
-  if ([string]$Invocation.Mode -eq 'wsl') {
+  $invokeKind = if ($Invocation.PSObject.Properties['InvokeKind']) { [string]$Invocation.InvokeKind } elseif ([string]$Invocation.Mode -eq 'wsl') { 'wsl' } else { 'bash' }
+  if ($invokeKind -eq 'wsl') {
     $workspaceRootWsl = Convert-ToWslPath -Path $WorkspaceRoot
     $command = "cd '$workspaceRootWsl' && bash '$ScriptPath'"
     $output = & $Invocation.Path -e bash -lc $command 2>&1 | Out-String
@@ -84,6 +88,10 @@ function script:Get-TestRepoRoot {
   }
 
   throw 'workspace root not found for init regression tests'
+}
+
+BeforeAll {
+  . (Join-Path (Get-TestRepoRoot) '.Rayman\common.ps1')
 }
 
 Describe 'Rayman init shell regressions' {

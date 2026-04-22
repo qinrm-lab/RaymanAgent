@@ -35,6 +35,16 @@ function Write-Utf8NoBomFile {
   [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Normalize-GeneratedContentLineEndings {
+  param([string]$Content)
+
+  if ($null -eq $Content) {
+    return ''
+  }
+
+  return ([string]$Content) -replace "`r`n?", "`n"
+}
+
 function Set-GeneratedFileContent {
   param(
     [string]$Path,
@@ -46,7 +56,7 @@ function Set-GeneratedFileContent {
   if (Test-Path -LiteralPath $Path -PathType Leaf) {
     $current = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
   }
-  if ($current -eq $Expected) {
+  if ((Normalize-GeneratedContentLineEndings -Content $current) -eq (Normalize-GeneratedContentLineEndings -Content $Expected)) {
     return $false
   }
   if ($VerifyOnly) {

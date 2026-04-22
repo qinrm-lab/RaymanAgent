@@ -217,7 +217,7 @@ $expectedFull = New-CommandMapFromCatalog -Commands @(Import-RaymanCommandCatalo
 
 $bashInvocation = New-RaymanHostSmokeBashInvocation -WorkspaceRoot $WorkspaceRoot -CommandText 'bash ./.Rayman/rayman help'
 if ($null -eq $bashInvocation) {
-  Add-Check -Name 'bash_help' -Status FAIL -Detail 'bash not found'
+  Add-Check -Name 'bash_help' -Status SKIP -Detail 'bash not available on current host'
 } else {
   $bashResult = Invoke-CommandText -FilePath ([string]$bashInvocation.path) -Arguments @($bashInvocation.argument_list)
   if ($bashResult.exit_code -ne 0) {

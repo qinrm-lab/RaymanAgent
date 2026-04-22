@@ -46,10 +46,28 @@ function Resolve-RaymanCommandPath {
 }
 
 function Resolve-RaymanBashRunner {
+  if (Get-Command Resolve-RaymanBashCommand -ErrorAction SilentlyContinue) {
+    $resolved = Resolve-RaymanBashCommand
+    if ($null -ne $resolved -and -not [string]::IsNullOrWhiteSpace([string]$resolved.path)) {
+      return [pscustomobject]@{
+        path = [string]$resolved.path
+        mode = [string]$resolved.mode
+      }
+    }
+  }
+
   $override = [string][Environment]::GetEnvironmentVariable('RAYMAN_BASH_PATH')
   if (-not [string]::IsNullOrWhiteSpace($override) -and (Test-Path -LiteralPath $override -PathType Leaf)) {
     return [pscustomobject]@{
       path = (Resolve-Path -LiteralPath $override).Path
+      mode = 'bash'
+    }
+  }
+
+  $bashPath = Resolve-RaymanCommandPath -Names @('bash.cmd', 'bash.bat', 'bash.ps1', 'bash.exe', 'bash')
+  if (-not [string]::IsNullOrWhiteSpace($bashPath)) {
+    return [pscustomobject]@{
+      path = $bashPath
       mode = 'bash'
     }
   }
@@ -61,14 +79,6 @@ function Resolve-RaymanBashRunner {
         path = $wslPath
         mode = 'wsl'
       }
-    }
-  }
-
-  $bashPath = Resolve-RaymanCommandPath -Names @('bash', 'bash.exe')
-  if (-not [string]::IsNullOrWhiteSpace($bashPath)) {
-    return [pscustomobject]@{
-      path = $bashPath
-      mode = 'bash'
     }
   }
 

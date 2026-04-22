@@ -2382,6 +2382,10 @@ requires_openai_auth = true
   }
 
   It 'resolves hidden interactive invocation through cmd.exe for cmd wrappers' {
+    if (Test-SkipUnlessWindowsHost -Because 'cmd.exe wrapper resolution only applies on Windows hosts.') {
+      return
+    }
+
     $cmdInvocation = Resolve-RaymanCodexInteractiveInvocation -CodexCommand ([pscustomobject]@{
         available = $true
         path = 'C:\Users\qinrm\AppData\Roaming\npm\codex.cmd'
