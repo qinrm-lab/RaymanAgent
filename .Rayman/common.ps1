@@ -1,5 +1,6 @@
 ﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:RaymanWslInteropAvailabilityCache = $null
 
 $raymanCodexCommonPath = Join-Path $PSScriptRoot 'scripts\codex\codex_common.ps1'
 if (Test-Path -LiteralPath $raymanCodexCommonPath -PathType Leaf) {

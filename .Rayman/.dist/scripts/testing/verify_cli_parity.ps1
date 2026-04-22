@@ -195,7 +195,11 @@ function Invoke-CommandText {
     [string]$WorkingDirectory = ''
   )
 
-  $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  if (Get-Command Invoke-RaymanHostSmokeCommandCapture -ErrorAction SilentlyContinue) {
+    $capture = Invoke-RaymanHostSmokeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  } else {
+    $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  }
   return [pscustomobject]@{
     exit_code = if ([bool]$capture.started) { [int]$capture.exit_code } else { -1 }
     output = (Get-RaymanHostSmokeMergedOutput -Capture $capture).TrimEnd("`r", "`n")

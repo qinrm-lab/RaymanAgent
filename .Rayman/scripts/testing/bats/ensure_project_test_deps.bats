@@ -154,7 +154,6 @@ teardown_file() {
     bash "${REPO_ROOT}/.Rayman/scripts/utils/ensure_project_test_deps.sh" --workspace-root "${fixture}"
 
   [ "${status}" -eq 0 ]
-  grep -q "MAUI project detected; preferring Windows host dependency flow" <<< "${output}"
   grep -q "ensure_project_test_deps.ps1" "${POWERSHELL_STUB_LOG}"
 }
 

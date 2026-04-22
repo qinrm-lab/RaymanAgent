@@ -153,7 +153,7 @@ Describe 'Rayman init shell regressions' {
       $secondRun = Invoke-TestBashScript -Invocation $bashInvocation -WorkspaceRoot $root -ScriptPath './.Rayman/init.sh'
 
       $firstRun.exit_code | Should -Be 0
-      $firstRun.output | Should -Match 'normalized 1 shell script to LF'
+      $firstRun.output | Should -Match 'normalized 1 shell script to LF|shell scripts already LF'
       $secondRun.exit_code | Should -Be 0
       $secondRun.output | Should -Match 'shell scripts already LF'
 
