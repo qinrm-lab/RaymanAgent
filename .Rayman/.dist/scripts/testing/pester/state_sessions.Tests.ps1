@@ -9,10 +9,13 @@ BeforeAll {
   $script:RollbackScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\rollback_state.ps1'
   $script:WorktreeCreateScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\worktree_create.ps1'
   $script:SessionCommonPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\session_common.ps1'
+  $script:SharedSessionScript = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\shared_session.ps1'
+  $script:SharedSessionCommonPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\state\shared_session_common.ps1'
   $script:CodexCommonPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\codex\codex_common.ps1'
   $script:EmbeddedWatchersPath = Join-Path $script:WorkspaceRoot '.Rayman\scripts\watch\embedded_watchers.lib.ps1'
   $script:GitPath = (Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
   . $script:SessionCommonPath
+  . $script:SharedSessionCommonPath
   . $script:CodexCommonPath
 }
 
@@ -516,6 +519,83 @@ Describe 'session isolation helpers' {
       (Get-Content -LiteralPath (Join-Path $root 'notes.txt') -Raw -Encoding UTF8).Trim() | Should -Be 'manual rollback restore'
       (Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\snapshots') -PathType Container) | Should -Be $false
     } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'creates, links, unlinks, and shows canonical shared sessions explicitly' {
+    $root = New-StateSessionTestRoot
+    try {
+      $continueResult = & $script:SharedSessionScript -WorkspaceRoot $root -Action continue -Name 'Alpha Mesh' -Prompt 'shared session prompt' -Json | ConvertFrom-Json
+      $targetSessionId = [string]$continueResult.session.session_id
+      $showAfterContinue = & $script:SharedSessionScript -WorkspaceRoot $root -Action show -SessionId $targetSessionId -Json | ConvertFrom-Json
+      $linkResult = & $script:SharedSessionScript -WorkspaceRoot $root -Action link -SessionId $targetSessionId -Vendor 'copilot-sdk' -VendorSessionId 'sdk-alpha' -ContinuityMode native_resume -NativeResumeSupported -Json | ConvertFrom-Json
+      $showAfterLink = & $script:SharedSessionScript -WorkspaceRoot $root -Action show -SessionId $targetSessionId -Json | ConvertFrom-Json
+      $unlinkResult = & $script:SharedSessionScript -WorkspaceRoot $root -Action unlink -SessionId $targetSessionId -Vendor 'copilot-sdk' -VendorSessionId 'sdk-alpha' -Json | ConvertFrom-Json
+      $list = & $script:SharedSessionScript -WorkspaceRoot $root -Action list -Json | ConvertFrom-Json
+
+      $continueResult.schema | Should -Be 'rayman.shared_session_status.v1'
+      [string]$targetSessionId | Should -Match '^ws-[a-f0-9]+-task-alpha-mesh$'
+      [string]$showAfterContinue.session.display_name | Should -Be 'Alpha Mesh'
+      [string]$showAfterContinue.messages[0].content_text | Should -Be 'shared session prompt'
+      $linkResult.schema | Should -Be 'rayman.shared_session_sync.v1'
+      @($showAfterLink.links | Where-Object { [string]$_.vendor_name -eq 'copilot-sdk' -and [string]$_.vendor_session_id -eq 'sdk-alpha' }).Count | Should -Be 1
+      [int]$unlinkResult.deleted | Should -Be 1
+      @($list.sessions | Where-Object { [string]$_.session_id -eq $targetSessionId }).Count | Should -Be 1
+    } finally {
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'serializes shared-session locks, queues contention, and recovers stale locks' {
+    $root = New-StateSessionTestRoot
+    $timeoutBackup = [Environment]::GetEnvironmentVariable('RAYMAN_SHARED_SESSION_LOCK_TIMEOUT_SECONDS')
+    try {
+      [Environment]::SetEnvironmentVariable('RAYMAN_SHARED_SESSION_LOCK_TIMEOUT_SECONDS', '1')
+      $session = Ensure-RaymanSharedSession -WorkspaceRoot $root -TaskSlug 'lock-demo' -DisplayName 'Lock Demo' -SummaryText 'lock demo' -IgnoreDisabled
+      $sessionId = [string]$session.session.session_id
+
+      $lockA = Enter-RaymanSharedSessionLock -WorkspaceRoot $root -SessionId $sessionId -OwnerId 'owner-a' -OwnerLabel 'Owner A' -QueueItem @{ prompt = 'first queued item' }
+      $lockB = Enter-RaymanSharedSessionLock -WorkspaceRoot $root -SessionId $sessionId -OwnerId 'owner-b' -OwnerLabel 'Owner B' -QueueItem @{ prompt = 'second queued item' }
+      Start-Sleep -Milliseconds 1200
+      $lockRecovered = Enter-RaymanSharedSessionLock -WorkspaceRoot $root -SessionId $sessionId -OwnerId 'owner-b' -OwnerLabel 'Owner B'
+      $show = Get-RaymanSharedSessionShow -WorkspaceRoot $root -SessionId $sessionId -MessageLimit 20
+
+      [bool]$lockA.acquired | Should -Be $true
+      [bool]$lockB.acquired | Should -Be $false
+      [bool]$lockB.queued | Should -Be $true
+      [int]$lockB.queued_count | Should -Be 1
+      [bool]$lockRecovered.acquired | Should -Be $true
+      [bool]$lockRecovered.stale_recovered | Should -Be $true
+      [int]$show.lock.queued_count | Should -Be 0
+      [string]$show.lock.owner_id | Should -Be 'owner-b'
+    } finally {
+      [Environment]::SetEnvironmentVariable('RAYMAN_SHARED_SESSION_LOCK_TIMEOUT_SECONDS', $timeoutBackup)
+      Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'syncs state save, resume, and rollback into canonical shared sessions when enabled' {
+    $root = New-StateSessionTestRoot
+    $enabledBackup = [Environment]::GetEnvironmentVariable('RAYMAN_SHARED_SESSION_ENABLED')
+    try {
+      Initialize-StateSessionGitRoot -Root $root
+      [Environment]::SetEnvironmentVariable('RAYMAN_SHARED_SESSION_ENABLED', '1')
+      Set-Content -LiteralPath (Join-Path $root 'notes.txt') -Encoding UTF8 -Value 'shared state save'
+
+      & $script:SaveStateScript -WorkspaceRoot $root -Name 'Shared Alpha' -TaskDescription 'shared alpha task' | Out-Null
+      & $script:ResumeStateScript -WorkspaceRoot $root -Name 'Shared Alpha' -Json | ConvertFrom-Json | Out-Null
+      $restore = & $script:RollbackScript -WorkspaceRoot $root -Action restore -Name 'Shared Alpha' -Json | ConvertFrom-Json
+      $show = & $script:SharedSessionScript -WorkspaceRoot $root -Action show -Name 'Shared Alpha' -Json | ConvertFrom-Json
+      $messageSources = @($show.messages | ForEach-Object { [string]$_.source_kind })
+
+      [string]$show.session.session_id | Should -Match '^ws-[a-f0-9]+-task-shared-alpha$'
+      ($messageSources -contains 'state-save') | Should -Be $true
+      ($messageSources -contains 'state-resume') | Should -Be $true
+      @($show.checkpoints | Where-Object { [string]$_.checkpoint_kind -eq 'state-save' }).Count | Should -BeGreaterThan 0
+      [bool]$restore.shared_session_restore.restored | Should -Be $true
+    } finally {
+      [Environment]::SetEnvironmentVariable('RAYMAN_SHARED_SESSION_ENABLED', $enabledBackup)
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
   }

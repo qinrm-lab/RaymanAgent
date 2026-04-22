@@ -1,6 +1,7 @@
 param(
     [string]$WorkspaceRoot = $(Resolve-Path (Join-Path $PSScriptRoot '..\..\..') | Select-Object -ExpandProperty Path),
     [string]$Name = '',
+    [switch]$AllowAlreadyResumed,
     [switch]$Json
 )
 
@@ -8,6 +9,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'session_common.ps1')
+$sharedSessionHelperPath = Join-Path $PSScriptRoot 'shared_session_common.ps1'
+if (Test-Path -LiteralPath $sharedSessionHelperPath -PathType Leaf) {
+    . $sharedSessionHelperPath
+}
 
 function Invoke-RaymanSessionPatchRestore {
     param(
@@ -35,7 +40,19 @@ function Invoke-RaymanSessionPatchRestore {
     $saved = Get-Location
     try {
         Set-Location -LiteralPath $TargetRoot
-        & $gitPath apply $PatchPath
+        & $gitPath apply --check $PatchPath 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            & $gitPath apply $PatchPath
+        } else {
+            & $gitPath apply --reverse --check $PatchPath 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "ℹ️ 自动保存 Patch 已经在当前工作区生效，跳过重复恢复" -ForegroundColor Cyan
+                $result.success = $true
+                $result.applied = $false
+                $result.reason = 'already_applied'
+                return [pscustomobject]$result
+            }
+        }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "✅ 已成功恢复会话内自动保存的代码更改" -ForegroundColor Green
             $result.success = $true
@@ -99,7 +116,7 @@ if ($null -eq $manifest) {
 
 $sessionName = if ($manifest.PSObject.Properties['name']) { [string]$manifest.name } else { $Name }
 $status = if ($manifest.PSObject.Properties['status']) { [string]$manifest.status } else { 'paused' }
-if ($status -ne 'paused') {
+if ($status -ne 'paused' -and -not ($AllowAlreadyResumed -and $status -eq 'resumed')) {
     throw ("会话当前不是 paused 状态，不能恢复: {0} (status={1})" -f $sessionName, $status)
 }
 
@@ -158,6 +175,11 @@ Save-RaymanSessionManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $upda
 Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -OwnerContext $runtimeContext.owner_context
 if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
     Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -HandoverPath $handoverPath -PatchPath $patchPath -MetaPath $metaPath | Out-Null
+}
+if (Get-Command Sync-RaymanSharedSessionFromManifest -ErrorAction SilentlyContinue) {
+    try {
+        $null = Sync-RaymanSharedSessionFromManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -HandoverPath $handoverPath -PatchPath $patchPath -MetaPath $metaPath -Action 'state-resume'
+    } catch {}
 }
 
 if ($resumeIsolation -eq 'worktree') {

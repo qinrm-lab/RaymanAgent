@@ -10,6 +10,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'session_common.ps1')
+$sharedSessionHelperPath = Join-Path $PSScriptRoot 'shared_session_common.ps1'
+if (Test-Path -LiteralPath $sharedSessionHelperPath -PathType Leaf) {
+  . $sharedSessionHelperPath
+}
 $eventHooksPath = Join-Path $PSScriptRoot '..\utils\event_hooks.ps1'
 if (Test-Path -LiteralPath $eventHooksPath -PathType Leaf) {
   . $eventHooksPath -NoMain
@@ -246,12 +250,26 @@ switch ($Action) {
     }
 
     $resumeKey = if (-not [string]::IsNullOrWhiteSpace([string]$record.slug)) { [string]$record.slug } else { [string]$record.name }
-    $resumeOutput = @(& $resumeScript -WorkspaceRoot $ResolvedWorkspaceRoot -Name $resumeKey -Json)
+    $resumeOutput = @(& $resumeScript -WorkspaceRoot $ResolvedWorkspaceRoot -Name $resumeKey -AllowAlreadyResumed -Json)
     $resumeJson = (($resumeOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
     if ([string]::IsNullOrWhiteSpace($resumeJson)) {
       throw 'resume_state returned no JSON payload.'
     }
     $resumeResult = $resumeJson | ConvertFrom-Json -ErrorAction Stop
+    $sharedRestore = $null
+    if (Get-Command Restore-RaymanSharedSessionCheckpoint -ErrorAction SilentlyContinue) {
+      try {
+        $sharedSessionId = Get-RaymanSharedSessionId -WorkspaceRoot $ResolvedWorkspaceRoot -TaskSlug ([string]$record.slug)
+        $sharedRestore = Restore-RaymanSharedSessionCheckpoint -WorkspaceRoot $ResolvedWorkspaceRoot -SessionId $sharedSessionId -RestoredBy ('rollback:' + [string]$record.slug)
+        if ($null -ne $sharedRestore -and [bool]$sharedRestore.restored -and (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue)) {
+          Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'shared_session.restored' -Category 'state' -Payload ([ordered]@{
+              session_id = [string]$sharedSessionId
+              checkpoint_id = [string]$sharedRestore.checkpoint_id
+              session_slug = [string]$record.slug
+            }) | Out-Null
+        }
+      } catch {}
+    }
 
     $payload = [ordered]@{
       schema = 'rayman.rollback.restore.v1'
@@ -261,6 +279,7 @@ switch ($Action) {
       session_slug = [string]$record.slug
       session_kind = [string]$record.session_kind
       resume_result = $resumeResult
+      shared_session_restore = $sharedRestore
     }
     if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
       Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'rollback.restore' -Category 'state' -Payload $payload | Out-Null

@@ -8,6 +8,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'session_common.ps1')
+$sharedSessionHelperPath = Join-Path $PSScriptRoot 'shared_session_common.ps1'
+if (Test-Path -LiteralPath $sharedSessionHelperPath -PathType Leaf) {
+    . $sharedSessionHelperPath
+}
 
 $resolvedWorkspaceRootInput = if ($PSBoundParameters.ContainsKey('WorkspaceRoot')) { [string]$PSBoundParameters['WorkspaceRoot'] } else { $WorkspaceRoot }
 $ResolvedWorkspaceRoot = Get-RaymanStateWorkspaceRoot -WorkspaceRoot $resolvedWorkspaceRootInput
@@ -72,10 +76,15 @@ Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifes
 if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
     Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -HandoverPath $paths.handover_path -PatchPath $paths.auto_save_patch_path -MetaPath $paths.auto_save_meta_path | Out-Null
 }
+if (Get-Command Sync-RaymanSharedSessionFromManifest -ErrorAction SilentlyContinue) {
+    try {
+        $null = Sync-RaymanSharedSessionFromManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -HandoverPath $paths.handover_path -PatchPath $paths.auto_save_patch_path -MetaPath $paths.auto_save_meta_path -Action 'state-save'
+    } catch {}
+}
 
 $legacy = Get-RaymanLegacyStatePaths -WorkspaceRoot $ResolvedWorkspaceRoot
 if (Test-Path -LiteralPath $legacy.pending_path -PathType Leaf) {
-    Remove-Item -LiteralPath $legacy.pending_path -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $legacy.pending_path -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ("✅ 命名会话已保存: {0}" -f $sessionName) -ForegroundColor Green
