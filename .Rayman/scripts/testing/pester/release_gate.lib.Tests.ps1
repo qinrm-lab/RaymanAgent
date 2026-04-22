@@ -154,6 +154,6 @@ Describe 'release_gate.lib' {
     [bool]$result.attempted | Should -Be $true
     [bool]$result.started | Should -Be $true
     [bool]$result.success | Should -Be $true
-    [string]$result.command | Should -Be 'bash ./.Rayman/scripts/testing/run_fast_contract.sh'
+    [string]$result.command | Should -Match "^Set-Location -LiteralPath 'E:\\repo'; bash \./\.Rayman/scripts/testing/run_fast_contract\.sh$"
   }
 }

@@ -195,7 +195,11 @@ function Invoke-CommandText {
     [string]$WorkingDirectory = ''
   )
 
-  $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  if (Get-Command Invoke-RaymanHostSmokeCommandCapture -ErrorAction SilentlyContinue) {
+    $capture = Invoke-RaymanHostSmokeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  } else {
+    $capture = Invoke-RaymanNativeCommandCapture -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory
+  }
   return [pscustomobject]@{
     exit_code = if ([bool]$capture.started) { [int]$capture.exit_code } else { -1 }
     output = (Get-RaymanHostSmokeMergedOutput -Capture $capture).TrimEnd("`r", "`n")
@@ -213,11 +217,11 @@ try {
 $expectedBash = Get-ExpectedCommandMap -Kind bash
 $expectedPwsh = Get-ExpectedCommandMap -Kind pwsh
 $expectedRecommended = Get-ExpectedCommandMap -Kind recommended
-$expectedFull = Get-ExpectedCommandMap -Kind pwsh
+$expectedFull = New-CommandMapFromCatalog -Commands @(Import-RaymanCommandCatalog -WorkspaceRoot $WorkspaceRoot)
 
 $bashInvocation = New-RaymanHostSmokeBashInvocation -WorkspaceRoot $WorkspaceRoot -CommandText 'bash ./.Rayman/rayman help'
 if ($null -eq $bashInvocation) {
-  Add-Check -Name 'bash_help' -Status FAIL -Detail 'bash not found'
+  Add-Check -Name 'bash_help' -Status SKIP -Detail 'bash not available on current host'
 } else {
   $bashResult = Invoke-CommandText -FilePath ([string]$bashInvocation.path) -Arguments @($bashInvocation.argument_list)
   if ($bashResult.exit_code -ne 0) {

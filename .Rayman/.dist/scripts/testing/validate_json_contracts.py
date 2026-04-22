@@ -261,7 +261,7 @@ def main():
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=True) + "\n")
     raise SystemExit(1 if failed else 0)
 
 

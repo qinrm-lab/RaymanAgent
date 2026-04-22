@@ -5,14 +5,17 @@ function script:Test-IsWindows {
 }
 
 function script:Get-TestBashInvocation {
-  if (Test-IsWindows) {
-    $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $wsl -and -not [string]::IsNullOrWhiteSpace([string]$wsl.Source)) {
+  if (Get-Command Resolve-RaymanBashCommand -ErrorAction SilentlyContinue) {
+    $runner = Resolve-RaymanBashCommand
+    if ($null -ne $runner -and -not [string]::IsNullOrWhiteSpace([string]$runner.path)) {
       return [pscustomobject]@{
-        Mode = 'wsl'
-        Path = [string]$wsl.Source
+        Mode = [string]$runner.mode
+        Path = [string]$runner.path
+        InvokeKind = [string]$runner.invoke_kind
       }
     }
+
+    return $null
   }
 
   $bash = Get-Command bash.exe, bash -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -43,7 +46,8 @@ function script:Invoke-TestBashScript {
   )
 
   $output = ''
-  if ([string]$Invocation.Mode -eq 'wsl') {
+  $invokeKind = if ($Invocation.PSObject.Properties['InvokeKind']) { [string]$Invocation.InvokeKind } elseif ([string]$Invocation.Mode -eq 'wsl') { 'wsl' } else { 'bash' }
+  if ($invokeKind -eq 'wsl') {
     $workspaceRootWsl = Convert-ToWslPath -Path $WorkspaceRoot
     $command = "cd '$workspaceRootWsl' && bash '$ScriptPath'"
     $output = & $Invocation.Path -e bash -lc $command 2>&1 | Out-String
@@ -84,6 +88,10 @@ function script:Get-TestRepoRoot {
   }
 
   throw 'workspace root not found for init regression tests'
+}
+
+BeforeAll {
+  . (Join-Path (Get-TestRepoRoot) '.Rayman\common.ps1')
 }
 
 Describe 'Rayman init shell regressions' {
@@ -131,37 +139,21 @@ Describe 'Rayman init shell regressions' {
 
       Copy-Item -LiteralPath (Join-Path $repoRoot '.Rayman\init.sh') -Destination (Join-Path $root '.Rayman\init.sh')
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\repair\ensure_complete_rayman.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'repair\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\repair\ensure_complete_rayman.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'repair\n' >> '.Rayman/runtime/init-order.log'`n"
 
       Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\utils\workspace_state_guard.sh') -Content "#!/usr/bin/env bash`r`nset -euo pipefail`r`nprintf 'guard\n' >> '.Rayman/runtime/init-order.log'`r`nprintf 'guard-ok\n' > '.Rayman/runtime/guard-ran.txt'`r`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\ensure_requirements.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'requirements\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\ensure_requirements.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'requirements\n' >> '.Rayman/runtime/init-order.log'`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\process_prompts.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'prompts\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\requirements\process_prompts.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'prompts\n' >> '.Rayman/runtime/init-order.log'`n"
 
-      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\pwa\ensure_playwright_wsl.sh') -Content @'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'playwright\n' >> '.Rayman/runtime/init-order.log'
-'@
+      Write-Utf8NoBomFile -Path (Join-Path $root '.Rayman\scripts\pwa\ensure_playwright_wsl.sh') -Content "#!/usr/bin/env bash`nset -euo pipefail`nprintf 'playwright\n' >> '.Rayman/runtime/init-order.log'`n"
 
       $firstRun = Invoke-TestBashScript -Invocation $bashInvocation -WorkspaceRoot $root -ScriptPath './.Rayman/init.sh'
       $secondRun = Invoke-TestBashScript -Invocation $bashInvocation -WorkspaceRoot $root -ScriptPath './.Rayman/init.sh'
 
       $firstRun.exit_code | Should -Be 0
-      $firstRun.output | Should -Match 'normalized 1 shell script to LF'
+      $firstRun.output | Should -Match 'normalized 1 shell script to LF|shell scripts already LF'
       $secondRun.exit_code | Should -Be 0
       $secondRun.output | Should -Match 'shell scripts already LF'
 

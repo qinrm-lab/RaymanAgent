@@ -29,8 +29,48 @@ router_cfg=".Rayman/config/agent_router.json"
 policy_cfg=".Rayman/config/agent_policy.json"
 review_cfg=".Rayman/config/review_loop.json"
 
+detect_workspace_kind(){
+  local root="$1"
+  local testing_marker="${root}/.Rayman/scripts/testing/run_fast_contract.sh"
+  local has_testing_marker=0
+  local has_source_workflow_marker=0
+  local has_solution_requirement_marker=0
+
+  [[ -f "${testing_marker}" ]] && has_testing_marker=1
+  [[ -f "${root}/.github/workflows/rayman-test-lanes.yml" || -f "${root}/.github/workflows/rayman-nightly-smoke.yml" ]] && has_source_workflow_marker=1
+
+  local dir name
+  shopt -s nullglob dotglob
+  for dir in "${root}"/.*; do
+    [[ -d "${dir}" ]] || continue
+    name="$(basename "${dir}")"
+    if [[ -f "${dir}/${name}.requirements.md" ]]; then
+      has_solution_requirement_marker=1
+      break
+    fi
+  done
+  shopt -u nullglob dotglob
+
+  if [[ "${has_source_workflow_marker}" == "1" && ( "${has_testing_marker}" == "1" || "${has_solution_requirement_marker}" == "1" ) ]]; then
+    printf 'source'
+    return 0
+  fi
+
+  printf 'external'
+}
+
+workspace_kind="$(detect_workspace_kind "$(pwd)")"
+settings_present=1
+
 [[ -f "${solution_file}" ]] || fail "missing: ${solution_file}"
-[[ -f "${settings_file}" ]] || fail "missing: ${settings_file}"
+if [[ ! -f "${settings_file}" ]]; then
+  settings_present=0
+  if [[ "${workspace_kind}" == "source" ]]; then
+    warn "missing optional generated asset in source workspace: ${settings_file}"
+  else
+    fail "missing: ${settings_file}"
+  fi
+fi
 [[ -f "${mcp_file}" ]] || fail "missing: ${mcp_file}"
 [[ -f "${setup_file}" ]] || fail "missing: ${setup_file}"
 [[ -f "${test_fix_file}" ]] || fail "missing: ${test_fix_file}"
@@ -67,7 +107,8 @@ else
   exit 0
 fi
 
-"${pybin}" - <<'PY' "${settings_file}"
+if [[ "${settings_present}" == "1" ]]; then
+  "${pybin}" - <<'PY' "${settings_file}"
 import json
 import sys
 from typing import Any, List, Tuple
@@ -106,6 +147,7 @@ if isinstance(edits, dict):
 
 print("settings.json sanity OK")
 PY
+fi
 
 "${pybin}" - <<'PY' "${mcp_file}" "$(pwd)"
 import json

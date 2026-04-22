@@ -1,5 +1,6 @@
 BeforeAll {
   $script:WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+  . (Join-Path $script:WorkspaceRoot '.Rayman\common.ps1')
   . (Join-Path $script:WorkspaceRoot '.Rayman\scripts\utils\runtime_cleanup.ps1') -NoMain
 }
 
@@ -93,7 +94,7 @@ Describe 'runtime cleanup helper' {
   It 'keeps copy-smoke cleanup scoped to the workspace unless external temp cleanup is enabled' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_runtime_cleanup_scope_' + [Guid]::NewGuid().ToString('N'))
     $external = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_copy_smoke_' + [Guid]::NewGuid().ToString('N'))
-    $powershellHost = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $powershellHost = Resolve-RaymanPowerShellHost
     try {
       New-Item -ItemType Directory -Force -Path $root | Out-Null
       New-Item -ItemType Directory -Force -Path $external | Out-Null

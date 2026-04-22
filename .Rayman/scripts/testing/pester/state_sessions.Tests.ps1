@@ -170,7 +170,7 @@ Describe 'session isolation helpers' {
       (Get-RaymanActiveSession -WorkspaceRoot $root -OwnerContext $ownerA).slug | Should -Be 'alpha'
       (Get-RaymanActiveSession -WorkspaceRoot $root -OwnerContext $ownerB).slug | Should -Be 'beta'
       (Get-RaymanActiveSession -WorkspaceRoot $root -OwnerContext $ownerC).slug | Should -Be 'beta'
-      [string](Resolve-RaymanAutoSaveTargetPaths -WorkspaceRoot $root -OwnerContext $ownerA).auto_save_patch_path | Should -Match 'sessions\\alpha\\auto_save\.patch$'
+      [string](Resolve-RaymanAutoSaveTargetPaths -WorkspaceRoot $root -OwnerContext $ownerA).auto_save_patch_path | Should -Match 'sessions[\\/]+alpha[\\/]+auto_save\.patch$'
     } finally {
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

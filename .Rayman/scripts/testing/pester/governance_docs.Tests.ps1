@@ -96,4 +96,15 @@ Describe 'governance review docs' {
     $workflow | Should -Match "throw 'gh CLI not found for attestation verification;"
     $workflow | Should -Not -Match 'skipping attestation verification on this runner'
   }
+
+  It 'splat reusable lane script arguments instead of passing a nested array' {
+    $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\_rayman-reusable-lane.yml') -Raw -Encoding UTF8
+
+    ([regex]::Matches($workflow, '\$invokeNamed = @\{\s+WorkspaceRoot = "\$PWD"\s+\}')).Count | Should -Be 2
+    ([regex]::Matches($workflow, '\$invokePositional = @\(\)')).Count | Should -Be 2
+    ([regex]::Matches($workflow, '& \$scriptPath @invokeNamed @invokePositional')).Count | Should -Be 2
+    $workflow | Should -Match '\$invokeNamed\[\$parameterName\] = \[string\]\$tokens\[\$i \+ 1\]\.Content'
+    $workflow | Should -Match '\$invokeNamed\[\$parameterName\] = \$true'
+    $workflow | Should -Not -Match '& \$cmd\[0\] @\(\$cmd\[1\.\.\(\$cmd\.Count - 1\)\]\)'
+  }
 }

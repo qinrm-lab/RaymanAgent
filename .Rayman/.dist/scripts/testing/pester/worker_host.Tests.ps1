@@ -43,6 +43,11 @@ Describe 'worker host auth guards' {
   }
 
   It 'allows LAN requests without a token when auth is not configured' {
+    if (-not (Test-RaymanWorkerWindowsHost)) {
+      Set-ItResult -Skipped -Because 'Rayman Worker host currently supports Windows only.'
+      return
+    }
+
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_host_failfast_' + [Guid]::NewGuid().ToString('N'))
     $lanBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_LAN_ENABLED')
     $tokenBackup = [Environment]::GetEnvironmentVariable('RAYMAN_WORKER_AUTH_TOKEN')
@@ -60,16 +65,25 @@ Describe 'worker host auth guards' {
 
       { Assert-RaymanWorkerAuthorized -WorkspaceRoot $root -Headers @{} } | Should -Not -Throw
 
-      $workerProcess = Start-Process -FilePath (Get-Command powershell.exe -ErrorAction Stop).Source -ArgumentList @(
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        (Join-Path $script:WorkspaceRoot '.Rayman\scripts\worker\worker_host.ps1'),
-        '-WorkspaceRoot',
-        $root,
-        '-NoBeacon'
-      ) -WindowStyle Hidden -PassThru
+      $startProcessParams = @{
+        FilePath = (Resolve-RaymanPowerShellHost)
+        ArgumentList = @(
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          (Join-Path $script:WorkspaceRoot '.Rayman\scripts\worker\worker_host.ps1'),
+          '-WorkspaceRoot',
+          $root,
+          '-NoBeacon'
+        )
+        PassThru = $true
+      }
+      if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $startProcessParams.WindowStyle = 'Hidden'
+      }
+
+      $workerProcess = Start-Process @startProcessParams
 
       $statusPath = Get-RaymanWorkerHostStatusPath -WorkspaceRoot $root
       $deadline = (Get-Date).AddSeconds(20)

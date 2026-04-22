@@ -38,6 +38,23 @@ def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def write_stream_text(stream: Any, text: str) -> None:
+    payload = f"{text}\n"
+    try:
+        stream.write(payload)
+        stream.flush()
+    except UnicodeEncodeError:
+        buffer = getattr(stream, "buffer", None)
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        escaped = payload.encode(encoding, errors="backslashreplace")
+        if buffer is not None:
+            buffer.write(escaped)
+            buffer.flush()
+            return
+        stream.write(escaped.decode(encoding, errors="ignore"))
+        stream.flush()
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -123,6 +140,7 @@ class MemoryPaths:
     db_path: Path
     status_path: Path
     pending_dir: Path
+    shared_session_db_path: Path
 
 
 def resolve_paths(workspace_root: str) -> MemoryPaths:
@@ -137,6 +155,7 @@ def resolve_paths(workspace_root: str) -> MemoryPaths:
         db_path=memory_root / "memory.sqlite3",
         status_path=runtime_root / "status.json",
         pending_dir=pending_dir,
+        shared_session_db_path=root / ".Rayman" / "state" / "shared_sessions" / "shared_sessions.sqlite3",
     )
 
 
@@ -328,11 +347,14 @@ class MemoryStore:
         else:
             self.engine.load(prewarm=False)
 
+        shared_counts = self._read_shared_session_counts()
         counts = {
             "episodes": self.scalar("SELECT COUNT(*) FROM episodes"),
             "task_summaries": self.scalar("SELECT COUNT(*) FROM task_summaries"),
             "semantic_memories": self.scalar("SELECT COUNT(*) FROM semantic_memories"),
             "session_recalls": self.scalar("SELECT COUNT(*) FROM session_recalls"),
+            "shared_sessions": int(shared_counts.get("shared_sessions") or 0),
+            "shared_session_messages": int(shared_counts.get("shared_session_messages") or 0),
         }
         status = {
             "schema": "rayman.agent_memory.status.v1",
@@ -362,6 +384,30 @@ class MemoryStore:
         if row is None:
             return 0
         return int(row[0] or 0)
+
+    def _open_shared_session_conn(self) -> Optional[sqlite3.Connection]:
+        if not self.paths.shared_session_db_path.is_file():
+            return None
+        conn = sqlite3.connect(str(self.paths.shared_session_db_path), timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
+        return conn
+
+    def _read_shared_session_counts(self) -> Dict[str, int]:
+        conn = self._open_shared_session_conn()
+        if conn is None:
+            return {"shared_sessions": 0, "shared_session_messages": 0}
+        try:
+            shared_sessions = int(conn.execute("SELECT COUNT(*) FROM shared_sessions").fetchone()[0] or 0)
+            shared_messages = int(conn.execute("SELECT COUNT(*) FROM shared_session_messages").fetchone()[0] or 0)
+            return {
+                "shared_sessions": shared_sessions,
+                "shared_session_messages": shared_messages,
+            }
+        except sqlite3.DatabaseError:
+            return {"shared_sessions": 0, "shared_session_messages": 0}
+        finally:
+            conn.close()
 
     def write_runtime_artifact(self, name: str, payload: Dict[str, Any]) -> None:
         path = self.paths.runtime_root / name
@@ -761,6 +807,134 @@ class MemoryStore:
         scored.sort(key=lambda item: (item["score"], item["updated_at"]), reverse=True)
         return scored[:limit]
 
+    def _search_shared_session_messages(
+        self,
+        *,
+        query: str,
+        task_kind: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        conn = self._open_shared_session_conn()
+        if conn is None:
+            return []
+        query_text = normalize_text(query)
+        try:
+            session_rows = {
+                normalize_text(row["session_id"]): dict(row)
+                for row in conn.execute("SELECT * FROM shared_sessions").fetchall()
+            }
+            message_rows = [dict(row) for row in conn.execute(
+                "SELECT * FROM shared_session_messages ORDER BY updated_at DESC, id DESC"
+            ).fetchall()]
+            fts_scores: Dict[str, float] = {}
+            try:
+                if query_text:
+                    fts_rows = conn.execute(
+                        """
+                        SELECT message_id, bm25(shared_session_messages_fts) AS rank
+                        FROM shared_session_messages_fts
+                        WHERE shared_session_messages_fts MATCH ?
+                        ORDER BY rank ASC
+                        LIMIT ?
+                        """,
+                        (query_text, max(limit * 4, 12)),
+                    ).fetchall()
+                    max_rank = 0.0
+                    for row in fts_rows:
+                        rank = abs(float(row["rank"] or 0.0))
+                        if rank > max_rank:
+                            max_rank = rank
+                    for row in fts_rows:
+                        rank = abs(float(row["rank"] or 0.0))
+                        score = 1.0 if max_rank <= 0 else max(0.0, 1.0 - (rank / (max_rank + 1.0)))
+                        fts_scores[normalize_text(row["message_id"])] = round(score, 6)
+            except sqlite3.OperationalError:
+                fts_scores = {}
+
+            scored: List[Dict[str, Any]] = []
+            for row in message_rows:
+                session_id = normalize_text(row.get("session_id"))
+                session_row = session_rows.get(session_id, {})
+                content_text = normalize_text(row.get("content_text"))
+                resume_text = normalize_text(row.get("resume_text"))
+                recap_text = normalize_text(row.get("recap_text"))
+                queue_state = normalize_text(row.get("queue_state"))
+                search_text = " ".join(
+                    [
+                        normalize_text(session_row.get("display_name")),
+                        normalize_text(session_row.get("task_slug")),
+                        normalize_text(session_row.get("summary_text")),
+                        normalize_text(row.get("role")),
+                        normalize_text(row.get("author_name")),
+                        normalize_text(row.get("source_kind")),
+                        normalize_text(row.get("vendor_name")),
+                        normalize_text(row.get("vendor_session_id")),
+                        content_text,
+                        resume_text,
+                        recap_text,
+                    ]
+                ).strip()
+                if task_kind:
+                    task_kind_lower = task_kind.lower()
+                    task_text = " ".join(
+                        [
+                            normalize_text(session_row.get("task_slug")),
+                            normalize_text(session_row.get("display_name")),
+                            normalize_text(session_row.get("summary_text")),
+                            normalize_text(row.get("source_kind")),
+                        ]
+                    ).lower()
+                    if task_kind_lower not in task_text:
+                        continue
+                lexical = lexical_score(query_text, search_text) if query_text else 0.0
+                fts_score = fts_scores.get(normalize_text(row.get("message_id")), 0.0)
+                score = fts_score if fts_score > 0 else lexical
+                if score <= 0 and query_text:
+                    continue
+                artifact_paths: List[str] = []
+                try:
+                    artifact_json = json.loads(row.get("artifact_json") or "{}")
+                except Exception:
+                    artifact_json = {}
+                if isinstance(artifact_json, dict):
+                    for raw in artifact_json.values():
+                        if isinstance(raw, list):
+                            artifact_paths.extend(normalize_text(item) for item in raw if normalize_text(item))
+                        else:
+                            value = normalize_text(raw)
+                            if value:
+                                artifact_paths.append(value)
+                content = resume_text or recap_text or content_text or normalize_text(session_row.get("summary_text"))
+                scored.append(
+                    {
+                        "id": int(row["id"]),
+                        "source_kind": "shared_session_message",
+                        "message_source_kind": normalize_text(row.get("source_kind")) or "canonical",
+                        "kind": "shared_session_message",
+                        "scope": "session",
+                        "task_kind": task_kind,
+                        "content": content,
+                        "summary_text": normalize_text(session_row.get("summary_text")),
+                        "session_id": session_id,
+                        "session_name": normalize_text(session_row.get("display_name")),
+                        "session_status": normalize_text(session_row.get("status")),
+                        "message_id": normalize_text(row.get("message_id")),
+                        "role": normalize_text(row.get("role")),
+                        "vendor_name": normalize_text(row.get("vendor_name")),
+                        "vendor_session_id": normalize_text(row.get("vendor_session_id")),
+                        "queue_state": queue_state,
+                        "artifact_paths": artifact_paths,
+                        "updated_at": normalize_text(row.get("updated_at")),
+                        "score": round(score, 6),
+                        "lexical_score": round(lexical, 6),
+                        "semantic_score": round(fts_score, 6),
+                    }
+                )
+            scored.sort(key=lambda item: (item["score"], item["updated_at"]), reverse=True)
+            return scored[:limit]
+        finally:
+            conn.close()
+
     def search(
         self,
         *,
@@ -857,11 +1031,12 @@ class MemoryStore:
                 self.conn.commit()
 
         session_recalls = self._search_session_recalls(query=query_text, task_kind=task_kind, limit=min(limit, MAX_SESSION_RECALLS)) if include_sessions else []
+        shared_session_messages = self._search_shared_session_messages(query=query_text, task_kind=task_kind, limit=min(limit, MAX_SESSION_RECALLS)) if include_sessions else []
         recall_results = sorted(
-            [*hints, *session_recalls],
+            [*hints, *session_recalls, *shared_session_messages],
             key=lambda item: (float(item.get("score") or 0.0), normalize_text(item.get("updated_at"))),
             reverse=True,
-        )[: max(limit, len(session_recalls))]
+        )[: max(limit, len(session_recalls), len(shared_session_messages))]
 
         summary_conditions = []
         summary_params: List[Any] = []
@@ -902,6 +1077,7 @@ class MemoryStore:
             "tags": filter_tags,
             "memory_hints": hints,
             "session_recalls": session_recalls,
+            "shared_session_messages": shared_session_messages,
             "recall_results": recall_results,
             "recent_task_summaries": recent_rows,
             "search_backend": self.engine.backend,
@@ -1302,7 +1478,7 @@ class MemoryStore:
 
 
 def load_payload(path: str) -> Dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError("input payload must be a JSON object")
     return payload
@@ -1332,12 +1508,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def emit(result: Dict[str, Any], as_json: bool) -> None:
     if as_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        write_stream_text(sys.stdout, json.dumps(result, ensure_ascii=True, indent=2))
         return
     if "message" in result:
-        print(result["message"])
+        write_stream_text(sys.stdout, str(result["message"]))
     else:
-        print(json.dumps(result, ensure_ascii=False))
+        write_stream_text(sys.stdout, json.dumps(result, ensure_ascii=False))
 
 
 def main() -> int:

@@ -537,13 +537,13 @@ function Invoke-RaymanPostCommandHygiene {
 
   if (-not $Quiet) {
     if ($autoFix.PSObject.Properties['attempted'] -and [bool]$autoFix.attempted -and [bool]$autoFix.success -and [int]$autoFix.fixed_count -gt 0) {
-      Write-Host ("🧹 [hygiene] 已自动解除 Git 跟踪的 Rayman 生成资产: {0}" -f ((@($autoFix.fixed_roots | Select-Object -First 5)) -join ', ')) -ForegroundColor DarkCyan
+      Write-Host ("[hygiene] auto-untracked Rayman-generated assets: {0}" -f ((@($autoFix.fixed_roots | Select-Object -First 5)) -join ', ')) -ForegroundColor DarkCyan
     }
     if ($null -ne $report.dirty_tree -and [int]$report.dirty_tree.non_rayman_count -gt 0) {
-      Write-Host ("⚠️  [hygiene] 当前仍有非 Rayman 脏树: count={0}; samples={1}; report={2}" -f [int]$report.dirty_tree.non_rayman_count, ((@($report.dirty_tree.non_rayman_paths | Select-Object -First 5)) -join ', '), $reportPath) -ForegroundColor Yellow
+      Write-Host ("[hygiene] non-Rayman dirty tree remains: count={0}; samples={1}; report={2}" -f [int]$report.dirty_tree.non_rayman_count, ((@($report.dirty_tree.non_rayman_paths | Select-Object -First 5)) -join ', '), $reportPath) -ForegroundColor Yellow
     }
     if ($autoFix.PSObject.Properties['attempted'] -and [bool]$autoFix.attempted -and -not [bool]$autoFix.success -and -not [string]::IsNullOrWhiteSpace([string]$autoFix.error)) {
-      Write-Host ("⚠️  [hygiene] Rayman 跟踪噪声自动修复失败: {0}" -f [string]$autoFix.error) -ForegroundColor Yellow
+      Write-Host ("[hygiene] tracked-noise auto-fix failed: {0}" -f [string]$autoFix.error) -ForegroundColor Yellow
     }
   }
 

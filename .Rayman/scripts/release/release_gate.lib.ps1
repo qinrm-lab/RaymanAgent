@@ -445,6 +445,32 @@ function Invoke-ReleaseGateLaneAutoRun {
     }
   }
 
+  $isWindowsHost = ($env:OS -eq 'Windows_NT')
+  if (Get-Command Test-RaymanWindowsPlatform -ErrorAction SilentlyContinue) {
+    $isWindowsHost = [bool](Test-RaymanWindowsPlatform)
+  }
+  if ($isWindowsHost -and $commandText -match '^\s*bash\s+(.+)$' -and (Get-Command Resolve-RaymanBashCommand -ErrorAction SilentlyContinue)) {
+    $bashRunner = Resolve-RaymanBashCommand
+    if (
+      $null -ne $bashRunner -and
+      -not [string]::IsNullOrWhiteSpace([string]$bashRunner.path) -and
+      [string]$bashRunner.mode -ne 'wsl'
+    ) {
+      $bashArgs = [string]$matches[1].Trim()
+      $escapedBashPath = ([string]$bashRunner.path).Replace("'", "''")
+      $commandText = "& '$escapedBashPath' $bashArgs"
+    }
+  }
+
+  $workspaceCommandPrefix = ''
+  if (-not [string]::IsNullOrWhiteSpace([string]$WorkspaceRoot)) {
+    $escapedWorkspaceRoot = ([string]$WorkspaceRoot).Replace("'", "''")
+    $workspaceCommandPrefix = "Set-Location -LiteralPath '$escapedWorkspaceRoot'; "
+  }
+  if (-not [string]::IsNullOrWhiteSpace($workspaceCommandPrefix)) {
+    $commandText = $workspaceCommandPrefix + $commandText
+  }
+
   if ($null -ne $Runner) {
     $result = & $Runner $commandText
     if ($null -ne $result) {

@@ -5,6 +5,13 @@ if (-not (Get-Command Resolve-RaymanAutoSaveTargetPaths -ErrorAction SilentlyCon
   }
 }
 
+if (-not (Get-Command Ensure-RaymanSharedSession -ErrorAction SilentlyContinue)) {
+  $sharedSessionCommonPath = Join-Path $PSScriptRoot '..\state\shared_session_common.ps1'
+  if (Test-Path -LiteralPath $sharedSessionCommonPath -PathType Leaf) {
+    . $sharedSessionCommonPath
+  }
+}
+
 if (Test-RaymanWindowsPlatform -and $null -eq ('RaymanLastInputNative' -as [type])) {
   Add-Type -TypeDefinition @"
 using System;
@@ -392,6 +399,608 @@ function Get-RaymanNetworkResumePrompt {
   return '网络已恢复。请从中断处继续，不要从头开始。Continue from the interruption point; do not restart from scratch.'
 }
 
+function Get-RaymanNetworkResumeRuntimeDirectory {
+  param([string]$WorkspaceRoot)
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $runtimeDir = Join-Path $resolvedRoot '.Rayman\runtime\network_resume'
+  if (-not (Test-Path -LiteralPath $runtimeDir -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+  }
+  return $runtimeDir
+}
+
+function Get-RaymanNetworkResumePendingStatePath {
+  param([string]$WorkspaceRoot)
+
+  return (Join-Path (Get-RaymanNetworkResumeRuntimeDirectory -WorkspaceRoot $WorkspaceRoot) 'pending_continuation.json')
+}
+
+function Get-RaymanNetworkResumeDispatchSummaryPath {
+  param([string]$WorkspaceRoot)
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  return (Join-Path $resolvedRoot '.Rayman\runtime\agent_runs\last.json')
+}
+
+function Read-RaymanNetworkResumeJsonOrNull {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace([string]$Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $null
+  }
+
+  if (Get-Command Read-RaymanJsonFile -ErrorAction SilentlyContinue) {
+    $doc = Read-RaymanJsonFile -Path $Path
+    if ($null -ne $doc -and [bool]$doc.Exists -and -not [bool]$doc.ParseFailed) {
+      return $doc.Obj
+    }
+    return $null
+  }
+
+  try {
+    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    return $null
+  }
+}
+
+function Read-RaymanNetworkResumePendingState {
+  param([string]$WorkspaceRoot)
+
+  return (Read-RaymanNetworkResumeJsonOrNull -Path (Get-RaymanNetworkResumePendingStatePath -WorkspaceRoot $WorkspaceRoot))
+}
+
+function Write-RaymanNetworkResumePendingState {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Pending
+  )
+
+  $path = Get-RaymanNetworkResumePendingStatePath -WorkspaceRoot $WorkspaceRoot
+  $jsonText = (($Pending | ConvertTo-Json -Depth 16).TrimEnd() + "`n")
+  if (Get-Command Write-RaymanUtf8NoBom -ErrorAction SilentlyContinue) {
+    Write-RaymanUtf8NoBom -Path $path -Content $jsonText
+  } else {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($path, $jsonText, $encoding)
+  }
+  return $path
+}
+
+function Remove-RaymanNetworkResumePendingState {
+  param([string]$WorkspaceRoot)
+
+  $path = Get-RaymanNetworkResumePendingStatePath -WorkspaceRoot $WorkspaceRoot
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    return $true
+  }
+  return $false
+}
+
+function Get-RaymanNetworkResumeFirstSaveIdleSeconds {
+  return 60
+}
+
+function Get-RaymanNetworkResumeStableHash {
+  param([AllowEmptyString()][string]$Value)
+
+  if (Get-Command Get-RaymanSharedSessionStableHash -ErrorAction SilentlyContinue) {
+    return (Get-RaymanSharedSessionStableHash -Value $Value)
+  }
+  if (Get-Command Get-RaymanSessionStableHash -ErrorAction SilentlyContinue) {
+    return (Get-RaymanSessionStableHash -Value $Value)
+  }
+
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+    $hash = $sha.ComputeHash($bytes)
+    return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-RaymanNetworkResumeIdentityKey {
+  param(
+    [string]$TaskKind = '',
+    [string]$TaskIntent = '',
+    [string]$EffectiveTaskKey = '',
+    [string]$SharedSessionId = '',
+    [string]$RunId = ''
+  )
+
+  return (Get-RaymanNetworkResumeStableHash -Value (($TaskKind, $TaskIntent, $EffectiveTaskKey, $SharedSessionId, $RunId) -join '|'))
+}
+
+function Get-RaymanNetworkResumePreviewText {
+  param(
+    [string]$Text,
+    [int]$MaxLength = 2400
+  )
+
+  $normalized = ([string]$Text).Trim()
+  if ([string]::IsNullOrWhiteSpace($normalized)) {
+    return ''
+  }
+
+  if ($normalized.Length -gt $MaxLength) {
+    return ($normalized.Substring(0, $MaxLength) + '...')
+  }
+  return $normalized
+}
+
+function Get-RaymanNetworkResumeTaskIntentFromSummary {
+  param([object]$Summary)
+
+  if ($null -eq $Summary) {
+    return ''
+  }
+
+  $networkResume = if ($Summary.PSObject.Properties['network_resume']) { $Summary.network_resume } else { $null }
+  foreach ($value in @(
+      $(if ($null -ne $networkResume -and $networkResume.PSObject.Properties['task_intent']) { [string]$networkResume.task_intent } else { '' }),
+      $(if ($Summary.PSObject.Properties['task']) { [string]$Summary.task } else { '' }),
+      $(if ($Summary.PSObject.Properties['executed_command']) { [string]$Summary.executed_command } else { '' }),
+      $(if ($Summary.PSObject.Properties['selection_reason']) { [string]$Summary.selection_reason } else { '' })
+    )) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+      return ([string]$value).Trim()
+    }
+  }
+
+  return ''
+}
+
+function Get-RaymanNetworkResumeSummaryState {
+  param(
+    [object]$Summary,
+    [object]$Candidate = $null
+  )
+
+  $networkResume = if ($null -ne $Summary -and $Summary.PSObject.Properties['network_resume']) { $Summary.network_resume } else { $null }
+  $tempCheckpoint = if ($null -ne $Summary -and $Summary.PSObject.Properties['temp_checkpoint']) { $Summary.temp_checkpoint } else { $null }
+  $tempArtifacts = if ($null -ne $tempCheckpoint -and $tempCheckpoint.PSObject.Properties['artifacts']) { $tempCheckpoint.artifacts } else { $null }
+  $sharedSession = if ($null -ne $Summary -and $Summary.PSObject.Properties['shared_session']) { $Summary.shared_session } else { $null }
+
+  $taskIntent = Get-RaymanNetworkResumeTaskIntentFromSummary -Summary $Summary
+  $taskKind = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['task_kind'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.task_kind)) {
+    [string]$networkResume.task_kind
+  } elseif ($null -ne $Summary -and $Summary.PSObject.Properties['task_kind']) {
+    [string]$Summary.task_kind
+  } else {
+    'dispatch'
+  }
+
+  $preferredBackend = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['preferred_backend'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.preferred_backend)) {
+    [string]$networkResume.preferred_backend
+  } elseif ($null -ne $Summary -and $Summary.PSObject.Properties['preferred_backend']) {
+    [string]$Summary.preferred_backend
+  } elseif ($null -ne $Summary -and $Summary.PSObject.Properties['selected_backend']) {
+    [string]$Summary.selected_backend
+  } elseif ($null -ne $Candidate -and $Candidate.PSObject.Properties['backend']) {
+    [string]$Candidate.backend
+  } else {
+    ''
+  }
+
+  $selectedBackend = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['selected_backend'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.selected_backend)) {
+    [string]$networkResume.selected_backend
+  } elseif ($null -ne $Summary -and $Summary.PSObject.Properties['selected_backend']) {
+    [string]$Summary.selected_backend
+  } elseif ($null -ne $Candidate -and $Candidate.PSObject.Properties['backend']) {
+    [string]$Candidate.backend
+  } else {
+    ''
+  }
+
+  $sharedSessionId = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['shared_session_id'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.shared_session_id)) {
+    [string]$networkResume.shared_session_id
+  } elseif ($null -ne $sharedSession -and $sharedSession.PSObject.Properties['session_id']) {
+    [string]$sharedSession.session_id
+  } else {
+    ''
+  }
+
+  $sharedSessionTaskSlug = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['shared_session_task_slug'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.shared_session_task_slug)) {
+    [string]$networkResume.shared_session_task_slug
+  } elseif ($null -ne $sharedSession -and $sharedSession.PSObject.Properties['task_slug']) {
+    [string]$sharedSession.task_slug
+  } else {
+    ''
+  }
+
+  $sessionSlug = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['session_slug'] -and -not [string]::IsNullOrWhiteSpace([string]$networkResume.session_slug)) {
+    [string]$networkResume.session_slug
+  } elseif ($null -ne $tempCheckpoint -and $tempCheckpoint.PSObject.Properties['session_slug']) {
+    [string]$tempCheckpoint.session_slug
+  } else {
+    ''
+  }
+
+  $handoverPath = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['handover_path']) {
+    [string]$networkResume.handover_path
+  } elseif ($null -ne $tempArtifacts -and $tempArtifacts.PSObject.Properties['handover_path']) {
+    [string]$tempArtifacts.handover_path
+  } else {
+    ''
+  }
+
+  $patchPath = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['patch_path']) {
+    [string]$networkResume.patch_path
+  } elseif ($null -ne $tempArtifacts -and $tempArtifacts.PSObject.Properties['auto_save_patch_path']) {
+    [string]$tempArtifacts.auto_save_patch_path
+  } else {
+    ''
+  }
+
+  $metaPath = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['meta_path']) {
+    [string]$networkResume.meta_path
+  } elseif ($null -ne $tempArtifacts -and $tempArtifacts.PSObject.Properties['auto_save_meta_path']) {
+    [string]$tempArtifacts.auto_save_meta_path
+  } else {
+    ''
+  }
+
+  $checkpointId = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['checkpoint_id']) {
+    [string]$networkResume.checkpoint_id
+  } elseif ($null -ne $sharedSession -and $sharedSession.PSObject.Properties['checkpoint_id']) {
+    [string]$sharedSession.checkpoint_id
+  } else {
+    ''
+  }
+
+  return [pscustomobject]@{
+    task_kind = $taskKind
+    task_intent = $taskIntent
+    effective_task_key = $(if ($null -ne $Summary -and $Summary.PSObject.Properties['effective_task_key']) { [string]$Summary.effective_task_key } else { '' })
+    preferred_backend = $preferredBackend
+    selected_backend = $selectedBackend
+    account_alias = if ($null -ne $networkResume -and $networkResume.PSObject.Properties['account_alias']) { [string]$networkResume.account_alias } else { '' }
+    shared_session_id = $sharedSessionId
+    shared_session_task_slug = $sharedSessionTaskSlug
+    checkpoint_id = $checkpointId
+    session_slug = $sessionSlug
+    handover_path = $handoverPath
+    patch_path = $patchPath
+    meta_path = $metaPath
+    generated_at = $(if ($null -ne $Summary -and $Summary.PSObject.Properties['generated_at']) { [string]$Summary.generated_at } else { '' })
+    run_id = $(if ($null -ne $Summary -and $Summary.PSObject.Properties['run_id']) { [string]$Summary.run_id } else { '' })
+  }
+}
+
+function Test-RaymanNetworkResumeSummaryMatchesPending {
+  param(
+    [object]$Summary,
+    [object]$Pending
+  )
+
+  if ($null -eq $Summary -or $null -eq $Pending) {
+    return $false
+  }
+
+  $summaryState = Get-RaymanNetworkResumeSummaryState -Summary $Summary
+  if (-not [string]::IsNullOrWhiteSpace([string]$Pending.shared_session_id) -and [string]$summaryState.shared_session_id -eq [string]$Pending.shared_session_id) {
+    return $true
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Pending.effective_task_key) -and [string]$summaryState.effective_task_key -eq [string]$Pending.effective_task_key) {
+    return $true
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Pending.identity_key)) {
+    $summaryIdentityKey = Get-RaymanNetworkResumeIdentityKey -TaskKind ([string]$summaryState.task_kind) -TaskIntent ([string]$summaryState.task_intent) -EffectiveTaskKey ([string]$summaryState.effective_task_key) -SharedSessionId ([string]$summaryState.shared_session_id) -RunId ([string]$summaryState.run_id)
+    if ([string]$summaryIdentityKey -eq [string]$Pending.identity_key) {
+      return $true
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Pending.run_id) -and $Summary.PSObject.Properties['run_id'] -and [string]$Summary.run_id -eq [string]$Pending.run_id) {
+    return $true
+  }
+  return $false
+}
+
+function Get-RaymanNetworkResumeRetryDueAt {
+  param(
+    [object]$Pending,
+    [int]$RetrySeconds
+  )
+
+  if ($null -eq $Pending) {
+    return $null
+  }
+
+  $baseTime = ConvertTo-RaymanNullableDateTime -Value $(if ($Pending.PSObject.Properties['last_attempt_at']) { [string]$Pending.last_attempt_at } else { '' })
+  if ($null -eq $baseTime) {
+    return $null
+  }
+  return ([datetime]$baseTime).AddSeconds([int][Math]::Max(0, $RetrySeconds))
+}
+
+function Format-RaymanNetworkResumeSharedSessionPreamble {
+  param(
+    [string]$SessionId,
+    [string]$TaskSlug,
+    [object]$Continuation
+  )
+
+  if ($null -eq $Continuation) {
+    return ''
+  }
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add('[RaymanSharedSession]') | Out-Null
+  $lines.Add(("session_id={0}" -f [string]$SessionId)) | Out-Null
+  if (-not [string]::IsNullOrWhiteSpace([string]$TaskSlug)) {
+    $lines.Add(("task_slug={0}" -f [string]$TaskSlug)) | Out-Null
+  }
+  if ($Continuation.PSObject.Properties['summary_text'] -and -not [string]::IsNullOrWhiteSpace([string]$Continuation.summary_text)) {
+    $lines.Add(("summary={0}" -f [string]$Continuation.summary_text)) | Out-Null
+  }
+
+  $nativeLinks = @($(if ($Continuation.PSObject.Properties['native_resume_links']) { $Continuation.native_resume_links } else { @() }))
+  if ($nativeLinks.Count -gt 0) {
+    $lines.Add('native_resume_links:') | Out-Null
+    foreach ($link in $nativeLinks) {
+      $lines.Add(("- {0}:{1} mode={2}" -f [string]$link.vendor_name, [string]$link.vendor_session_id, [string]$link.continuity_mode)) | Out-Null
+    }
+  }
+
+  $queuedMessages = @($(if ($Continuation.PSObject.Properties['queued_messages']) { $Continuation.queued_messages } else { @() }))
+  if ($queuedMessages.Count -gt 0) {
+    $lines.Add('queued_messages:') | Out-Null
+    foreach ($message in $queuedMessages | Select-Object -First 3) {
+      $text = Get-RaymanNetworkResumePreviewText -Text ([string]$message.content_text) -MaxLength 240
+      $lines.Add(("- [{0}] {1}" -f [string]$message.role, $text)) | Out-Null
+    }
+  }
+
+  $recentTail = @($(if ($Continuation.PSObject.Properties['recent_tail']) { $Continuation.recent_tail } else { @() }))
+  if ($recentTail.Count -gt 0) {
+    $lines.Add('recent_tail:') | Out-Null
+    foreach ($message in $recentTail | Select-Object -Last 4) {
+      $text = if (-not [string]::IsNullOrWhiteSpace([string]$message.resume_text)) { [string]$message.resume_text } else { [string]$message.content_text }
+      $text = Get-RaymanNetworkResumePreviewText -Text $text -MaxLength 240
+      $lines.Add(("- [{0}] {1}" -f [string]$message.role, $text)) | Out-Null
+    }
+  }
+  $lines.Add('[/RaymanSharedSession]') | Out-Null
+  return ($lines -join "`n")
+}
+
+function Get-RaymanNetworkResumeContinuationPreamble {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Pending
+  )
+
+  $parts = New-Object System.Collections.Generic.List[string]
+  $parts.Add('[RaymanNetworkResume]') | Out-Null
+  $parts.Add((Get-RaymanNetworkResumePrompt)) | Out-Null
+
+  if ($null -ne $Pending -and $Pending.PSObject.Properties['shared_session_id'] -and -not [string]::IsNullOrWhiteSpace([string]$Pending.shared_session_id) -and (Get-Command Get-RaymanSharedSessionContinueContext -ErrorAction SilentlyContinue)) {
+    try {
+      $context = Get-RaymanSharedSessionContinueContext -WorkspaceRoot $WorkspaceRoot -SessionId ([string]$Pending.shared_session_id) -MessageLimit 120
+      if ($null -ne $context -and [bool]$context.success -and $context.PSObject.Properties['continuation']) {
+        $sharedPreamble = Format-RaymanNetworkResumeSharedSessionPreamble -SessionId ([string]$Pending.shared_session_id) -TaskSlug $(if ($Pending.PSObject.Properties['shared_session_task_slug']) { [string]$Pending.shared_session_task_slug } else { '' }) -Continuation $context.continuation
+        if (-not [string]::IsNullOrWhiteSpace($sharedPreamble)) {
+          $parts.Add($sharedPreamble) | Out-Null
+        }
+      }
+    } catch {}
+  }
+
+  $handoverPath = if ($null -ne $Pending -and $Pending.PSObject.Properties['handover_path']) { [string]$Pending.handover_path } else { '' }
+  if (-not [string]::IsNullOrWhiteSpace($handoverPath) -and (Test-Path -LiteralPath $handoverPath -PathType Leaf)) {
+    try {
+      $handoverText = Get-RaymanNetworkResumePreviewText -Text (Get-Content -LiteralPath $handoverPath -Raw -Encoding UTF8 -ErrorAction Stop) -MaxLength 2400
+      if (-not [string]::IsNullOrWhiteSpace($handoverText)) {
+        $parts.Add('[RaymanSavedState]') | Out-Null
+        $parts.Add($handoverText) | Out-Null
+        $parts.Add('[/RaymanSavedState]') | Out-Null
+      }
+    } catch {}
+  }
+
+  if ($null -ne $Pending -and $Pending.PSObject.Properties['failure_text'] -and -not [string]::IsNullOrWhiteSpace([string]$Pending.failure_text)) {
+    $parts.Add(("latest_failure={0}" -f (Get-RaymanNetworkResumePreviewText -Text ([string]$Pending.failure_text) -MaxLength 600))) | Out-Null
+  }
+
+  $parts.Add('[/RaymanNetworkResume]') | Out-Null
+  return (($parts | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n")
+}
+
+function Save-RaymanNetworkResumePendingStateFromCandidate {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Candidate,
+    [object]$ExistingPending = $null
+  )
+
+  if ($null -eq $Candidate -or -not [bool]$Candidate.available) {
+    return $null
+  }
+
+  $resolvedRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $summary = if ($Candidate.PSObject.Properties['summary']) { $Candidate.summary } else { $null }
+  $summaryState = Get-RaymanNetworkResumeSummaryState -Summary $summary -Candidate $Candidate
+  $taskIntent = [string]$summaryState.task_intent
+  if ([string]::IsNullOrWhiteSpace($taskIntent)) {
+    $taskIntent = if ($Candidate.PSObject.Properties['desktop_session_id'] -and -not [string]::IsNullOrWhiteSpace([string]$Candidate.desktop_session_id)) {
+      ('continue desktop session ' + [string]$Candidate.desktop_session_id)
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Candidate.run_id)) {
+      ('continue interrupted task ' + [string]$Candidate.run_id)
+    } else {
+      'continue interrupted workspace task'
+    }
+  }
+
+  $taskKind = if ([string]::IsNullOrWhiteSpace([string]$summaryState.task_kind)) { 'dispatch' } else { [string]$summaryState.task_kind }
+  $preferredBackend = if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.preferred_backend)) { [string]$summaryState.preferred_backend } elseif ($Candidate.PSObject.Properties['backend']) { [string]$Candidate.backend } else { '' }
+  $selectedBackend = if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.selected_backend)) { [string]$summaryState.selected_backend } elseif ($Candidate.PSObject.Properties['backend']) { [string]$Candidate.backend } else { '' }
+  $accountAlias = [string]$summaryState.account_alias
+  $forcedCheckpoint = $null
+
+  if (([string]::IsNullOrWhiteSpace([string]$summaryState.session_slug) -or [string]::IsNullOrWhiteSpace([string]$summaryState.handover_path)) -and $null -ne $summary -and (Get-Command Invoke-RaymanSessionCommandCheckpoint -ErrorAction SilentlyContinue)) {
+    try {
+      $durationMs = if ($summary.PSObject.Properties['duration_ms']) { [int]$summary.duration_ms } else { 0 }
+      $thresholdMs = if (Get-Command Get-RaymanSessionAutoTempThresholdMs -ErrorAction SilentlyContinue) { [int](Get-RaymanSessionAutoTempThresholdMs) } else { 60000 }
+      if ($durationMs -lt $thresholdMs) {
+        $durationMs = $thresholdMs
+      }
+      $checkpointBackend = if (-not [string]::IsNullOrWhiteSpace($selectedBackend)) { $selectedBackend } elseif (-not [string]::IsNullOrWhiteSpace($preferredBackend)) { $preferredBackend } else { 'local' }
+      $forcedCheckpoint = Invoke-RaymanSessionCommandCheckpoint -WorkspaceRoot $resolvedRoot -DurationMs $durationMs -Backend $checkpointBackend -AccountAlias $accountAlias -CommandText $taskIntent
+      if ($null -ne $forcedCheckpoint -and [bool]$forcedCheckpoint.checkpointed) {
+        $summaryState.session_slug = [string]$forcedCheckpoint.session_slug
+        if ($forcedCheckpoint.PSObject.Properties['artifacts'] -and $null -ne $forcedCheckpoint.artifacts) {
+          $summaryState.handover_path = if ($forcedCheckpoint.artifacts.PSObject.Properties['handover_path']) { [string]$forcedCheckpoint.artifacts.handover_path } else { [string]$summaryState.handover_path }
+          $summaryState.patch_path = if ($forcedCheckpoint.artifacts.PSObject.Properties['auto_save_patch_path']) { [string]$forcedCheckpoint.artifacts.auto_save_patch_path } else { [string]$summaryState.patch_path }
+          $summaryState.meta_path = if ($forcedCheckpoint.artifacts.PSObject.Properties['auto_save_meta_path']) { [string]$forcedCheckpoint.artifacts.auto_save_meta_path } else { [string]$summaryState.meta_path }
+        }
+      }
+    } catch {}
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.session_slug) -and (Get-Command Get-RaymanSessionPaths -ErrorAction SilentlyContinue)) {
+    $sessionPaths = Get-RaymanSessionPaths -WorkspaceRoot $resolvedRoot -Slug ([string]$summaryState.session_slug)
+    if ([string]::IsNullOrWhiteSpace([string]$summaryState.handover_path) -and $sessionPaths.PSObject.Properties['handover_path']) {
+      $summaryState.handover_path = [string]$sessionPaths.handover_path
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$summaryState.patch_path) -and $sessionPaths.PSObject.Properties['auto_save_patch_path']) {
+      $summaryState.patch_path = [string]$sessionPaths.auto_save_patch_path
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$summaryState.meta_path) -and $sessionPaths.PSObject.Properties['auto_save_meta_path']) {
+      $summaryState.meta_path = [string]$sessionPaths.auto_save_meta_path
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$summaryState.shared_session_task_slug)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.session_slug)) {
+      $summaryState.shared_session_task_slug = [string]$summaryState.session_slug
+    } elseif (Get-Command Resolve-RaymanSharedSessionSlug -ErrorAction SilentlyContinue) {
+      $summaryState.shared_session_task_slug = Resolve-RaymanSharedSessionSlug -Task $taskIntent -TaskKind $taskKind -Command $taskIntent
+    }
+  }
+
+  $sharedEnsure = $null
+  if (Get-Command Ensure-RaymanSharedSession -ErrorAction SilentlyContinue) {
+    try {
+      $sharedEnsure = Ensure-RaymanSharedSession -WorkspaceRoot $resolvedRoot -TaskSlug ([string]$summaryState.shared_session_task_slug) -DisplayName $taskIntent -Status 'needs_attention' -SummaryText $taskIntent -ResumeSummaryText $taskIntent -RecapText $taskIntent -Metadata @{
+        run_id = [string]$Candidate.run_id
+        task_kind = $taskKind
+        backend = $selectedBackend
+        candidate_source = if ($Candidate.PSObject.Properties['candidate_source']) { [string]$Candidate.candidate_source } else { 'agent_run' }
+        source_action = 'network_resume'
+      } -IgnoreDisabled
+      if ($null -ne $sharedEnsure -and [bool]$sharedEnsure.success) {
+        $summaryState.shared_session_id = [string]$sharedEnsure.session.session_id
+      }
+    } catch {}
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.shared_session_id) -and -not [string]::IsNullOrWhiteSpace([string]$summaryState.session_slug) -and (Get-Command Save-RaymanSharedSessionCheckpoint -ErrorAction SilentlyContinue)) {
+    try {
+      $checkpointSummary = if ($Candidate.PSObject.Properties['failure_text']) { [string]$Candidate.failure_text } else { $taskIntent }
+      $checkpointResult = Save-RaymanSharedSessionCheckpoint -WorkspaceRoot $resolvedRoot -SessionId ([string]$summaryState.shared_session_id) -CheckpointKind 'network-resume-save' -SessionSlug ([string]$summaryState.session_slug) -SessionKind 'auto_temp' -HandoverPath ([string]$summaryState.handover_path) -PatchPath ([string]$summaryState.patch_path) -MetaPath ([string]$summaryState.meta_path) -SummaryText $checkpointSummary -Metadata @{
+        run_id = [string]$Candidate.run_id
+        candidate_source = if ($Candidate.PSObject.Properties['candidate_source']) { [string]$Candidate.candidate_source } else { 'agent_run' }
+      }
+      if ($null -ne $checkpointResult -and $checkpointResult.PSObject.Properties['checkpoint_id']) {
+        $summaryState.checkpoint_id = [string]$checkpointResult.checkpoint_id
+      }
+    } catch {}
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.shared_session_id) -and (Get-Command Sync-RaymanSharedSessionAdapters -ErrorAction SilentlyContinue)) {
+    try {
+      $null = Sync-RaymanSharedSessionAdapters -WorkspaceRoot $resolvedRoot -SessionId ([string]$summaryState.shared_session_id) -AccountAlias $accountAlias
+    } catch {}
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$summaryState.shared_session_id) -and (Get-Command Add-RaymanSharedSessionMessage -ErrorAction SilentlyContinue)) {
+    try {
+      $messageText = if ($Candidate.PSObject.Properties['failure_text'] -and -not [string]::IsNullOrWhiteSpace([string]$Candidate.failure_text)) {
+        [string]$Candidate.failure_text
+      } else {
+        'Saved continuation state after transient provider outage.'
+      }
+      $messageId = 'network-resume-save-' + (Get-RaymanNetworkResumeStableHash -Value (($Candidate.run_id, $messageText, $summaryState.handover_path, $summaryState.patch_path, $summaryState.meta_path) -join '|')).Substring(0, 24)
+      $null = Add-RaymanSharedSessionMessage -WorkspaceRoot $resolvedRoot -SessionId ([string]$summaryState.shared_session_id) -Role assistant -ContentText $messageText -ResumeText $taskIntent -RecapText $taskIntent -AuthorKind 'rayman' -AuthorName 'Rayman Network Resume' -SourceKind 'network_resume_save' -Artifact @{
+        handover_path = [string]$summaryState.handover_path
+        patch_path = [string]$summaryState.patch_path
+        meta_path = [string]$summaryState.meta_path
+      } -Metadata @{
+        run_id = [string]$Candidate.run_id
+        task_kind = $taskKind
+      } -MessageId $messageId
+    } catch {}
+  }
+
+  $identityKey = Get-RaymanNetworkResumeIdentityKey -TaskKind $taskKind -TaskIntent $taskIntent -EffectiveTaskKey ([string]$summaryState.effective_task_key) -SharedSessionId ([string]$summaryState.shared_session_id) -RunId ([string]$Candidate.run_id)
+  $stateKey = Get-RaymanNetworkResumeStableHash -Value (($identityKey, $summaryState.session_slug, $summaryState.checkpoint_id, $summaryState.handover_path, $summaryState.patch_path, $summaryState.meta_path, $summaryState.generated_at, $(if ($Candidate.PSObject.Properties['failure_text']) { [string]$Candidate.failure_text } else { '' })) -join '|')
+
+  if ($null -ne $ExistingPending -and $ExistingPending.PSObject.Properties['state_key'] -and [string]$ExistingPending.state_key -eq $stateKey) {
+    return $ExistingPending
+  }
+
+  $now = Get-Date
+  $firstSavedAt = if ($null -ne $ExistingPending -and $ExistingPending.PSObject.Properties['identity_key'] -and [string]$ExistingPending.identity_key -eq $identityKey -and $ExistingPending.PSObject.Properties['first_saved_at']) {
+    [string]$ExistingPending.first_saved_at
+  } else {
+    $now.ToString('o')
+  }
+  $attemptCount = if ($null -ne $ExistingPending -and $ExistingPending.PSObject.Properties['identity_key'] -and [string]$ExistingPending.identity_key -eq $identityKey -and $ExistingPending.PSObject.Properties['attempt_count']) {
+    [int]$ExistingPending.attempt_count
+  } else {
+    0
+  }
+  $lastAttemptAt = if ($null -ne $ExistingPending -and $ExistingPending.PSObject.Properties['identity_key'] -and [string]$ExistingPending.identity_key -eq $identityKey -and $ExistingPending.PSObject.Properties['last_attempt_at']) {
+    [string]$ExistingPending.last_attempt_at
+  } else {
+    ''
+  }
+
+  $pending = [ordered]@{
+    schema = 'rayman.watch.network_resume_pending.v1'
+    workspace_root = $resolvedRoot
+    run_id = [string]$Candidate.run_id
+    candidate_source = if ($Candidate.PSObject.Properties['candidate_source']) { [string]$Candidate.candidate_source } else { 'agent_run' }
+    backend = if ($Candidate.PSObject.Properties['backend']) { [string]$Candidate.backend } else { $selectedBackend }
+    task_kind = $taskKind
+    task = $taskIntent
+    effective_task_key = [string]$summaryState.effective_task_key
+    preferred_backend = $preferredBackend
+    selected_backend = $selectedBackend
+    account_alias = $accountAlias
+    shared_session_id = [string]$summaryState.shared_session_id
+    shared_session_task_slug = [string]$summaryState.shared_session_task_slug
+    session_slug = [string]$summaryState.session_slug
+    checkpoint_id = [string]$summaryState.checkpoint_id
+    handover_path = [string]$summaryState.handover_path
+    patch_path = [string]$summaryState.patch_path
+    meta_path = [string]$summaryState.meta_path
+    failure_classification = if ($Candidate.PSObject.Properties['failure_classification']) { [string]$Candidate.failure_classification.classification } else { '' }
+    failure_kind = if ($Candidate.PSObject.Properties['failure_classification'] -and $Candidate.failure_classification.PSObject.Properties['failure_kind']) { [string]$Candidate.failure_classification.failure_kind } else { '' }
+    failure_text = if ($Candidate.PSObject.Properties['failure_text']) { [string]$Candidate.failure_text } else { '' }
+    native_resume_supported = if ($Candidate.PSObject.Properties['native_resume_supported']) { [bool]$Candidate.native_resume_supported } else { $false }
+    resume_target_kind = if ($Candidate.PSObject.Properties['resume_target_kind']) { [string]$Candidate.resume_target_kind } else { '' }
+    desktop_session_id = if ($Candidate.PSObject.Properties['desktop_session_id']) { [string]$Candidate.desktop_session_id } else { '' }
+    desktop_session_path = if ($Candidate.PSObject.Properties['desktop_session_path']) { [string]$Candidate.desktop_session_path } else { '' }
+    summary_generated_at = [string]$summaryState.generated_at
+    failure_started_at = if ($Candidate.PSObject.Properties['failure_started_at'] -and $null -ne $Candidate.failure_started_at) { ([datetime]$Candidate.failure_started_at).ToString('o') } else { '' }
+    first_saved_at = $firstSavedAt
+    pending_state_updated_at = $now.ToString('o')
+    last_attempt_at = $lastAttemptAt
+    attempt_count = $attemptCount
+    identity_key = $identityKey
+    state_key = $stateKey
+    resume_mode = if ([bool]$(if ($Candidate.PSObject.Properties['native_resume_supported']) { $Candidate.native_resume_supported } else { $false })) { 'native' } else { 'shared_session' }
+  }
+
+  Write-RaymanNetworkResumePendingState -WorkspaceRoot $resolvedRoot -Pending $pending | Out-Null
+  return ([pscustomobject]$pending)
+}
+
 function Get-RaymanNetworkResumeWatchDelayMs {
   param([object]$State)
 
@@ -404,13 +1013,11 @@ function Get-RaymanNetworkResumeWatchStartupMessage {
 
   if ($null -eq $State) { return '[network-resume] disabled' }
 
-  return ("[network-resume] started (poll={0}ms, network-threshold={1}s, throttle-wait={2}s, timeout={3}ms, retry={4}s, max-attempts={5})" -f
+  return ("[network-resume] started (poll={0}ms, first-save-idle={1}s, retry={2}s, probe-timeout={3}ms)" -f
     [int]$State.PollMs,
-    [int]$State.ThresholdSeconds,
-    [int]$State.ThrottleWaitSeconds,
-    [int]$State.ProbeTimeoutMs,
+    [int]$State.FirstSaveIdleSeconds,
     [int]$State.RetrySeconds,
-    [int]$State.MaxAttempts)
+    [int]$State.ProbeTimeoutMs)
 }
 
 function Get-RaymanNetworkResumeRawEnvString {
@@ -608,6 +1215,18 @@ function Get-RaymanNetworkResumeDesktopFailurePatterns {
     'connection reset',
     'connection refused',
     'network unreachable',
+    'internal server error',
+    'bad gateway',
+    'gateway timeout',
+    'service unavailable',
+    'temporarily unavailable',
+    'upstream',
+    'backend overloaded',
+    'server error',
+    '500',
+    '502',
+    '503',
+    '504',
     'dns',
     'insufficient_quota',
     'quota',
@@ -953,6 +1572,7 @@ function Get-RaymanNetworkResumeFailureClassification {
       is_network = $false
       trigger_kind = 'none'
       classification = 'insufficient_signal'
+      failure_kind = ''
       matched = ''
     }
   }
@@ -993,6 +1613,7 @@ function Get-RaymanNetworkResumeFailureClassification {
         is_network = $false
         trigger_kind = 'none'
         classification = 'non_network_error'
+        failure_kind = ''
         matched = $pattern
       }
     }
@@ -1031,6 +1652,44 @@ function Get-RaymanNetworkResumeFailureClassification {
         is_network = $false
         trigger_kind = 'throttle'
         classification = 'transient_throttle_error'
+        failure_kind = 'throttle'
+        matched = $pattern
+      }
+    }
+  }
+
+  $serverPatterns = @(
+    '500',
+    '502',
+    '503',
+    '504',
+    'bad gateway',
+    'gateway timeout',
+    'service unavailable',
+    'temporarily unavailable',
+    'internal server error',
+    'upstream',
+    'backend overloaded',
+    'server error',
+    'upstream connect error',
+    'upstream request timeout',
+    'origin timeout',
+    'origin error',
+    '后端过载',
+    '服务不可用',
+    '网关超时',
+    '坏网关',
+    '服务器错误',
+    '暂时不可用'
+  )
+  foreach ($pattern in $serverPatterns) {
+    if ($normalized.Contains($pattern)) {
+      return [pscustomobject]@{
+        is_resume_candidate = $true
+        is_network = $true
+        trigger_kind = 'network'
+        classification = 'transient_provider_outage'
+        failure_kind = 'network'
         matched = $pattern
       }
     }
@@ -1072,6 +1731,7 @@ function Get-RaymanNetworkResumeFailureClassification {
         is_network = $true
         trigger_kind = 'network'
         classification = 'transient_network_error'
+        failure_kind = 'network'
         matched = $pattern
       }
     }
@@ -1082,6 +1742,7 @@ function Get-RaymanNetworkResumeFailureClassification {
     is_network = $false
     trigger_kind = 'none'
     classification = 'insufficient_signal'
+    failure_kind = ''
     matched = ''
   }
 }
@@ -1113,8 +1774,7 @@ function Get-RaymanNetworkResumeFailureText {
 function Get-RaymanNetworkResumeDispatchCandidate {
   param([string]$WorkspaceRoot)
 
-  $statusPath = Get-RaymanNetworkResumeStatePath -WorkspaceRoot $WorkspaceRoot
-  $summaryPath = Join-Path (Split-Path -Parent $statusPath) 'agent_runs\last.json'
+  $summaryPath = Get-RaymanNetworkResumeDispatchSummaryPath -WorkspaceRoot $WorkspaceRoot
   $summaryDoc = Read-RaymanJsonFile -Path $summaryPath
   if (-not [bool]$summaryDoc.Exists) {
     return [pscustomobject]@{
@@ -1212,10 +1872,17 @@ function Get-RaymanNetworkResumeDispatchCandidate {
 function Get-RaymanNetworkResumeCandidate {
   param([string]$WorkspaceRoot)
 
-  $candidates = @(
-    (Get-RaymanNetworkResumeDispatchCandidate -WorkspaceRoot $WorkspaceRoot)
-    (Get-RaymanNetworkResumeDesktopSessionCandidate -WorkspaceRoot $WorkspaceRoot)
-  )
+  $dispatchCandidate = Get-RaymanNetworkResumeDispatchCandidate -WorkspaceRoot $WorkspaceRoot
+  $desktopCandidate = Get-RaymanNetworkResumeDesktopSessionCandidate -WorkspaceRoot $WorkspaceRoot
+  $candidates = @($dispatchCandidate, $desktopCandidate)
+
+  if ($null -ne $dispatchCandidate -and [string]$dispatchCandidate.reason -eq 'last_run_succeeded') {
+    $dispatchSortKey = Get-RaymanNetworkResumeCandidateSortKey -Candidate $dispatchCandidate
+    $newerFailure = @($candidates | Where-Object { [bool]$_.available -and (Get-RaymanNetworkResumeCandidateSortKey -Candidate $_) -gt $dispatchSortKey })
+    if ($newerFailure.Count -le 0) {
+      return $dispatchCandidate
+    }
+  }
 
   $available = @($candidates | Where-Object { [bool]$_.available })
   if ($available.Count -gt 0) {
@@ -1309,6 +1976,7 @@ function Write-RaymanNetworkResumeStatus {
     [object]$State,
     [string]$Status,
     [object]$Candidate = $null,
+    [object]$Pending = $null,
     [object]$IdleInfo = $null,
     [object]$ProbeResult = $null,
     [string]$Error = '',
@@ -1317,6 +1985,7 @@ function Write-RaymanNetworkResumeStatus {
 
   if ($null -eq $State) { return $null }
 
+  $retryDueAt = Get-RaymanNetworkResumeRetryDueAt -Pending $Pending -RetrySeconds ([int]$State.RetrySeconds)
   $payload = [ordered]@{
     schema = 'rayman.watch.network_resume_status.v1'
     generated_at = (Get-Date).ToString('o')
@@ -1327,7 +1996,8 @@ function Write-RaymanNetworkResumeStatus {
     poll_ms = [int]$State.PollMs
     probe_timeout_ms = [int]$State.ProbeTimeoutMs
     retry_seconds = [int]$State.RetrySeconds
-    max_attempts = [int]$State.MaxAttempts
+    max_attempts = $(if ($State.PSObject.Properties['MaxAttempts']) { [int]$State.MaxAttempts } else { 0 })
+    first_save_idle_seconds = [int]$State.FirstSaveIdleSeconds
     provider_unreachable_since = $(if ($null -ne $State.ProviderUnreachableSince) { ([datetime]$State.ProviderUnreachableSince).ToString('o') } else { '' })
     throttled_since = $(if ($null -ne $State.ThrottledSince) { ([datetime]$State.ThrottledSince).ToString('o') } else { '' })
     idle_since = $(if ($null -ne $State.IdleSince) { ([datetime]$State.IdleSince).ToString('o') } else { '' })
@@ -1338,6 +2008,12 @@ function Write-RaymanNetworkResumeStatus {
     attempt_count = [int]$State.AttemptCount
     suppressed_reason = [string]$State.SuppressedReason
     provider_reachable = $(if ($null -eq $State.LastProviderReachable) { '' } else { [bool]$State.LastProviderReachable })
+    pending_saved = ($null -ne $Pending)
+    pending_checkpoint_id = $(if ($null -ne $Pending -and $Pending.PSObject.Properties['checkpoint_id']) { [string]$Pending.checkpoint_id } else { '' })
+    pending_state_updated_at = $(if ($null -ne $Pending -and $Pending.PSObject.Properties['pending_state_updated_at']) { [string]$Pending.pending_state_updated_at } else { '' })
+    retry_due_at = $(if ($null -ne $retryDueAt) { ([datetime]$retryDueAt).ToString('o') } else { '' })
+    resume_mode = $(if ($null -ne $Pending -and $Pending.PSObject.Properties['resume_mode']) { [string]$Pending.resume_mode } else { '' })
+    cleared_reason = [string]$State.ClearedReason
     candidate_source = $(if ($null -ne $Candidate -and $Candidate.PSObject.Properties['candidate_source']) { [string]$Candidate.candidate_source } else { '' })
     resume_target_kind = $(if ($null -ne $Candidate -and $Candidate.PSObject.Properties['resume_target_kind']) { [string]$Candidate.resume_target_kind } else { '' })
     desktop_session_id = $(if ($null -ne $Candidate -and $Candidate.PSObject.Properties['desktop_session_id']) { [string]$Candidate.desktop_session_id } else { '' })
@@ -1359,8 +2035,27 @@ function Write-RaymanNetworkResumeStatus {
       desktop_session_path = $(if ($Candidate.PSObject.Properties['desktop_session_path']) { [string]$Candidate.desktop_session_path } else { '' })
       summary_path = $(if ($Candidate.PSObject.Properties['summary_path']) { [string]$Candidate.summary_path } else { '' })
       failure_classification = $(if ($Candidate.PSObject.Properties['failure_classification']) { [string]$Candidate.failure_classification.classification } else { '' })
+      failure_kind = $(if ($Candidate.PSObject.Properties['failure_classification'] -and $Candidate.failure_classification.PSObject.Properties['failure_kind']) { [string]$Candidate.failure_classification.failure_kind } else { '' })
       failure_match = $(if ($Candidate.PSObject.Properties['failure_classification']) { [string]$Candidate.failure_classification.matched } else { '' })
       failure_started_at = $(if ($Candidate.PSObject.Properties['failure_started_at'] -and $null -ne $Candidate.failure_started_at) { ([datetime]$Candidate.failure_started_at).ToString('o') } else { '' })
+    }
+  }
+
+  if ($null -ne $Pending) {
+    $payload['pending'] = [ordered]@{
+      run_id = $(if ($Pending.PSObject.Properties['run_id']) { [string]$Pending.run_id } else { '' })
+      task_kind = $(if ($Pending.PSObject.Properties['task_kind']) { [string]$Pending.task_kind } else { '' })
+      task = $(if ($Pending.PSObject.Properties['task']) { [string]$Pending.task } else { '' })
+      backend = $(if ($Pending.PSObject.Properties['backend']) { [string]$Pending.backend } else { '' })
+      preferred_backend = $(if ($Pending.PSObject.Properties['preferred_backend']) { [string]$Pending.preferred_backend } else { '' })
+      shared_session_id = $(if ($Pending.PSObject.Properties['shared_session_id']) { [string]$Pending.shared_session_id } else { '' })
+      session_slug = $(if ($Pending.PSObject.Properties['session_slug']) { [string]$Pending.session_slug } else { '' })
+      checkpoint_id = $(if ($Pending.PSObject.Properties['checkpoint_id']) { [string]$Pending.checkpoint_id } else { '' })
+      resume_mode = $(if ($Pending.PSObject.Properties['resume_mode']) { [string]$Pending.resume_mode } else { '' })
+      pending_state_updated_at = $(if ($Pending.PSObject.Properties['pending_state_updated_at']) { [string]$Pending.pending_state_updated_at } else { '' })
+      first_saved_at = $(if ($Pending.PSObject.Properties['first_saved_at']) { [string]$Pending.first_saved_at } else { '' })
+      last_attempt_at = $(if ($Pending.PSObject.Properties['last_attempt_at']) { [string]$Pending.last_attempt_at } else { '' })
+      attempt_count = $(if ($Pending.PSObject.Properties['attempt_count']) { [int]$Pending.attempt_count } else { 0 })
     }
   }
 
@@ -1423,6 +2118,21 @@ function Reset-RaymanNetworkResumeCandidateState {
   $State.SuppressedReason = ''
 }
 
+function Get-RaymanNetworkResumeConfiguredRetrySeconds {
+  $retryRaw = Get-RaymanNetworkResumeRawEnvString -Name 'RAYMAN_NETWORK_RESUME_RETRY_SECONDS' -Default ''
+  if ([string]::IsNullOrWhiteSpace($retryRaw)) {
+    $retryRaw = Get-RaymanNetworkResumeRawEnvString -Name 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' -Default ''
+  }
+
+  $parsed = 0
+  if (-not [string]::IsNullOrWhiteSpace($retryRaw) -and [int]::TryParse($retryRaw, [ref]$parsed)) {
+    if ($parsed -lt 5) { return 5 }
+    if ($parsed -gt 86400) { return 86400 }
+    return $parsed
+  }
+  return 300
+}
+
 function New-RaymanNetworkResumeWatchState {
   param([string]$WorkspaceRoot)
 
@@ -1432,16 +2142,19 @@ function New-RaymanNetworkResumeWatchState {
     New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
   }
 
+  $retrySeconds = Get-RaymanNetworkResumeConfiguredRetrySeconds
   return [pscustomobject]@{
     WorkspaceRoot = $resolvedRoot
     RuntimeDir = $runtimeDir
     StatusPath = (Get-RaymanNetworkResumeStatePath -WorkspaceRoot $resolvedRoot)
+    PendingPath = (Get-RaymanNetworkResumePendingStatePath -WorkspaceRoot $resolvedRoot)
     PollMs = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_POLL_MS' -Default 5000 -Min 1000 -Max 60000)
     ThresholdSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS' -Default 1800 -Min 60 -Max 86400)
-    ThrottleWaitSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' -Default 300 -Min 30 -Max 86400)
+    ThrottleWaitSeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS' -Default $retrySeconds -Min 30 -Max 86400)
     ProbeTimeoutMs = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_PROBE_TIMEOUT_MS' -Default 5000 -Min 1000 -Max 60000)
-    RetrySeconds = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_RETRY_SECONDS' -Default 300 -Min 5 -Max 86400)
+    RetrySeconds = $retrySeconds
     MaxAttempts = (Get-RaymanEnvInt -Name 'RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS' -Default 3 -Min 1 -Max 20)
+    FirstSaveIdleSeconds = (Get-RaymanNetworkResumeFirstSaveIdleSeconds)
     ProviderUnreachableSince = $null
     ThrottledSince = $null
     IdleSince = $null
@@ -1452,6 +2165,7 @@ function New-RaymanNetworkResumeWatchState {
     AttemptCount = 0
     SuppressedReason = ''
     LastProviderReachable = $null
+    ClearedReason = ''
   }
 }
 
@@ -1711,6 +2425,134 @@ function Start-RaymanCodexDesktopResumeDetached {
   }
 }
 
+function Start-RaymanSharedSessionContinuationDetached {
+  param(
+    [string]$WorkspaceRoot,
+    [object]$Pending
+  )
+
+  $resolvedWorkspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $raymanScript = Join-Path $resolvedWorkspace '.Rayman\rayman.ps1'
+  if (-not (Test-Path -LiteralPath $raymanScript -PathType Leaf)) {
+    throw ("rayman.ps1 not found: {0}" -f $raymanScript)
+  }
+
+  $hostPath = if (Get-Command Resolve-RaymanPowerShellHost -ErrorAction SilentlyContinue) {
+    [string](Resolve-RaymanPowerShellHost)
+  } else {
+    ''
+  }
+  if ([string]::IsNullOrWhiteSpace($hostPath)) {
+    $hostPath = if (Test-RaymanWindowsPlatform) { 'powershell.exe' } else { 'pwsh' }
+  }
+
+  $runtimeDir = Get-RaymanNetworkResumeRuntimeDirectory -WorkspaceRoot $resolvedWorkspace
+  $logStem = Join-Path $runtimeDir ('shared_session_continue_' + [Guid]::NewGuid().ToString('N'))
+  $stdoutPath = $logStem + '.stdout.txt'
+  $stderrPath = $logStem + '.stderr.txt'
+  $startedAt = Get-Date
+
+  $taskText = @(
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['task']) { [string]$Pending.task } else { '' }),
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['failure_text']) { [string]$Pending.failure_text } else { '' }),
+    'continue interrupted workspace task'
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1
+  $taskKind = @(
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['task_kind']) { [string]$Pending.task_kind } else { '' }),
+    'dispatch'
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1
+  $preferredBackend = @(
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['preferred_backend']) { [string]$Pending.preferred_backend } else { '' }),
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['selected_backend']) { [string]$Pending.selected_backend } else { '' }),
+    $(if ($null -ne $Pending -and $Pending.PSObject.Properties['backend']) { [string]$Pending.backend } else { '' })
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1
+  $continuationPreamble = Get-RaymanNetworkResumeContinuationPreamble -WorkspaceRoot $resolvedWorkspace -Pending $Pending
+
+  $argumentList = New-Object System.Collections.Generic.List[string]
+  foreach ($item in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $raymanScript, 'dispatch', '-WorkspaceRoot', $resolvedWorkspace, '-TaskKind', $taskKind, '-Task', $taskText)) {
+    $argumentList.Add([string]$item) | Out-Null
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$preferredBackend)) {
+    $argumentList.Add('-PreferredBackend') | Out-Null
+    $argumentList.Add([string]$preferredBackend) | Out-Null
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$continuationPreamble)) {
+    $argumentList.Add('-InjectedPreamble') | Out-Null
+    $argumentList.Add([string]$continuationPreamble) | Out-Null
+  }
+
+  $commandText = ((@([string]$hostPath) + @($argumentList.ToArray())) -join ' ').Trim()
+  $params = @{
+    FilePath = [string]$hostPath
+    ArgumentList = @($argumentList.ToArray())
+    WorkingDirectory = $resolvedWorkspace
+    PassThru = $true
+    RedirectStandardOutput = $stdoutPath
+    RedirectStandardError = $stderrPath
+  }
+  if (Test-RaymanWindowsPlatform) {
+    $params['WindowStyle'] = 'Hidden'
+  }
+
+  $proc = Start-Process @params
+  Start-Sleep -Milliseconds 200
+  try { $proc.Refresh() } catch {}
+
+  $stdout = @()
+  $stderr = @()
+  if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+    $stdout = @([string[]](Get-Content -LiteralPath $stdoutPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+  }
+  if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+    $stderr = @([string[]](Get-Content -LiteralPath $stderrPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+  }
+  $outputText = (@($stdout + $stderr) -join [Environment]::NewLine).Trim()
+
+  if ($proc.HasExited -and [int]$proc.ExitCode -ne 0) {
+    return [pscustomobject]@{
+      success = $false
+      started = $true
+      completed = $true
+      pid = [int]$proc.Id
+      exit_code = [int]$proc.ExitCode
+      command = $commandText
+      output = $outputText
+      error = if ([string]::IsNullOrWhiteSpace($outputText)) { ("process exited with code {0}" -f [int]$proc.ExitCode) } else { $outputText }
+      stdout = @($stdout)
+      stderr = @($stderr)
+      stdout_path = $stdoutPath
+      stderr_path = $stderrPath
+      started_at = $startedAt.ToString('o')
+      finished_at = (Get-Date).ToString('o')
+      resume_mode = 'shared_session'
+      continuation_preamble = $continuationPreamble
+      task = $taskText
+      task_kind = $taskKind
+    }
+  }
+
+  return [pscustomobject]@{
+    success = $true
+    started = $true
+    completed = [bool]$proc.HasExited
+    pid = [int]$proc.Id
+    exit_code = if ($proc.HasExited) { [int]$proc.ExitCode } else { 0 }
+    command = $commandText
+    output = $outputText
+    error = ''
+    stdout = @($stdout)
+    stderr = @($stderr)
+    stdout_path = $stdoutPath
+    stderr_path = $stderrPath
+    started_at = $startedAt.ToString('o')
+    finished_at = if ($proc.HasExited) { (Get-Date).ToString('o') } else { '' }
+    resume_mode = 'shared_session'
+    continuation_preamble = $continuationPreamble
+    task = $taskText
+    task_kind = $taskKind
+  }
+}
+
 function Invoke-RaymanNetworkResumeCycle {
   param([object]$State)
 
@@ -1721,32 +2563,12 @@ function Invoke-RaymanNetworkResumeCycle {
     }
   }
 
-  $candidate = Get-RaymanNetworkResumeCandidate -WorkspaceRoot ([string]$State.WorkspaceRoot)
+  $workspaceRoot = [string]$State.WorkspaceRoot
+  $candidate = Get-RaymanNetworkResumeCandidate -WorkspaceRoot $workspaceRoot
+  $dispatchSummary = Read-RaymanNetworkResumeJsonOrNull -Path (Get-RaymanNetworkResumeDispatchSummaryPath -WorkspaceRoot $workspaceRoot)
+  $pending = Read-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
   $idleInfo = Get-RaymanCurrentUserIdleInfo
-
-  if (-not [bool]$candidate.available) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.run_id) -and [string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
-      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
-    } else {
-      Reset-RaymanNetworkResumeState -State $State
-      $State.LastCandidateRunId = [string]$candidate.run_id
-    }
-    $State.SuppressedReason = [string]$candidate.reason
-    Write-RaymanNetworkResumeStatus -State $State -Status [string]$candidate.reason -Candidate $candidate -IdleInfo $idleInfo -Error [string]$candidate.reason | Out-Null
-    return [pscustomobject]@{
-      should_exit = $false
-      status = [string]$candidate.reason
-    }
-  }
-
-  if ([string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
-    Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
-  }
-  $candidateTriggerKind = if ($candidate.PSObject.Properties['trigger_kind']) { [string]$candidate.trigger_kind } else { 'none' }
-  if (-not [string]::IsNullOrWhiteSpace($State.TriggerKind) -and $State.TriggerKind -ne $candidateTriggerKind) {
-    Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
-  }
-  $State.TriggerKind = $candidateTriggerKind
+  $State.ClearedReason = ''
 
   if ($null -ne $idleInfo.idle_since) {
     $State.IdleSince = [datetime]$idleInfo.idle_since
@@ -1754,30 +2576,117 @@ function Invoke-RaymanNetworkResumeCycle {
     $State.IdleSince = $null
   }
 
-  $probeResult = Test-RaymanNetworkResumeProviderReachable -ProbeUri $candidate.probe.probe_uri -TimeoutMs ([int]$State.ProbeTimeoutMs)
-  $wasReachable = $State.LastProviderReachable
-  $State.LastProviderReachable = [bool]$probeResult.reachable
+  if ($null -ne $pending -and $null -ne $dispatchSummary -and $dispatchSummary.PSObject.Properties['success'] -and [bool]$dispatchSummary.success -and (Test-RaymanNetworkResumeSummaryMatchesPending -Summary $dispatchSummary -Pending $pending)) {
+    $null = Remove-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
+    Reset-RaymanNetworkResumeState -State $State
+    $State.ClearedReason = 'task_completed'
+    $State.SuppressedReason = 'task_completed'
+    Write-RaymanNetworkResumeStatus -State $State -Status 'task_completed' -Candidate $candidate -IdleInfo $idleInfo -Pending $null | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = 'task_completed'
+    }
+  }
 
-  if (-not [bool]$candidate.native_resume_supported) {
+  $candidateAvailable = ($null -ne $candidate -and [bool]$candidate.available)
+  $candidateReason = if ($null -ne $candidate -and $candidate.PSObject.Properties['reason']) { [string]$candidate.reason } else { '' }
+  $candidateTriggerKind = if ($candidateAvailable -and $candidate.PSObject.Properties['trigger_kind']) { [string]$candidate.trigger_kind } else { 'none' }
+  $pendingFailureKind = if ($null -ne $pending -and $pending.PSObject.Properties['failure_kind']) { [string]$pending.failure_kind } else { '' }
+  $pendingFailureStartedAt = if ($null -ne $pending -and $pending.PSObject.Properties['failure_started_at']) {
+    ConvertTo-RaymanNullableDateTime -Value ([string]$pending.failure_started_at)
+  } else {
+    $null
+  }
+  $allowPendingReuse = ($null -ne $pending) -and ($candidateReason -in @('last_run_missing', 'last_run_succeeded'))
+
+  if (-not $candidateAvailable -and -not $allowPendingReuse) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$candidate.run_id) -and [string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
+      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
+    } else {
+      Reset-RaymanNetworkResumeState -State $State
+      $State.LastCandidateRunId = [string]$candidate.run_id
+    }
+    $State.SuppressedReason = $candidateReason
+    Write-RaymanNetworkResumeStatus -State $State -Status $candidateReason -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Error $candidateReason | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = $candidateReason
+    }
+  }
+
+  if ($candidateAvailable) {
+    if ([string]$candidate.run_id -ne [string]$State.LastCandidateRunId) {
+      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($State.TriggerKind) -and $State.TriggerKind -ne $candidateTriggerKind) {
+      Reset-RaymanNetworkResumeCandidateState -State $State -RunId ([string]$candidate.run_id)
+    }
+    $State.LastCandidateRunId = [string]$candidate.run_id
+    $State.TriggerKind = $candidateTriggerKind
+  } elseif ($null -ne $pending) {
+    $State.LastCandidateRunId = if ($pending.PSObject.Properties['run_id']) { [string]$pending.run_id } else { '' }
+    $State.TriggerKind = if ($pendingFailureKind -eq 'throttle') { 'throttle' } else { 'network' }
+  } else {
+    Reset-RaymanNetworkResumeState -State $State
+  }
+
+  if ($null -ne $idleInfo.idle_since) {
+    $State.IdleSince = [datetime]$idleInfo.idle_since
+  } else {
+    $State.IdleSince = $null
+  }
+
+  $probeConfig = if ($candidateAvailable -and $candidate.PSObject.Properties['probe'] -and $null -ne $candidate.probe -and [bool]$candidate.probe.valid) {
+    $candidate.probe
+  } elseif ($null -ne $pending) {
+    Get-RaymanNetworkResumeProbeConfiguration -Backend $(if ($pending.PSObject.Properties['backend']) { [string]$pending.backend } else { '' })
+  } else {
+    $null
+  }
+
+  $wasReachable = $State.LastProviderReachable
+  $probeResult = $null
+  if ($null -ne $probeConfig -and [bool]$probeConfig.valid -and $null -ne $probeConfig.probe_uri) {
+    $probeResult = Test-RaymanNetworkResumeProviderReachable -ProbeUri $probeConfig.probe_uri -TimeoutMs ([int]$State.ProbeTimeoutMs)
+    $State.LastProviderReachable = [bool]$probeResult.reachable
+  } else {
+    $State.LastProviderReachable = $null
+  }
+
+  $nativeResumeSupported = if ($candidateAvailable -and $candidate.PSObject.Properties['native_resume_supported']) {
+    [bool]$candidate.native_resume_supported
+  } elseif ($null -ne $pending -and $pending.PSObject.Properties['native_resume_supported']) {
+    [bool]$pending.native_resume_supported
+  } else {
+    $false
+  }
+  if (-not $nativeResumeSupported) {
     Reset-RaymanNetworkResumeState -State $State
     $State.SuppressedReason = 'unsupported_native_resume'
-    Write-RaymanNetworkResumeStatus -State $State -Status 'unsupported_native_resume' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error 'unsupported_native_resume' | Out-Null
+    Write-RaymanNetworkResumeStatus -State $State -Status 'unsupported_native_resume' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -ProbeResult $probeResult -Error 'unsupported_native_resume' | Out-Null
     return [pscustomobject]@{
       should_exit = $false
       status = 'unsupported_native_resume'
     }
   }
 
-  if ($candidateTriggerKind -eq 'throttle' -and [bool]$probeResult.reachable) {
+  $readyToAttempt = $false
+  if ($State.TriggerKind -eq 'throttle' -and $null -ne $probeResult -and [bool]$probeResult.reachable) {
     $State.ProviderUnreachableSince = $null
     if ($null -eq $State.ThrottledSince) {
-      $State.ThrottledSince = if ($null -ne $candidate.failure_started_at) { [datetime]$candidate.failure_started_at } else { Get-Date }
+      $State.ThrottledSince = if ($candidateAvailable -and $candidate.PSObject.Properties['failure_started_at'] -and $null -ne $candidate.failure_started_at) {
+        [datetime]$candidate.failure_started_at
+      } elseif ($null -ne $pendingFailureStartedAt) {
+        [datetime]$pendingFailureStartedAt
+      } else {
+        Get-Date
+      }
     }
 
     if ($null -eq $State.IdleSince) {
       $State.ArmedAt = $null
       $State.SuppressedReason = 'idle_unavailable'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
+      Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
       return [pscustomobject]@{
         should_exit = $false
         status = 'idle_unavailable'
@@ -1789,7 +2698,7 @@ function Invoke-RaymanNetworkResumeCycle {
     if ($throttleOverlapSeconds -lt [int]$State.ThrottleWaitSeconds) {
       $State.ArmedAt = $null
       $State.SuppressedReason = 'throttle_wait'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'throttle_wait' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
+      Write-RaymanNetworkResumeStatus -State $State -Status 'throttle_wait' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
         overlap_started_at = $throttleOverlapStart.ToString('o')
         overlap_seconds = $throttleOverlapSeconds
       } | Out-Null
@@ -1803,18 +2712,17 @@ function Invoke-RaymanNetworkResumeCycle {
       $State.ArmedAt = Get-Date
     }
     $State.SuppressedReason = ''
-    Write-RaymanNetworkResumeStatus -State $State -Status 'throttle_armed' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
-      overlap_started_at = $throttleOverlapStart.ToString('o')
-      overlap_seconds = $throttleOverlapSeconds
-    } | Out-Null
+    $readyToAttempt = $true
   } else {
     $State.TriggerKind = 'network'
     $State.ThrottledSince = $null
 
-    if (-not [bool]$probeResult.reachable) {
+    if ($null -eq $probeResult -or -not [bool]$probeResult.reachable) {
       if ($null -eq $State.ProviderUnreachableSince) {
-        if ($candidateTriggerKind -eq 'network' -and $null -ne $candidate.failure_started_at) {
+        if ($candidateAvailable -and $candidateTriggerKind -eq 'network' -and $candidate.PSObject.Properties['failure_started_at'] -and $null -ne $candidate.failure_started_at) {
           $State.ProviderUnreachableSince = [datetime]$candidate.failure_started_at
+        } elseif ($null -ne $pendingFailureStartedAt) {
+          $State.ProviderUnreachableSince = [datetime]$pendingFailureStartedAt
         } else {
           $State.ProviderUnreachableSince = Get-Date
         }
@@ -1823,7 +2731,7 @@ function Invoke-RaymanNetworkResumeCycle {
       if ($null -eq $State.IdleSince) {
         $State.ArmedAt = $null
         $State.SuppressedReason = 'idle_unavailable'
-        Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
+        Write-RaymanNetworkResumeStatus -State $State -Status 'idle_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'idle_unavailable' | Out-Null
         return [pscustomobject]@{
           should_exit = $false
           status = 'idle_unavailable'
@@ -1837,7 +2745,7 @@ function Invoke-RaymanNetworkResumeCycle {
           $State.ArmedAt = Get-Date
         }
         $State.SuppressedReason = ''
-        Write-RaymanNetworkResumeStatus -State $State -Status 'armed' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
+        Write-RaymanNetworkResumeStatus -State $State -Status 'armed' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
           overlap_started_at = $overlapStart.ToString('o')
           overlap_seconds = $overlapSeconds
         } | Out-Null
@@ -1849,7 +2757,7 @@ function Invoke-RaymanNetworkResumeCycle {
 
       $State.ArmedAt = $null
       $State.SuppressedReason = 'threshold_not_met'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_unreachable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
+      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_unreachable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
         overlap_started_at = $overlapStart.ToString('o')
         overlap_seconds = $overlapSeconds
       } | Out-Null
@@ -1864,7 +2772,7 @@ function Invoke-RaymanNetworkResumeCycle {
       $State.ProviderUnreachableSince = $null
       $State.ArmedAt = $null
       $State.SuppressedReason = 'provider_reachable'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_reachable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult | Out-Null
+      Write-RaymanNetworkResumeStatus -State $State -Status 'provider_reachable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult | Out-Null
       return [pscustomobject]@{
         should_exit = $false
         status = 'provider_reachable'
@@ -1874,68 +2782,165 @@ function Invoke-RaymanNetworkResumeCycle {
     if ($null -eq $State.ArmedAt) {
       $State.ProviderUnreachableSince = $null
       $State.SuppressedReason = 'restored_before_threshold'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'restored_before_threshold' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult | Out-Null
+      Write-RaymanNetworkResumeStatus -State $State -Status 'restored_before_threshold' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult | Out-Null
       return [pscustomobject]@{
         should_exit = $false
         status = 'restored_before_threshold'
       }
     }
+
+    $readyToAttempt = $true
   }
 
-  if ($null -ne $State.LastResumeAttemptAt) {
-    $elapsedSinceAttempt = [int][Math]::Max(0, [Math]::Floor(((Get-Date) - [datetime]$State.LastResumeAttemptAt).TotalSeconds))
-    if ($elapsedSinceAttempt -lt [int]$State.RetrySeconds) {
-      $State.ProviderUnreachableSince = $null
-      $State.ArmedAt = $null
-      $State.SuppressedReason = 'cooldown_active'
-      Write-RaymanNetworkResumeStatus -State $State -Status 'cooldown_active' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
-        cooldown_remaining_seconds = ([int]$State.RetrySeconds - $elapsedSinceAttempt)
-      } | Out-Null
-      return [pscustomobject]@{
-        should_exit = $false
-        status = 'cooldown_active'
+  if ($candidateAvailable) {
+    if ($null -eq $pending) {
+      $savedPending = Save-RaymanNetworkResumePendingStateFromCandidate -WorkspaceRoot $workspaceRoot -Candidate $candidate
+      if ($null -ne $savedPending) {
+        $pending = $savedPending
+        Write-RaymanDiag -Scope 'network-resume' -Message ("saved pending continuation; run_id={0}; backend={1}; state_key={2}" -f [string]$pending.run_id, [string]$pending.backend, [string]$pending.state_key) -WorkspaceRoot $workspaceRoot
+      }
+    } else {
+      $updatedPending = Save-RaymanNetworkResumePendingStateFromCandidate -WorkspaceRoot $workspaceRoot -Candidate $candidate -ExistingPending $pending
+      if ($null -ne $updatedPending) {
+        $previousStateKey = if ($pending.PSObject.Properties['state_key']) { [string]$pending.state_key } else { '' }
+        $updatedStateKey = if ($updatedPending.PSObject.Properties['state_key']) { [string]$updatedPending.state_key } else { '' }
+        if ($previousStateKey -ne $updatedStateKey) {
+          $State.ClearedReason = 'pending_replaced'
+          Write-RaymanDiag -Scope 'network-resume' -Message ("replaced pending continuation with newer state; run_id={0}; backend={1}; state_key={2}" -f [string]$updatedPending.run_id, [string]$updatedPending.backend, [string]$updatedPending.state_key) -WorkspaceRoot $workspaceRoot
+        }
+        $pending = $updatedPending
       }
     }
   }
 
-  if ([int]$State.AttemptCount -ge [int]$State.MaxAttempts) {
+  if ($null -eq $pending) {
+    if ($null -eq $candidate) {
+      $State.SuppressedReason = 'candidate_missing'
+      Write-RaymanNetworkResumeStatus -State $State -Status 'candidate_missing' -IdleInfo $idleInfo -Pending $null -Error 'candidate_missing' | Out-Null
+      return [pscustomobject]@{
+        should_exit = $false
+        status = 'candidate_missing'
+      }
+    }
+
+    $State.SuppressedReason = 'pending_not_saved'
+    Write-RaymanNetworkResumeStatus -State $State -Status 'pending_not_saved' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -Error 'pending_not_saved' | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = 'pending_not_saved'
+    }
+  }
+
+  $State.LastResumeAttemptAt = ConvertTo-RaymanNullableDateTime -Value $(if ($pending.PSObject.Properties['last_attempt_at']) { [string]$pending.last_attempt_at } else { '' })
+  $State.AttemptCount = if ($pending.PSObject.Properties['attempt_count']) { [int]$pending.attempt_count } else { 0 }
+  if ($pending.PSObject.Properties['first_saved_at']) {
+    $State.ArmedAt = ConvertTo-RaymanNullableDateTime -Value ([string]$pending.first_saved_at)
+  }
+
+  if ($State.PSObject.Properties['MaxAttempts'] -and [int]$State.AttemptCount -ge [int]$State.MaxAttempts) {
     $State.ProviderUnreachableSince = $null
     $State.ArmedAt = $null
     $State.SuppressedReason = 'max_attempts_reached'
-    Write-RaymanNetworkResumeStatus -State $State -Status 'max_attempts_reached' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error 'max_attempts_reached' | Out-Null
+    Write-RaymanNetworkResumeStatus -State $State -Status 'max_attempts_reached' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error 'max_attempts_reached' | Out-Null
     return [pscustomobject]@{
       should_exit = $false
       status = 'max_attempts_reached'
     }
   }
 
+  $retryDueAt = Get-RaymanNetworkResumeRetryDueAt -Pending $pending -RetrySeconds ([int]$State.RetrySeconds)
+  if ($null -ne $retryDueAt -and (Get-Date) -lt $retryDueAt) {
+    $State.SuppressedReason = 'retry_window_wait'
+    $statusText = if ($null -ne $probeResult -and [bool]$probeResult.reachable) { 'provider_recovered_waiting_retry_window' } else { 'pending_saved' }
+    Write-RaymanNetworkResumeStatus -State $State -Status $statusText -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Extra @{
+      retry_window_seconds = [int]$State.RetrySeconds
+      retry_wait_remaining_seconds = [int][Math]::Max(0, [Math]::Floor(($retryDueAt - (Get-Date)).TotalSeconds))
+    } | Out-Null
+    return [pscustomobject]@{
+      should_exit = $false
+      status = $statusText
+    }
+  }
+
   $now = Get-Date
+  $pending.last_attempt_at = $now.ToString('o')
+  $pending.attempt_count = if ($pending.PSObject.Properties['attempt_count']) { [int]$pending.attempt_count + 1 } else { 1 }
+  Write-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot -Pending $pending | Out-Null
   $State.LastResumeAttemptAt = $now
-  $State.AttemptCount = [int]$State.AttemptCount + 1
+  $State.AttemptCount = [int]$pending.attempt_count
+
   $resumePrompt = Get-RaymanNetworkResumePrompt
-  $candidateSource = if ($candidate.PSObject.Properties['candidate_source']) { [string]$candidate.candidate_source } else { 'agent_run' }
-  Write-RaymanDiag -Scope 'network-resume' -Message ("attempt native resume; run_id={0}; backend={1}; source={2}; attempt={3}" -f [string]$candidate.run_id, [string]$candidate.backend, $candidateSource, [int]$State.AttemptCount) -WorkspaceRoot ([string]$State.WorkspaceRoot)
+  $candidateSource = if ($null -ne $candidate -and $candidate.PSObject.Properties['candidate_source']) { [string]$candidate.candidate_source } elseif ($pending.PSObject.Properties['candidate_source']) { [string]$pending.candidate_source } else { 'agent_run' }
+  $nativeError = ''
+  $nativeResult = $null
+  $resumeMode = if ($pending.PSObject.Properties['resume_mode']) { [string]$pending.resume_mode } else { '' }
+
+  if ($pending.PSObject.Properties['native_resume_supported'] -and [bool]$pending.native_resume_supported) {
+    try {
+      Write-RaymanDiag -Scope 'network-resume' -Message ("attempt native resume; run_id={0}; backend={1}; source={2}; attempt={3}" -f [string]$pending.run_id, [string]$pending.backend, $candidateSource, [int]$pending.attempt_count) -WorkspaceRoot $workspaceRoot
+      $nativeResult = if ($candidateSource -eq 'codex_desktop_session') {
+        Start-RaymanCodexDesktopResumeDetached -WorkspaceRoot $workspaceRoot -SessionId $(if ($pending.PSObject.Properties['desktop_session_id']) { [string]$pending.desktop_session_id } else { '' }) -Prompt $resumePrompt -DesktopSessionPath $(if ($pending.PSObject.Properties['desktop_session_path']) { [string]$pending.desktop_session_path } else { '' })
+      } elseif ([string]$pending.backend -eq 'codex') {
+        Start-RaymanCodexNativeResumeDetached -WorkspaceRoot $workspaceRoot -Prompt $resumePrompt
+      } else {
+        [pscustomobject]@{
+          success = $false
+          command = ''
+          exit_code = 0
+          error = ('native resume unsupported for backend ' + [string]$pending.backend)
+        }
+      }
+      if ($null -ne $nativeResult -and [bool]$nativeResult.success) {
+        $completedTriggerKind = [string]$State.TriggerKind
+        $null = Remove-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
+        Reset-RaymanNetworkResumeState -State $State
+        $State.TriggerKind = $completedTriggerKind
+        $State.ClearedReason = 'resume_started'
+        $State.SuppressedReason = 'resume_started'
+        Write-RaymanDiag -Scope 'network-resume' -Message ("native resume succeeded; run_id={0}; source={1}; command={2}" -f [string]$pending.run_id, $candidateSource, [string]$nativeResult.command) -WorkspaceRoot $workspaceRoot
+        Write-RaymanNetworkResumeStatus -State $State -Status 'resumed' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -ProbeResult $probeResult -Extra @{
+          resume_mode = 'native'
+          resume_command = [string]$nativeResult.command
+          resume_exit_code = [int]$nativeResult.exit_code
+          resume_pid = if ($nativeResult.PSObject.Properties['pid']) { [int]$nativeResult.pid } else { 0 }
+          resume_completed = if ($nativeResult.PSObject.Properties['completed']) { [bool]$nativeResult.completed } else { $false }
+          resume_stdout_path = if ($nativeResult.PSObject.Properties['stdout_path']) { [string]$nativeResult.stdout_path } else { '' }
+          resume_stderr_path = if ($nativeResult.PSObject.Properties['stderr_path']) { [string]$nativeResult.stderr_path } else { '' }
+          resume_target_kind = if ($nativeResult.PSObject.Properties['resume_target_kind']) { [string]$nativeResult.resume_target_kind } elseif ($pending.PSObject.Properties['resume_target_kind']) { [string]$pending.resume_target_kind } else { '' }
+          cleared_reason = 'resume_started'
+        } | Out-Null
+        return [pscustomobject]@{
+          should_exit = $false
+          status = 'resumed'
+        }
+      }
+      $nativeError = if ($null -eq $nativeResult) { 'native resume returned no result' } elseif ([string]::IsNullOrWhiteSpace([string]$nativeResult.error)) { [string]$nativeResult.output } else { [string]$nativeResult.error }
+    } catch {
+      $nativeError = $_.Exception.Message
+      Write-RaymanDiag -Scope 'network-resume' -Message ("native resume exception; run_id={0}; source={1}; error={2}" -f [string]$pending.run_id, $candidateSource, $_.Exception.ToString()) -WorkspaceRoot $workspaceRoot
+    }
+  }
 
   try {
-    $resumeResult = if ($candidateSource -eq 'codex_desktop_session') {
-      Start-RaymanCodexDesktopResumeDetached -WorkspaceRoot ([string]$State.WorkspaceRoot) -SessionId $(if ($candidate.PSObject.Properties['desktop_session_id']) { [string]$candidate.desktop_session_id } else { '' }) -Prompt $resumePrompt -DesktopSessionPath $(if ($candidate.PSObject.Properties['desktop_session_path']) { [string]$candidate.desktop_session_path } else { '' })
-    } else {
-      Start-RaymanCodexNativeResumeDetached -WorkspaceRoot ([string]$State.WorkspaceRoot) -Prompt $resumePrompt
-    }
-    $State.ProviderUnreachableSince = $null
-    $State.ThrottledSince = $null
-    $State.ArmedAt = $null
-    if ([bool]$resumeResult.success) {
+    Write-RaymanDiag -Scope 'network-resume' -Message ("attempt shared-session continuation; run_id={0}; backend={1}; attempt={2}" -f [string]$pending.run_id, [string]$pending.backend, [int]$pending.attempt_count) -WorkspaceRoot $workspaceRoot
+    $sharedResult = Start-RaymanSharedSessionContinuationDetached -WorkspaceRoot $workspaceRoot -Pending $pending
+    if ($null -ne $sharedResult -and [bool]$sharedResult.success) {
+      $completedTriggerKind = [string]$State.TriggerKind
+      $null = Remove-RaymanNetworkResumePendingState -WorkspaceRoot $workspaceRoot
+      Reset-RaymanNetworkResumeState -State $State
+      $State.TriggerKind = $completedTriggerKind
+      $State.ClearedReason = 'resume_started'
       $State.SuppressedReason = 'resume_started'
-      Write-RaymanDiag -Scope 'network-resume' -Message ("native resume succeeded; run_id={0}; source={1}; command={2}" -f [string]$candidate.run_id, $candidateSource, [string]$resumeResult.command) -WorkspaceRoot ([string]$State.WorkspaceRoot)
-      Write-RaymanNetworkResumeStatus -State $State -Status 'resumed' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Extra @{
-        resume_command = [string]$resumeResult.command
-        resume_exit_code = [int]$resumeResult.exit_code
-        resume_pid = if ($resumeResult.PSObject.Properties['pid']) { [int]$resumeResult.pid } else { 0 }
-        resume_completed = if ($resumeResult.PSObject.Properties['completed']) { [bool]$resumeResult.completed } else { $false }
-        resume_stdout_path = if ($resumeResult.PSObject.Properties['stdout_path']) { [string]$resumeResult.stdout_path } else { '' }
-        resume_stderr_path = if ($resumeResult.PSObject.Properties['stderr_path']) { [string]$resumeResult.stderr_path } else { '' }
-        resume_target_kind = if ($resumeResult.PSObject.Properties['resume_target_kind']) { [string]$resumeResult.resume_target_kind } elseif ($candidate.PSObject.Properties['resume_target_kind']) { [string]$candidate.resume_target_kind } else { '' }
+      Write-RaymanDiag -Scope 'network-resume' -Message ("shared-session continuation started; run_id={0}; command={1}" -f [string]$pending.run_id, [string]$sharedResult.command) -WorkspaceRoot $workspaceRoot
+      Write-RaymanNetworkResumeStatus -State $State -Status 'resumed' -Candidate $candidate -IdleInfo $idleInfo -Pending $null -ProbeResult $probeResult -Extra @{
+        resume_mode = 'shared_session'
+        resume_command = [string]$sharedResult.command
+        resume_exit_code = [int]$sharedResult.exit_code
+        resume_pid = if ($sharedResult.PSObject.Properties['pid']) { [int]$sharedResult.pid } else { 0 }
+        resume_completed = if ($sharedResult.PSObject.Properties['completed']) { [bool]$sharedResult.completed } else { $false }
+        resume_stdout_path = if ($sharedResult.PSObject.Properties['stdout_path']) { [string]$sharedResult.stdout_path } else { '' }
+        resume_stderr_path = if ($sharedResult.PSObject.Properties['stderr_path']) { [string]$sharedResult.stderr_path } else { '' }
+        cleared_reason = 'resume_started'
       } | Out-Null
       return [pscustomobject]@{
         should_exit = $false
@@ -1943,28 +2948,36 @@ function Invoke-RaymanNetworkResumeCycle {
       }
     }
 
-    $resumeError = if ([string]::IsNullOrWhiteSpace([string]$resumeResult.error)) { [string]$resumeResult.output } else { [string]$resumeResult.error }
+    $sharedError = if ($null -eq $sharedResult) { 'shared-session continuation returned no result' } elseif ([string]::IsNullOrWhiteSpace([string]$sharedResult.error)) { [string]$sharedResult.output } else { [string]$sharedResult.error }
+    $resumeError = @($nativeError, $sharedError) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+    $resumeErrorText = ($resumeError -join ' | ')
     $State.SuppressedReason = 'resume_unavailable'
-    Write-RaymanDiag -Scope 'network-resume' -Message ("native resume unavailable; run_id={0}; source={1}; error={2}" -f [string]$candidate.run_id, $candidateSource, $resumeError) -WorkspaceRoot ([string]$State.WorkspaceRoot)
-    Invoke-RaymanAttentionAlert -Kind 'manual' -Title 'Rayman 网络续接失败' -Reason ("网络已恢复，但原生续接失败：{0}" -f $resumeError) -WorkspaceRoot ([string]$State.WorkspaceRoot) | Out-Null
-    Write-RaymanNetworkResumeStatus -State $State -Status 'resume_unavailable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error $resumeError -Extra @{
-      resume_command = [string]$resumeResult.command
-      resume_exit_code = [int]$resumeResult.exit_code
-      resume_target_kind = if ($resumeResult.PSObject.Properties['resume_target_kind']) { [string]$resumeResult.resume_target_kind } elseif ($candidate.PSObject.Properties['resume_target_kind']) { [string]$candidate.resume_target_kind } else { '' }
+    if (Get-Command Invoke-RaymanAttentionAlert -ErrorAction SilentlyContinue) {
+      Invoke-RaymanAttentionAlert -Kind 'manual' -Title 'Rayman 网络续接失败' -Reason ("网络已恢复，但自动续接失败：{0}" -f $resumeErrorText) -WorkspaceRoot $workspaceRoot | Out-Null
+    }
+    Write-RaymanNetworkResumeStatus -State $State -Status 'resume_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error $resumeErrorText -Extra @{
+      resume_mode = if ([string]::IsNullOrWhiteSpace($resumeMode)) { 'shared_session' } else { $resumeMode }
+      native_error = $nativeError
+      shared_session_error = $sharedError
+      resume_command = if ($null -ne $nativeResult -and $nativeResult.PSObject.Properties['command']) { [string]$nativeResult.command } else { '' }
+      resume_target_kind = if ($null -ne $nativeResult -and $nativeResult.PSObject.Properties['resume_target_kind']) { [string]$nativeResult.resume_target_kind } elseif ($pending.PSObject.Properties['resume_target_kind']) { [string]$pending.resume_target_kind } else { '' }
     } | Out-Null
     return [pscustomobject]@{
       should_exit = $false
       status = 'resume_unavailable'
     }
   } catch {
-    $State.ProviderUnreachableSince = $null
-    $State.ThrottledSince = $null
-    $State.ArmedAt = $null
     $State.SuppressedReason = 'resume_unavailable'
-    $resumeError = $_.Exception.Message
-    Write-RaymanDiag -Scope 'network-resume' -Message ("native resume exception; run_id={0}; source={1}; error={2}" -f [string]$candidate.run_id, $candidateSource, $_.Exception.ToString()) -WorkspaceRoot ([string]$State.WorkspaceRoot)
-    Invoke-RaymanAttentionAlert -Kind 'manual' -Title 'Rayman 网络续接失败' -Reason ("网络已恢复，但原生续接失败：{0}" -f $resumeError) -WorkspaceRoot ([string]$State.WorkspaceRoot) | Out-Null
-    Write-RaymanNetworkResumeStatus -State $State -Status 'resume_unavailable' -Candidate $candidate -IdleInfo $idleInfo -ProbeResult $probeResult -Error $resumeError | Out-Null
+    $resumeError = @($nativeError, $_.Exception.Message) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+    $resumeErrorText = ($resumeError -join ' | ')
+    if (Get-Command Invoke-RaymanAttentionAlert -ErrorAction SilentlyContinue) {
+      Invoke-RaymanAttentionAlert -Kind 'manual' -Title 'Rayman 网络续接失败' -Reason ("网络已恢复，但自动续接失败：{0}" -f $resumeErrorText) -WorkspaceRoot $workspaceRoot | Out-Null
+    }
+    Write-RaymanDiag -Scope 'network-resume' -Message ("shared-session continuation exception; run_id={0}; error={1}" -f [string]$pending.run_id, $_.Exception.ToString()) -WorkspaceRoot $workspaceRoot
+    Write-RaymanNetworkResumeStatus -State $State -Status 'resume_unavailable' -Candidate $candidate -IdleInfo $idleInfo -Pending $pending -ProbeResult $probeResult -Error $resumeErrorText -Extra @{
+      resume_mode = 'shared_session'
+      native_error = $nativeError
+    } | Out-Null
     return [pscustomobject]@{
       should_exit = $false
       status = 'resume_unavailable'

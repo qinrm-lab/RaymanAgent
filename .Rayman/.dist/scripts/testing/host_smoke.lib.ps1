@@ -16,36 +16,13 @@ function Resolve-RaymanHostSmokeCommandPath {
 }
 
 function Resolve-RaymanHostSmokeBashRunner {
-  $override = [string][Environment]::GetEnvironmentVariable('RAYMAN_BASH_PATH')
-  if (-not [string]::IsNullOrWhiteSpace($override) -and (Test-Path -LiteralPath $override -PathType Leaf)) {
-    return [pscustomobject]@{
-      path = (Resolve-Path -LiteralPath $override).Path
-      mode = 'bash'
-      invoke_kind = 'bash'
-    }
-  }
-
-  $bashPath = Resolve-RaymanHostSmokeCommandPath -Names @('bash', 'bash.exe')
-  if (-not [string]::IsNullOrWhiteSpace($bashPath)) {
-    $bashMode = 'bash'
-    $bashNorm = ($bashPath -replace '/', '\').ToLowerInvariant()
-    if (Test-RaymanWindowsPlatform -and $bashNorm.EndsWith('\windows\system32\bash.exe')) {
-      $bashMode = 'wsl'
-    }
-    return [pscustomobject]@{
-      path = $bashPath
-      mode = $bashMode
-      invoke_kind = 'bash'
-    }
-  }
-
-  if (Test-RaymanWindowsPlatform) {
-    $wslPath = Resolve-RaymanHostSmokeCommandPath -Names @('wsl.exe', 'wsl')
-    if (-not [string]::IsNullOrWhiteSpace($wslPath)) {
+  if (Get-Command Resolve-RaymanBashCommand -ErrorAction SilentlyContinue) {
+    $resolved = Resolve-RaymanBashCommand
+    if ($null -ne $resolved -and -not [string]::IsNullOrWhiteSpace([string]$resolved.path)) {
       return [pscustomobject]@{
-        path = $wslPath
-        mode = 'wsl'
-        invoke_kind = 'wsl'
+        path = [string]$resolved.path
+        mode = [string]$resolved.mode
+        invoke_kind = [string]$resolved.invoke_kind
       }
     }
   }

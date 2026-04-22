@@ -1,5 +1,6 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:RaymanWslInteropAvailabilityCache = $null
 
 $raymanCodexCommonPath = Join-Path $PSScriptRoot 'scripts\codex\codex_common.ps1'
 if (Test-Path -LiteralPath $raymanCodexCommonPath -PathType Leaf) {
@@ -2198,7 +2199,11 @@ function Test-RaymanWindowsPlatform {
 }
 
 function Resolve-RaymanPowerShellHost {
-    $candidates = @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+    $candidates = if (Test-RaymanWindowsPlatform) {
+        @('pwsh.exe', 'pwsh', 'powershell.exe', 'powershell')
+    } else {
+        @('pwsh', 'powershell', 'pwsh.exe', 'powershell.exe')
+    }
     foreach ($name in $candidates) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) {
@@ -2299,29 +2304,61 @@ function Invoke-RaymanNativeCommandCapture {
     $proc = $null
 
     try {
-        $params = @{
-            FilePath = [string]$FilePath
-            ArgumentList = @($ArgumentList)
-            Wait = $true
-            PassThru = $true
-            RedirectStandardOutput = $stdoutPath
-            RedirectStandardError = $stderrPath
-        }
-        if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
-            $params['WorkingDirectory'] = $WorkingDirectory
-        }
+        $stdoutText = ''
+        $stderrText = ''
         if (Test-RaymanWindowsPlatform) {
-            $params['WindowStyle'] = 'Hidden'
+            $params = @{
+                FilePath = [string]$FilePath
+                ArgumentList = @($ArgumentList)
+                Wait = $true
+                PassThru = $true
+                RedirectStandardOutput = $stdoutPath
+                RedirectStandardError = $stderrPath
+                WindowStyle = 'Hidden'
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
+                $params['WorkingDirectory'] = $WorkingDirectory
+            }
+
+            $proc = Start-Process @params
+            if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+                $stdoutText = [string](Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
+            if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+                $stderrText = [string](Get-Content -LiteralPath $stderrPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
+        } else {
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = [string]$FilePath
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            if (-not [string]::IsNullOrWhiteSpace([string]$WorkingDirectory)) {
+                $startInfo.WorkingDirectory = $WorkingDirectory
+            }
+            foreach ($arg in @($ArgumentList)) {
+                [void]$startInfo.ArgumentList.Add([string]$arg)
+            }
+
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $startInfo
+            $null = $proc.Start()
+            $stdoutText = [string]$proc.StandardOutput.ReadToEnd()
+            $stderrText = [string]$proc.StandardError.ReadToEnd()
+            $proc.WaitForExit()
         }
 
-        $proc = Start-Process @params
         $result.started = $true
         $result.exit_code = [int]$proc.ExitCode
-        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-            $result.stdout = @([string[]](Get-Content -LiteralPath $stdoutPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+        if ($null -eq $stdoutText) { $stdoutText = '' }
+        if ($null -eq $stderrText) { $stderrText = '' }
+        $stdoutText = ([string]$stdoutText).TrimEnd("`r", "`n")
+        $stderrText = ([string]$stderrText).TrimEnd("`r", "`n")
+        if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
+            $result.stdout = @([string[]]($stdoutText -split "`r?`n"))
         }
-        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-            $result.stderr = @([string[]](Get-Content -LiteralPath $stderrPath -Encoding UTF8 -ErrorAction SilentlyContinue))
+        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+            $result.stderr = @([string[]]($stderrText -split "`r?`n"))
         }
         $joinedOutput = @($result.stdout + $result.stderr) -join [Environment]::NewLine
         $result.output = [string]$joinedOutput
@@ -2347,6 +2384,215 @@ function Invoke-RaymanNativeCommandCapture {
     }
 
     return [pscustomobject]$result
+}
+
+function Get-RaymanPathEntries {
+    $rawPath = [string][Environment]::GetEnvironmentVariable('PATH')
+    if ([string]::IsNullOrWhiteSpace([string]$rawPath)) {
+        return @()
+    }
+
+    $separator = [string][System.IO.Path]::PathSeparator
+    $entries = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($entry in @($rawPath -split [regex]::Escape($separator))) {
+        $candidate = [string]$entry
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+            continue
+        }
+
+        $candidate = $candidate.Trim().Trim('"')
+        if ([string]::IsNullOrWhiteSpace([string]$candidate)) {
+            continue
+        }
+
+        try {
+            $candidate = [System.IO.Path]::GetFullPath($candidate)
+        } catch {}
+
+        if ($entries -notcontains $candidate) {
+            $entries.Add($candidate) | Out-Null
+        }
+    }
+
+    return @($entries.ToArray())
+}
+
+function Get-RaymanCommandSourcesInPathOrder {
+    param(
+        [string[]]$LeafNames = @(),
+        [string[]]$CommandNames = @()
+    )
+
+    $results = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($dir in @(Get-RaymanPathEntries)) {
+        if ([string]::IsNullOrWhiteSpace([string]$dir)) {
+            continue
+        }
+
+        foreach ($leafName in @($LeafNames)) {
+            if ([string]::IsNullOrWhiteSpace([string]$leafName)) {
+                continue
+            }
+
+            $candidate = Join-Path $dir $leafName
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                continue
+            }
+
+            try {
+                $candidate = (Resolve-Path -LiteralPath $candidate).Path
+            } catch {}
+
+            if ($results -notcontains $candidate) {
+                $results.Add($candidate) | Out-Null
+            }
+        }
+    }
+
+    foreach ($commandName in @($CommandNames)) {
+        if ([string]::IsNullOrWhiteSpace([string]$commandName)) {
+            continue
+        }
+
+        foreach ($command in @(Get-Command $commandName -All -ErrorAction SilentlyContinue)) {
+            $source = [string]$command.Source
+            if ([string]::IsNullOrWhiteSpace([string]$source)) {
+                continue
+            }
+
+            if ($results -notcontains $source) {
+                $results.Add($source) | Out-Null
+            }
+        }
+    }
+
+    return @($results.ToArray())
+}
+
+function Test-RaymanLegacyWindowsBashPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace([string]$Path)) {
+        return $false
+    }
+
+    $normalized = ([string]$Path -replace '/', '\').ToLowerInvariant()
+    return (
+        $normalized.EndsWith('\windows\system32\bash.exe') -or
+        $normalized.EndsWith('\windowsapps\bash.exe')
+    )
+}
+
+function Test-RaymanWslInteropAvailable {
+    param([string]$WslPath = '')
+
+    if (-not (Test-RaymanWindowsPlatform)) {
+        return $false
+    }
+
+    $overrideRaw = [string][Environment]::GetEnvironmentVariable('RAYMAN_TEST_WSL_INTEROP_AVAILABLE')
+    if (-not [string]::IsNullOrWhiteSpace([string]$overrideRaw)) {
+        switch -Regex ($overrideRaw.Trim().ToLowerInvariant()) {
+            '^(1|true|yes|on)$' { return $true }
+            '^(0|false|no|off)$' { return $false }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$WslPath)) {
+        $wslCandidates = @(Get-RaymanCommandSourcesInPathOrder -LeafNames @('wsl.exe', 'wsl') -CommandNames @('wsl.exe', 'wsl'))
+        if ($wslCandidates.Count -gt 0) {
+            $WslPath = [string]$wslCandidates[0]
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$WslPath)) {
+        return $false
+    }
+
+    if ($null -eq $script:RaymanWslInteropAvailabilityCache) {
+        $script:RaymanWslInteropAvailabilityCache = @{}
+    }
+
+    $cacheKey = ([string]$WslPath).ToLowerInvariant()
+    if ($script:RaymanWslInteropAvailabilityCache.ContainsKey($cacheKey)) {
+        return [bool]$script:RaymanWslInteropAvailabilityCache[$cacheKey]
+    }
+
+    $probe = Invoke-RaymanNativeCommandCapture -FilePath $WslPath -ArgumentList @('-e', 'sh', '-lc', 'exit 0')
+    $available = ([bool]$probe.started -and [int]$probe.exit_code -eq 0)
+    $script:RaymanWslInteropAvailabilityCache[$cacheKey] = $available
+    return $available
+}
+
+function Resolve-RaymanBashCommand {
+    $override = [string][Environment]::GetEnvironmentVariable('RAYMAN_BASH_PATH')
+    if (-not [string]::IsNullOrWhiteSpace([string]$override) -and (Test-Path -LiteralPath $override -PathType Leaf)) {
+        return [pscustomobject]@{
+            path = (Resolve-Path -LiteralPath $override).Path
+            mode = 'bash'
+            invoke_kind = 'bash'
+        }
+    }
+
+    $bashLeafNames = if (Test-RaymanWindowsPlatform) {
+        @('bash.cmd', 'bash.bat', 'bash.ps1', 'bash.exe')
+    } else {
+        @('bash')
+    }
+    $bashCommandNames = if (Test-RaymanWindowsPlatform) {
+        @('bash.cmd', 'bash.bat', 'bash.ps1', 'bash.exe', 'bash')
+    } else {
+        @('bash')
+    }
+    $bashCandidates = @(Get-RaymanCommandSourcesInPathOrder -LeafNames $bashLeafNames -CommandNames $bashCommandNames)
+
+    if (-not (Test-RaymanWindowsPlatform)) {
+        if ($bashCandidates.Count -eq 0) {
+            return $null
+        }
+
+        return [pscustomobject]@{
+            path = [string]$bashCandidates[0]
+            mode = 'bash'
+            invoke_kind = 'bash'
+        }
+    }
+
+    foreach ($bashCandidate in $bashCandidates) {
+        if (Test-RaymanLegacyWindowsBashPath -Path ([string]$bashCandidate)) {
+            continue
+        }
+
+        return [pscustomobject]@{
+            path = [string]$bashCandidate
+            mode = 'bash'
+            invoke_kind = 'bash'
+        }
+    }
+
+    $wslCandidates = @(Get-RaymanCommandSourcesInPathOrder -LeafNames @('wsl.exe', 'wsl') -CommandNames @('wsl.exe', 'wsl'))
+    $wslPath = if ($wslCandidates.Count -gt 0) { [string]$wslCandidates[0] } else { '' }
+    if (Test-RaymanWslInteropAvailable -WslPath $wslPath) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$wslPath)) {
+            return [pscustomobject]@{
+                path = $wslPath
+                mode = 'wsl'
+                invoke_kind = 'wsl'
+            }
+        }
+
+        foreach ($bashCandidate in $bashCandidates) {
+            if (Test-RaymanLegacyWindowsBashPath -Path ([string]$bashCandidate)) {
+                return [pscustomobject]@{
+                    path = [string]$bashCandidate
+                    mode = 'wsl'
+                    invoke_kind = 'bash'
+                }
+            }
+        }
+    }
+
+    return $null
 }
 
 function Get-RaymanSetupGitBootstrapOptions {

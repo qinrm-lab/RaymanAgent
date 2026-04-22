@@ -268,12 +268,11 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 - `RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED=0`：关闭 VS Code / Codex 窗口加入 attention scan 目标列表（默认开启）
 - `RAYMAN_AUTO_SAVE_WATCH_ENABLED=0`：在共享 `win-watch.ps1` 内启用 auto-save（默认关闭）
 - `RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0`：关闭共享 `win-watch.ps1` 内置的 provider-target network resume watcher（默认开启）
-- `RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS=<秒>`：provider 持续不可达且鼠标键盘持续无输入的阈值（默认 `1800`）
-- `RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>`：provider 返回高 demand / rate limit / overload 一类失败后，键鼠持续无输入多久再自动继续（默认 `300`）
+- `RAYMAN_NETWORK_RESUME_THRESHOLD_SECONDS=<秒>`：兼容保留字段；v1 不再等待“断网满阈值后才保存现场”，默认仍为 `1800`
+- `RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=<秒>`：兼容别名；与 `RAYMAN_NETWORK_RESUME_RETRY_SECONDS` 保持一致，默认 `1800`
 - `RAYMAN_NETWORK_RESUME_POLL_MS=<毫秒>`：network resume 轮询间隔（默认 `5000`）
 - `RAYMAN_NETWORK_RESUME_PROBE_TIMEOUT_MS=<毫秒>`：provider 探测超时（默认 `5000`）
-- `RAYMAN_NETWORK_RESUME_RETRY_SECONDS=<秒>`：同一任务下一次恢复边沿允许再次原生续接前的冷却时间（默认 `300`）
-- `RAYMAN_NETWORK_RESUME_MAX_ATTEMPTS=<次数>`：同一未完成任务最多自动原生续接次数（默认 `3`）
+- `RAYMAN_NETWORK_RESUME_RETRY_SECONDS=<秒>`：自动续接的统一慢重试节奏；默认 `1800`（30 分钟）
 - `RAYMAN_NETWORK_RESUME_CODEX_PROBE_URL=<https-url>`：Codex/OpenAI provider 目标探测地址（默认 `https://api.openai.com/`）
 - `RAYMAN_NETWORK_RESUME_COPILOT_PROBE_URL=<https-url>`：Copilot/GitHub provider 目标探测地址（默认 `https://api.github.com/`）
 - `RAYMAN_NETWORK_RESUME_DESKTOP_SOURCE_ENABLED=0`：关闭从 Codex Desktop 本地 session / tui 日志提取 network-resume 候选（默认开启）
@@ -297,7 +296,8 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 - `RAYMAN_ALERT_SOUND_DONE_ENABLED=0`
 - `RAYMAN_ALERT_TTS_ENABLED=1`
 - `RAYMAN_NETWORK_RESUME_WATCH_ENABLED=0`
-- `RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=300`
+- `RAYMAN_NETWORK_RESUME_THROTTLE_WAIT_SECONDS=1800`
+- `RAYMAN_NETWORK_RESUME_RETRY_SECONDS=1800`
 - `RAYMAN_AUTO_START_ATTENTION_WATCH_ENABLED=0`
 - `RAYMAN_ALERT_WATCH_ON_PROMPT_ENABLED=0`
 - `RAYMAN_ALERT_WATCH_VSCODE_WINDOWS_ENABLED=0`
@@ -399,12 +399,12 @@ RAYMAN_DEBUG=1 bash ./.Rayman/init.sh
 network resume 说明：
 
 - 候选失败现在有两条输入面：`dispatch/review-loop` 写出的 `.Rayman/runtime/agent_runs/last.json`，以及当前 workspace 命中的 Codex Desktop 本地 session（`~/.codex/sessions/**/rollout-*.jsonl`，必要时补读 `~/.codex/log/codex-tui.log`）。
-- 只有当当前 provider 目标持续不可达超过阈值，且这段时间内鼠标键盘都没有动作，shared `win-watch.ps1` 才会把最新失败任务标记为可自动续接。
-- 若最新失败看起来是 provider `high demand / rate limit / overload`，而不是硬断网，那么在键鼠持续无输入满 5 分钟后，也会尝试自动继续。
-- 目标恢复后会按 provider 目标可达性继续判断，而不是只看“任意网站能不能打开”。
-- `dispatch` / `review-loop` 任务继续只会对 Codex 调用 `codex exec resume --last`；desktop 直连会话优先按 session id 调用 `codex resume <id>`，只有确认仍属于该 workspace 最近会话时才允许回退到 `codex resume --last`。
-- Copilot/GitHub 仅记录 `unsupported_native_resume` 状态，不会自动重放旧命令。
-- 若原生续接失败，Rayman 只写诊断和 quiet attention，不会回退成重新执行上次 `executed_command`。
+- 可自动恢复失败统一按 transient provider outage 识别：继续包含 timeout / DNS / connection reset / offline，也新增 `500 / 502 / 503 / 504 / service unavailable / gateway timeout / upstream / backend overloaded` 这一类短暂服务端故障；auth / quota / billing / policy / invalid request 仍不会自动继续。
+- shared `win-watch.ps1` 仍保持 5 秒级 provider 探测，但真正的自动继续最多每 30 分钟发起一次。
+- 第一次识别到可恢复故障时，不再等待 30 分钟 outage threshold；只要满足“首次保存现场需要连续 60 秒无输入”的门槛，就会立刻把最新现场保存成唯一有效的 pending continuation。
+- 后续继续永远从“最新保存状态”出发：如果期间出现了更新 checkpoint / shared session / handover，旧 pending 会被替换；如果任务已经成功完成，pending 会被自动清理。
+- 目标恢复后优先走 vendor native resume：`dispatch/review-loop` 的 Codex 继续优先走 `codex exec resume --last`，desktop 直连会话优先按 session id 走 `codex resume <id>`，只有仍确认属于当前 workspace 最近会话时才允许回退到 `codex resume --last`。
+- 若 vendor native resume 不支持，或原生续接失败，Rayman 会回退到 canonical shared session / handoff continuation，启动新的 `dispatch` 继续同一 workspace task；不会回退成重新执行上次 `executed_command`。
 
 ## LAN Worker / Remote .NET Debugging
 

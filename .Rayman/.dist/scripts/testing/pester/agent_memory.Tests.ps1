@@ -80,6 +80,25 @@ Describe 'agent memory' {
     ($result.counts.PSObject.Properties.Name -contains 'shared_session_messages') | Should -Be $true
   }
 
+  It 'emits JSON safely under non-UTF8 Python stdout encodings' {
+    $pythonIoEncodingBackup = [Environment]::GetEnvironmentVariable('PYTHONIOENCODING')
+    $pythonUtf8Backup = [Environment]::GetEnvironmentVariable('PYTHONUTF8')
+    try {
+      [Environment]::SetEnvironmentVariable('PYTHONIOENCODING', 'cp1252')
+      [Environment]::SetEnvironmentVariable('PYTHONUTF8', '0')
+
+      $result = & $script:ManageMemory -WorkspaceRoot $script:WorkspaceRoot -Action search -Query '' -Scope all -Json | ConvertFrom-Json
+
+      $result.schema | Should -Be 'rayman.agent_memory.search_result.v1'
+      $result.success | Should -Be $true
+      [string]$result.scope | Should -Be 'all'
+      @($result.memory_hints).Count | Should -BeGreaterThan 0
+    } finally {
+      [Environment]::SetEnvironmentVariable('PYTHONIOENCODING', $pythonIoEncodingBackup)
+      [Environment]::SetEnvironmentVariable('PYTHONUTF8', $pythonUtf8Backup)
+    }
+  }
+
   It 'ships Agent Memory schemas and fixtures into the contract validator' {
     $validatorRaw = Get-Content -LiteralPath (Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\validate_json_contracts.py') -Raw -Encoding UTF8
     $searchFixture = Get-Content -LiteralPath (Join-Path $script:WorkspaceRoot '.Rayman\scripts\testing\fixtures\reports\agent_memory.search.sample.json') -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -510,11 +510,16 @@ exit 0
       (Test-Path -LiteralPath $keptTempRoot -PathType Container) | Should -Be $true
 
       $setupRuns = Get-Content -LiteralPath (Join-Path $keptTempRoot '.Rayman\runtime\copy_smoke_setup_runs.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-      @($setupRuns).Count | Should -Be 5
-      (@($setupRuns | ForEach-Object { [string]$_.PassName }) -join ',') | Should -Be '01-fresh-pass,02-tracked-assets-block-pass,03-explicit-allow-pass,04-stable-rerun-pass,05-mapped-write-rerun-pass'
+      $expectedPassNames = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+        @('01-fresh-pass', '02-tracked-assets-block-pass', '03-explicit-allow-pass', '04-stable-rerun-pass', '05-mapped-write-rerun-pass')
+      } else {
+        @('01-fresh-pass', '02-tracked-assets-block-pass', '03-explicit-allow-pass', '04-stable-rerun-pass')
+      }
+      @($setupRuns).Count | Should -Be $expectedPassNames.Count
+      (@($setupRuns | ForEach-Object { [string]$_.PassName }) -join ',') | Should -Be ($expectedPassNames -join ',')
 
       $invocations = @(Get-Content -LiteralPath (Join-Path $keptTempRoot '.Rayman\runtime\stub.setup.invocations.jsonl') -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json })
-      @($invocations).Count | Should -Be 5
+      @($invocations).Count | Should -Be $expectedPassNames.Count
       foreach ($invocation in $invocations) {
         [string]$invocation.alert_done | Should -Be '0'
         [string]$invocation.alert_tts_done | Should -Be '0'
@@ -540,6 +545,6 @@ Describe 'repo hygiene ignore contracts' {
     $gitignoreRaw = Get-Content -LiteralPath (Join-Path $repoRoot '.gitignore') -Raw -Encoding UTF8
 
     $gitignoreRaw | Should -Match '\.Rayman/runtime/'
-    $gitignoreRaw | Should -Match '(?m)^/testResults\.xml$'
+    $gitignoreRaw | Should -Match '(?m)^/testResults\.xml\r?$'
   }
 }

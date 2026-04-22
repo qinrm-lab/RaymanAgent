@@ -1930,11 +1930,25 @@ function Set-RaymanCodexDesktopConfigMode {
   $existingRaw = if (Test-Path -LiteralPath $configPath -PathType Leaf) { Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 } else { '' }
   $newline = if ([string]$existingRaw -match "`r`n") { "`r`n" } else { "`n" }
 
-if ($normalizedMode -in @('api', 'yunyi')) {
+  if ($normalizedMode -in @('api', 'yunyi')) {
       $aliasHome = Get-RaymanCodexAccountHomePath -Alias $Alias
       $aliasConfigPath = Get-RaymanCodexAccountConfigPath -CodexHome $aliasHome
-      
+      $allowAliasRestore = $false
+
       if (-not [string]::IsNullOrWhiteSpace([string]$aliasConfigPath) -and (Test-Path -LiteralPath $aliasConfigPath -PathType Leaf)) {
+        if ($normalizedMode -eq 'yunyi') {
+          $aliasConfigState = Get-RaymanCodexConfigState -CodexHome $aliasHome
+          $allowAliasRestore = (
+            [string](Get-RaymanMapValue -Map $aliasConfigState -Key 'model_provider' -Default '') -eq 'yunyi' -and
+            -not [string]::IsNullOrWhiteSpace([string](Get-RaymanMapValue -Map $aliasConfigState -Key 'yunyi_base_url' -Default '')) -and
+            [bool](Get-RaymanMapValue -Map $aliasConfigState -Key 'yunyi_name_present' -Default $false)
+          )
+        } else {
+          $allowAliasRestore = $true
+        }
+      }
+
+      if ($allowAliasRestore) {
         Copy-Item -LiteralPath $aliasConfigPath -Destination $configPath -Force
         Ensure-RaymanCodexAccountConfig -CodexHome $desktopHome | Out-Null
         return [pscustomobject]@{

@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$WorkspaceRoot = $(if (-not [string]::IsNullOrWhiteSpace([string]$PSScriptRoot)) { (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path } else { (Get-Location).Path }),
   [Parameter(Position = 0)][ValidateSet('install')][string]$Action = 'install',
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$CliArgs,

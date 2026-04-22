@@ -1,4 +1,4 @@
-param(
+﻿param(
 	[string]$WorkspaceRoot = $(Resolve-Path "$PSScriptRoot\..\..\.." | Select-Object -ExpandProperty Path)
 )
 

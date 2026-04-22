@@ -515,6 +515,33 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
     }
   }
 
+  It 'resets successful sync-style CLI results back to exit code zero' {
+    $previousExitCode = if (Test-Path variable:global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { $null }
+    try {
+      $global:LASTEXITCODE = 1
+
+      $global:LASTEXITCODE = Get-RaymanWorkerCliExitCode -Result ([pscustomobject]@{
+          schema = 'rayman.worker.sync.result.v1'
+          mode = 'staged'
+        })
+
+      $LASTEXITCODE | Should -Be 0
+    } finally {
+      if ($null -eq $previousExitCode) {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+      } else {
+        $global:LASTEXITCODE = $previousExitCode
+      }
+    }
+  }
+
+  It 'preserves explicit worker CLI exit codes when the result provides one' {
+    Get-RaymanWorkerCliExitCode -Result ([pscustomobject]@{
+        schema = 'rayman.worker.exec.result.v1'
+        exit_code = 7
+      }) | Should -Be 7
+  }
+
   It 'refreshes the local PowerShell 7 cache to a single latest installer and removes old versions' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_powershell7_cache_' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -757,7 +784,7 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
     }
   }
 
-  It 'clears previous worker logs before running the one-command workflow' {
+  It 'clears previous worker logs before running the one-command workflow' -Skip:(-not ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)) {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_all_logs_' + [Guid]::NewGuid().ToString('N'))
     try {
       foreach ($path in @(
@@ -784,7 +811,8 @@ exit 0
         Set-Content -LiteralPath (Join-Path (Join-Path $root 'log') $name) -Encoding UTF8 -Value 'OLD_LOG_MARKER'
       }
 
-      $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'all.ps1') -SkipInstall 2>&1 | ForEach-Object { [string]$_ })
+      $psHost = Resolve-RaymanPowerShellHost
+      $output = @(& $psHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'all.ps1') -SkipInstall 2>&1 | ForEach-Object { [string]$_ })
       $summaryRaw = Get-Content -LiteralPath (Join-Path $root 'log\all-summary.log') -Raw -Encoding UTF8
       $diagRaw = Get-Content -LiteralPath (Join-Path $root 'log\2.log') -Raw -Encoding UTF8
       $repairRaw = Get-Content -LiteralPath (Join-Path $root 'log\repair-encoding.log') -Raw -Encoding UTF8

@@ -87,6 +87,24 @@ function Test-NonEmptyFile {
   Add-Check -Name $RelativePath -Passed $true -Detail 'ok'
 }
 
+function Ensure-SkillsAutoFile {
+  $skillsPath = Join-Path $resolvedWorkspaceRoot '.Rayman\context\skills.auto.md'
+  if (Test-Path -LiteralPath $skillsPath -PathType Leaf) {
+    return
+  }
+
+  $detectSkillsScript = Join-Path $raymanRoot 'scripts\skills\detect_skills.ps1'
+  if (-not (Test-Path -LiteralPath $detectSkillsScript -PathType Leaf)) {
+    return
+  }
+
+  try {
+    & $detectSkillsScript -Root $resolvedWorkspaceRoot | Out-Null
+  } catch {
+    Add-Check -Name 'skills-auto-generate' -Passed $false -Detail $_.Exception.Message
+  }
+}
+
 foreach ($assetContract in @(Get-RaymanManagedAssetContracts)) {
   Test-NonEmptyFile -RelativePath ([string]$assetContract.relative_path) -RequiredTokens @($assetContract.required_tokens) -ForbiddenPatterns @($assetContract.forbidden_patterns)
 }
@@ -102,6 +120,7 @@ if (-not $SkipContextRefresh) {
 }
 
 Test-NonEmptyFile -RelativePath '.Rayman/CONTEXT.md' -RequiredTokens @('## Workspace Snapshot', '## Auto Skills', '## Agent Capabilities')
+Ensure-SkillsAutoFile
 Test-NonEmptyFile -RelativePath '.Rayman/context/skills.auto.md' -RequiredTokens @('选择结果', '## 你应当使用的能力/工具')
 
 $manualCommandValidator = Join-Path $raymanRoot 'scripts\agents\validate_manual_command_contracts.ps1'
@@ -124,7 +143,39 @@ if (-not (Test-Path -LiteralPath $manualCommandValidator -PathType Leaf)) {
       throw ("manual command validator JSON missing properties: {0}" -f ($missingProps -join ', '))
     }
 
-    Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail ("checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count)
+    $detail = "checks={0}; failures={1}" -f [int]$validatorResult.check_count, [int]$validatorResult.failure_count
+    if (
+      -not [bool]$validatorResult.passed -and
+      $validatorResult.PSObject.Properties['checks']
+    ) {
+      $failedChecks = @(
+        @($validatorResult.checks) |
+          Where-Object { -not [bool]$_.passed } |
+          Select-Object -First 3
+      )
+      if ($failedChecks.Count -gt 0) {
+        $failedSummaries = @(
+          $failedChecks |
+            ForEach-Object {
+              $name = [string]$_.name
+              $detailText = if ($_.PSObject.Properties['detail']) { [string]$_.detail } else { '' }
+              if ([string]::IsNullOrWhiteSpace($name)) {
+                return
+              }
+              if ([string]::IsNullOrWhiteSpace($detailText)) {
+                return $name
+              }
+              return ("{0} => {1}" -f $name, $detailText)
+            } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($failedSummaries.Count -gt 0) {
+          $detail = "{0}; failed={1}" -f $detail, ($failedSummaries -join ' || ')
+        }
+      }
+    }
+
+    Add-Check -Name 'manual-command-contracts' -Passed ([bool]$validatorResult.passed) -Detail $detail
   } catch {
     Add-Check -Name 'manual-command-contracts' -Passed $false -Detail $_.Exception.Message
   }
