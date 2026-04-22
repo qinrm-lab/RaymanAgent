@@ -1131,6 +1131,23 @@ function Invoke-RaymanWorkerUpgradeAction {
   }
 }
 
+function Get-RaymanWorkerCliExitCode {
+  param(
+    [object]$Result
+  )
+
+  if ($null -eq $Result -or $null -eq $Result.PSObject.Properties['exit_code']) {
+    return 0
+  }
+
+  $resolvedExitCode = 0
+  if ([int]::TryParse([string]$Result.exit_code, [ref]$resolvedExitCode)) {
+    return $resolvedExitCode
+  }
+
+  return 0
+}
+
 if (-not $NoMain) {
   $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
   if ($null -eq $CliArgs) { $CliArgs = @() } else { $CliArgs = @($CliArgs) }
@@ -1233,9 +1250,6 @@ if (-not $NoMain) {
             Write-Host $line
           }
         }
-        if ($result.exit_code -ne 0) {
-          $global:LASTEXITCODE = [int]$result.exit_code
-        }
         break
       }
       'sync' {
@@ -1271,6 +1285,7 @@ if (-not $NoMain) {
         throw ("unknown worker action: {0}" -f $Action)
       }
     }
+    $global:LASTEXITCODE = Get-RaymanWorkerCliExitCode -Result $result
   } catch {
     $result = New-RaymanWorkerCliErrorResult -Action $Action -ErrorRecord $_
     $global:LASTEXITCODE = 1

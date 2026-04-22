@@ -515,6 +515,33 @@ $env:RAYMAN_WORKER_PREFERRED_REMOTE_CONTROL_URL = 'http://192.168.2.107:47632/'
     }
   }
 
+  It 'resets successful sync-style CLI results back to exit code zero' {
+    $previousExitCode = if (Test-Path variable:global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { $null }
+    try {
+      $global:LASTEXITCODE = 1
+
+      $global:LASTEXITCODE = Get-RaymanWorkerCliExitCode -Result ([pscustomobject]@{
+          schema = 'rayman.worker.sync.result.v1'
+          mode = 'staged'
+        })
+
+      $LASTEXITCODE | Should -Be 0
+    } finally {
+      if ($null -eq $previousExitCode) {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+      } else {
+        $global:LASTEXITCODE = $previousExitCode
+      }
+    }
+  }
+
+  It 'preserves explicit worker CLI exit codes when the result provides one' {
+    Get-RaymanWorkerCliExitCode -Result ([pscustomobject]@{
+        schema = 'rayman.worker.exec.result.v1'
+        exit_code = 7
+      }) | Should -Be 7
+  }
+
   It 'refreshes the local PowerShell 7 cache to a single latest installer and removes old versions' {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('rayman_worker_powershell7_cache_' + [Guid]::NewGuid().ToString('N'))
     try {
