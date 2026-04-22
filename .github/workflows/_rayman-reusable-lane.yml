@@ -111,22 +111,31 @@ jobs:
         if: inputs.run_host_smoke
         shell: pwsh
         run: |
-          $cmd = @(
-            '.\.Rayman\scripts\testing\run_host_smoke.ps1'
-            '-WorkspaceRoot'
-            "$PWD"
-          )
+          $scriptPath = '.\.Rayman\scripts\testing\run_host_smoke.ps1'
+          $invokeNamed = @{
+            WorkspaceRoot = "$PWD"
+          }
+          $invokePositional = @()
           $extra = '${{ inputs.host_smoke_args }}'.Trim()
           if (-not [string]::IsNullOrWhiteSpace($extra)) {
-            foreach ($token in @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null))) {
+            $tokens = @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null) | Where-Object { $_.Type -in @('CommandParameter', 'CommandArgument') })
+            for ($i = 0; $i -lt $tokens.Count; $i++) {
+              $token = $tokens[$i]
               if ($token.Type -eq 'CommandParameter') {
-                $cmd += ('-' + $token.Content)
+                $parameterName = [string]$token.Content
+                $nextIsValue = ($i + 1 -lt $tokens.Count) -and ($tokens[$i + 1].Type -eq 'CommandArgument')
+                if ($nextIsValue) {
+                  $invokeNamed[$parameterName] = [string]$tokens[$i + 1].Content
+                  $i++
+                } else {
+                  $invokeNamed[$parameterName] = $true
+                }
               } elseif ($token.Type -eq 'CommandArgument') {
-                $cmd += $token.Content
+                $invokePositional += [string]$token.Content
               }
             }
           }
-          & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+          & $scriptPath @invokeNamed @invokePositional
 
       - name: Run project fast gate
         if: inputs.run_fast_gate
@@ -142,22 +151,31 @@ jobs:
         if: inputs.run_copy_smoke
         shell: pwsh
         run: |
-          $cmd = @(
-            '.\.Rayman\scripts\release\copy_smoke.ps1'
-            '-WorkspaceRoot'
-            "$PWD"
-          )
+          $scriptPath = '.\.Rayman\scripts\release\copy_smoke.ps1'
+          $invokeNamed = @{
+            WorkspaceRoot = "$PWD"
+          }
+          $invokePositional = @()
           $extra = '${{ inputs.copy_smoke_args }}'.Trim()
           if (-not [string]::IsNullOrWhiteSpace($extra)) {
-            foreach ($token in @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null))) {
+            $tokens = @([System.Management.Automation.PSParser]::Tokenize($extra, [ref]$null) | Where-Object { $_.Type -in @('CommandParameter', 'CommandArgument') })
+            for ($i = 0; $i -lt $tokens.Count; $i++) {
+              $token = $tokens[$i]
               if ($token.Type -eq 'CommandParameter') {
-                $cmd += ('-' + $token.Content)
+                $parameterName = [string]$token.Content
+                $nextIsValue = ($i + 1 -lt $tokens.Count) -and ($tokens[$i + 1].Type -eq 'CommandArgument')
+                if ($nextIsValue) {
+                  $invokeNamed[$parameterName] = [string]$tokens[$i + 1].Content
+                  $i++
+                } else {
+                  $invokeNamed[$parameterName] = $true
+                }
               } elseif ($token.Type -eq 'CommandArgument') {
-                $cmd += $token.Content
+                $invokePositional += [string]$token.Content
               }
             }
           }
-          & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+          & $scriptPath @invokeNamed @invokePositional
 
       - name: Build artifact manifest
         if: always()
