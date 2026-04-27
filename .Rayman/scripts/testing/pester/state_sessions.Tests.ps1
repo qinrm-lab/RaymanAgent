@@ -516,6 +516,8 @@ Describe 'session isolation helpers' {
       $restore.schema | Should -Be 'rayman.rollback.restore.v1'
       $restore.restored | Should -Be $true
       [string]$restore.session_kind | Should -Be 'manual'
+      [string]$restore.shared_session_restore_error | Should -Be ''
+      $restore.shared_session_restore | Should -BeNullOrEmpty
       (Get-Content -LiteralPath (Join-Path $root 'notes.txt') -Raw -Encoding UTF8).Trim() | Should -Be 'manual rollback restore'
       (Test-Path -LiteralPath (Join-Path $root '.Rayman\runtime\snapshots') -PathType Container) | Should -Be $false
     } finally {

@@ -258,7 +258,7 @@ switch ($Action) {
     $resumeResult = $resumeJson | ConvertFrom-Json -ErrorAction Stop
     $sharedRestore = $null
     $sharedRestoreError = ''
-    if (Get-Command Restore-RaymanSharedSessionCheckpoint -ErrorAction SilentlyContinue) {
+    if ((Get-Command Restore-RaymanSharedSessionCheckpoint -ErrorAction SilentlyContinue) -and (Get-Command Test-RaymanSharedSessionEnabled -ErrorAction SilentlyContinue) -and (Test-RaymanSharedSessionEnabled -WorkspaceRoot $ResolvedWorkspaceRoot)) {
       try {
         $sharedSessionId = Get-RaymanSharedSessionId -WorkspaceRoot $ResolvedWorkspaceRoot -TaskSlug ([string]$record.slug)
         $sharedRestore = Restore-RaymanSharedSessionCheckpoint -WorkspaceRoot $ResolvedWorkspaceRoot -SessionId $sharedSessionId -RestoredBy ('rollback:' + [string]$record.slug)
