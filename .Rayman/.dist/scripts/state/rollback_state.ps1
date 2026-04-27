@@ -257,6 +257,7 @@ switch ($Action) {
     }
     $resumeResult = $resumeJson | ConvertFrom-Json -ErrorAction Stop
     $sharedRestore = $null
+    $sharedRestoreError = ''
     if (Get-Command Restore-RaymanSharedSessionCheckpoint -ErrorAction SilentlyContinue) {
       try {
         $sharedSessionId = Get-RaymanSharedSessionId -WorkspaceRoot $ResolvedWorkspaceRoot -TaskSlug ([string]$record.slug)
@@ -268,7 +269,21 @@ switch ($Action) {
               session_slug = [string]$record.slug
             }) | Out-Null
         }
-      } catch {}
+      } catch {
+        $sharedRestoreError = $_.Exception.Message
+        if (-not $Json) {
+          Write-Warning ("shared-session checkpoint restore failed during rollback: {0}" -f $sharedRestoreError)
+        }
+        if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
+          Write-RaymanDiag -Scope 'shared-session' -WorkspaceRoot $ResolvedWorkspaceRoot -Message ("rollback shared-session restore failed; session_slug={0}; error={1}" -f [string]$record.slug, $_.Exception.ToString())
+        }
+        if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+          Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'shared_session.restore_failed' -Category 'state' -Payload ([ordered]@{
+              session_slug = [string]$record.slug
+              error = $sharedRestoreError
+            }) | Out-Null
+        }
+      }
     }
 
     $payload = [ordered]@{
@@ -280,6 +295,7 @@ switch ($Action) {
       session_kind = [string]$record.session_kind
       resume_result = $resumeResult
       shared_session_restore = $sharedRestore
+      shared_session_restore_error = $sharedRestoreError
     }
     if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
       Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'rollback.restore' -Category 'state' -Payload $payload | Out-Null

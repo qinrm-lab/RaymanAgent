@@ -76,10 +76,24 @@ Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifes
 if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
     Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -HandoverPath $paths.handover_path -PatchPath $paths.auto_save_patch_path -MetaPath $paths.auto_save_meta_path | Out-Null
 }
+$sharedSessionSyncError = ''
 if (Get-Command Sync-RaymanSharedSessionFromManifest -ErrorAction SilentlyContinue) {
     try {
         $null = Sync-RaymanSharedSessionFromManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $manifest -HandoverPath $paths.handover_path -PatchPath $paths.auto_save_patch_path -MetaPath $paths.auto_save_meta_path -Action 'state-save'
-    } catch {}
+    } catch {
+        $sharedSessionSyncError = $_.Exception.Message
+        Write-Warning ("shared-session sync failed during state-save: {0}" -f $sharedSessionSyncError)
+        if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
+            Write-RaymanDiag -Scope 'shared-session' -WorkspaceRoot $ResolvedWorkspaceRoot -Message ("state-save sync failed; session_slug={0}; error={1}" -f $slug, $_.Exception.ToString())
+        }
+        if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+            Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'shared_session.sync_failed' -Category 'state' -Payload ([ordered]@{
+                    action = 'state-save'
+                    session_slug = $slug
+                    error = $sharedSessionSyncError
+                }) | Out-Null
+        }
+    }
 }
 
 $legacy = Get-RaymanLegacyStatePaths -WorkspaceRoot $ResolvedWorkspaceRoot
@@ -119,6 +133,7 @@ if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
             session_kind = 'manual'
             backend = [string]$runtimeContext.backend
             account_alias = [string]$runtimeContext.account_alias
+            shared_session_sync_error = $sharedSessionSyncError
         }) | Out-Null
 }
 

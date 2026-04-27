@@ -176,10 +176,26 @@ Set-RaymanActiveSession -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updated
 if (Get-Command Write-RaymanSessionRecall -ErrorAction SilentlyContinue) {
     Write-RaymanSessionRecall -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -HandoverPath $handoverPath -PatchPath $patchPath -MetaPath $metaPath | Out-Null
 }
+$sharedSessionSyncError = ''
 if (Get-Command Sync-RaymanSharedSessionFromManifest -ErrorAction SilentlyContinue) {
     try {
         $null = Sync-RaymanSharedSessionFromManifest -WorkspaceRoot $ResolvedWorkspaceRoot -Manifest $updatedManifest -HandoverPath $handoverPath -PatchPath $patchPath -MetaPath $metaPath -Action 'state-resume'
-    } catch {}
+    } catch {
+        $sharedSessionSyncError = $_.Exception.Message
+        if (-not $Json) {
+            Write-Warning ("shared-session sync failed during state-resume: {0}" -f $sharedSessionSyncError)
+        }
+        if (Get-Command Write-RaymanDiag -ErrorAction SilentlyContinue) {
+            Write-RaymanDiag -Scope 'shared-session' -WorkspaceRoot $ResolvedWorkspaceRoot -Message ("state-resume sync failed; session_slug={0}; error={1}" -f $slug, $_.Exception.ToString())
+        }
+        if (Get-Command Write-RaymanEvent -ErrorAction SilentlyContinue) {
+            Write-RaymanEvent -WorkspaceRoot $ResolvedWorkspaceRoot -EventType 'shared_session.sync_failed' -Category 'state' -Payload ([ordered]@{
+                    action = 'state-resume'
+                    session_slug = $slug
+                    error = $sharedSessionSyncError
+                }) | Out-Null
+        }
+    }
 }
 
 if ($resumeIsolation -eq 'worktree') {
@@ -224,6 +240,7 @@ if ($Json) {
             branch = [string]$updatedManifest.branch
             restored_patch = [bool]$patchResult.applied
             stash_result = [string]$stashResult.reason
+            shared_session_sync_error = $sharedSessionSyncError
         } | ConvertTo-Json -Depth 8
     } else {
         [ordered]@{
@@ -234,6 +251,7 @@ if ($Json) {
             isolation = 'shared'
             restored_patch = [bool]$patchResult.applied
             stash_result = [string]$stashResult.reason
+            shared_session_sync_error = $sharedSessionSyncError
         } | ConvertTo-Json -Depth 8
     }
     exit 0

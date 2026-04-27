@@ -2343,9 +2343,13 @@ function Invoke-RaymanNativeCommandCapture {
             $proc = New-Object System.Diagnostics.Process
             $proc.StartInfo = $startInfo
             $null = $proc.Start()
-            $stdoutText = [string]$proc.StandardOutput.ReadToEnd()
-            $stderrText = [string]$proc.StandardError.ReadToEnd()
+            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask = $proc.StandardError.ReadToEndAsync()
             $proc.WaitForExit()
+            $stdoutTask.Wait()
+            $stderrTask.Wait()
+            $stdoutText = [string]$stdoutTask.Result
+            $stderrText = [string]$stderrTask.Result
         }
 
         $result.started = $true

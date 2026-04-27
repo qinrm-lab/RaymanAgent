@@ -594,6 +594,8 @@ Describe 'session isolation helpers' {
       ($messageSources -contains 'state-resume') | Should -Be $true
       @($show.checkpoints | Where-Object { [string]$_.checkpoint_kind -eq 'state-save' }).Count | Should -BeGreaterThan 0
       [bool]$restore.shared_session_restore.restored | Should -Be $true
+      [string]$restore.shared_session_restore_error | Should -Be ''
+      [string]$restore.resume_result.shared_session_sync_error | Should -Be ''
     } finally {
       [Environment]::SetEnvironmentVariable('RAYMAN_SHARED_SESSION_ENABLED', $enabledBackup)
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

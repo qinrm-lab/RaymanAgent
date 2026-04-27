@@ -1025,6 +1025,7 @@ Describe 'silent child process helpers' {
 
     $commonRaw | Should -Match "function Invoke-RaymanNativeCommandCapture"
     $commonRaw | Should -Match "WindowStyle'\] = 'Hidden'"
+    $commonRaw | Should -Match '\.ReadToEndAsync\(\)'
     $commonRaw | Should -Match '\$proc\.Dispose\(\)'
     $commonRaw | Should -Match 'Remove-Item -LiteralPath \$stdoutPath -Force'
     $commonRaw | Should -Match 'Remove-Item -LiteralPath \$stderrPath -Force'
